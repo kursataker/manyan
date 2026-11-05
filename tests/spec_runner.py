@@ -1,6 +1,6 @@
 """Run the specification tests (tests/spec) on a model checker.
 
-usage: spec_runner.py ENGINE [--oracle TLC] [--bless] [--only SUBSTRING] [--strict]
+usage: spec_runner.py "ENGINE [ARGS]" [--oracle TLC] [--bless] [--only SUBSTRING] [--strict]
 
 A test is NAME.tla: a module, then, after the line that ends it, the model
 configuration (SANY ignores text after a module). NAME.out is the
@@ -14,6 +14,7 @@ With --strict the exit status is nonzero when the engine fails any test.
 """
 import argparse
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -95,8 +96,9 @@ def main():
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    if "/" in args.engine:
-        args.engine = str(Path(args.engine).resolve())
+    engine = shlex.split(args.engine)
+    if "/" in engine[0]:
+        engine[0] = str(Path(engine[0]).resolve())
     tests = sorted(p for p in SPEC.rglob("*.tla") if ".files" not in str(p) and args.only in str(p))
 
     def check(path):
@@ -111,7 +113,7 @@ def main():
         expected = expected_path.read_text() if expected_path.exists() else None
         if expected is None:
             return path, False, ["no " + expected_path.name], ""
-        actual = run([args.engine], path)
+        actual = run(engine, path)
         if actual != expected:
             notes.append("output differs")
         return path, not notes, notes, actual if actual != expected else ""

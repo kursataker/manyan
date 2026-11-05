@@ -23,6 +23,7 @@ typedef struct {
     const char *config;  /* path of the model configuration; NULL for SPEC.cfg */
     int check_deadlock;  /* 0 turns deadlock checking off, as -deadlock does */
     const char *dump;    /* write the state graph in dot format to this file, or NULL */
+    int workers;         /* processes expanding states; 0 or 1 for one */
 } TPPOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an

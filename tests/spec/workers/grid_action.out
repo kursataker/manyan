@@ -1,0 +1,151 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Action property Steady is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 1
+/\ z = 0
+
+State 3: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 2
+/\ z = 0
+
+State 4: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 3
+/\ z = 0
+
+State 5: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 4
+/\ z = 0
+
+State 6: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 5
+/\ z = 0
+
+State 7: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 6
+/\ z = 0
+
+State 8: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 7
+/\ z = 0
+
+State 9: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 8
+/\ z = 0
+
+State 10: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 9
+/\ z = 0
+
+State 11: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 10
+/\ z = 0
+
+State 12: <Next line 8, col 12 to line 8, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 0
+
+State 13: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 1
+
+State 14: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 2
+
+State 15: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 3
+
+State 16: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 4
+
+State 17: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 5
+
+State 18: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 6
+
+State 19: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 7
+
+State 20: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 8
+
+State 21: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 9
+
+State 22: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 10
+
+State 23: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 11
+
+State 24: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 12
+
+State 25: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 13
+
+State 26: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 14
+
+State 27: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 15
+
+State 28: <Next line 9, col 12 to line 9, col 38 of module grid_action>
+/\ x = 0
+/\ y = 11
+/\ z = 16
+
+State 29: <Next line 7, col 12 to line 7, col 38 of module grid_action>
+/\ x = 1
+/\ y = 11
+/\ z = 16
+
+11304 states generated, 4131 distinct states found, 327 states left on queue.
+The depth of the complete state graph search is 29.
+exit 13

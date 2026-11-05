@@ -1,0 +1,151 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 1
+/\ y = 0
+/\ z = 0
+
+State 3: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 2
+/\ y = 0
+/\ z = 0
+
+State 4: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 3
+/\ y = 0
+/\ z = 0
+
+State 5: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 4
+/\ y = 0
+/\ z = 0
+
+State 6: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 5
+/\ y = 0
+/\ z = 0
+
+State 7: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 6
+/\ y = 0
+/\ z = 0
+
+State 8: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 7
+/\ y = 0
+/\ z = 0
+
+State 9: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 8
+/\ y = 0
+/\ z = 0
+
+State 10: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 9
+/\ y = 0
+/\ z = 0
+
+State 11: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 10
+/\ y = 0
+/\ z = 0
+
+State 12: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 11
+/\ y = 0
+/\ z = 0
+
+State 13: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 12
+/\ y = 0
+/\ z = 0
+
+State 14: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 13
+/\ y = 0
+/\ z = 0
+
+State 15: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 14
+/\ y = 0
+/\ z = 0
+
+State 16: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 0
+/\ z = 0
+
+State 17: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 1
+/\ z = 0
+
+State 18: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 2
+/\ z = 0
+
+State 19: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 3
+/\ z = 0
+
+State 20: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 4
+/\ z = 0
+
+State 21: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 5
+/\ z = 0
+
+State 22: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 6
+/\ z = 0
+
+State 23: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 7
+/\ z = 0
+
+State 24: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 8
+/\ z = 0
+
+State 25: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 9
+/\ z = 0
+
+State 26: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 10
+/\ z = 0
+
+State 27: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 11
+/\ z = 0
+
+State 28: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 12
+/\ z = 0
+
+State 29: <Next line 6, col 9 to line 9, col 41 of module grid_deadlock>
+/\ x = 15
+/\ y = 13
+/\ z = 0
+
+11473 states generated, 4195 distinct states found, 331 states left on queue.
+The depth of the complete state graph search is 30.
+exit 11

@@ -30,6 +30,7 @@ test: test-spec
 
 test-spec: tpp
 	python3 tests/spec_runner.py ./tpp --strict
+	python3 tests/spec_runner.py "./tpp -workers 4" --strict
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: tpp $(TLA_JAR)

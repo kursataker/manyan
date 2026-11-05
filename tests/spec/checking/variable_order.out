@@ -1,0 +1,27 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ done = FALSE
+/\ alpha = 0
+/\ s = {}
+/\ pc = "a"
+/\ queue = <<>>
+
+State 2: <Next line 11, col 9 to line 13, col 43 of module variable_order>
+/\ done = FALSE
+/\ alpha = 1
+/\ s = {}
+/\ pc = "a"
+/\ queue = <<>>
+
+State 3: <Next line 11, col 9 to line 13, col 43 of module variable_order>
+/\ done = FALSE
+/\ alpha = 2
+/\ s = {}
+/\ pc = "a"
+/\ queue = <<>>
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 11

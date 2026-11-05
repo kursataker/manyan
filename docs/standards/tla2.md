@@ -504,10 +504,27 @@ A violation prints its error (§11.3), then, if there is a trace,
 `Error: The behavior up to this point is:` and the trace, then the counts.
 Each state of a trace is `State i: <Action line l1, col c1 to line l2, col
 c2 of module M>` (`<Initial predicate>` for the first) followed by the
-state as a junction list `/\ v = value` of its variables in declaration
-order, a single variable without the bullet, and a blank line. The action
+state as a junction list `/\ v = value` of its variables in TLC's order
+(below), a single variable without the bullet, and a blank line. The action
 is named by the definition the step's disjunct belongs to, and located by
 that disjunct.
+
+TLC's order of the variables is the reverse of the order in which SANY's
+context of the root module, a `java.util.Hashtable`, enumerates them. The
+table holds the names of SANY's 72 built-in operators, put in reverse
+order of their definition, then the module's symbols in the order SANY
+meets them: those of each extended module that are not LOCAL, in that
+module's order; then, in the module's text, each declared or defined name,
+the name of a RECURSIVE operator where it is declared, the name of a named
+theorem or assumption, and the name of a nested module. An instance puts
+the definitions of the instantiated module, then its named theorems and
+assumptions, as that module's own table enumerates them; a named instance
+`I` puts each as `I!Op`, its module instances too, then `I`. A name's hash
+is Java's `String.hashCode`; the table starts with 11 buckets, puts a new
+entry at the head of its bucket, and when it holds three quarters of its
+capacity it grows to twice plus one, moving entries from the last bucket
+to the first, each to the head of its new bucket. It enumerates the
+buckets from the last to the first, each from its head.
 
 A liveness counterexample is introduced by `Error: Temporal properties were
 violated.` and `Error: The following behavior constitutes a

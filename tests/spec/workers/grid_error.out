@@ -1,0 +1,155 @@
+Finished computing initial states: 1 distinct state generated.
+Error: The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 1
+/\ y = 0
+/\ z = 0
+
+State 3: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 2
+/\ y = 0
+/\ z = 0
+
+State 4: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 3
+/\ y = 0
+/\ z = 0
+
+State 5: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 4
+/\ y = 0
+/\ z = 0
+
+State 6: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 5
+/\ y = 0
+/\ z = 0
+
+State 7: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 6
+/\ y = 0
+/\ z = 0
+
+State 8: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 7
+/\ y = 0
+/\ z = 0
+
+State 9: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 8
+/\ y = 0
+/\ z = 0
+
+State 10: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 9
+/\ y = 0
+/\ z = 0
+
+State 11: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 10
+/\ y = 0
+/\ z = 0
+
+State 12: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 11
+/\ y = 0
+/\ z = 0
+
+State 13: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 12
+/\ y = 0
+/\ z = 0
+
+State 14: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 13
+/\ y = 0
+/\ z = 0
+
+State 15: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 14
+/\ y = 0
+/\ z = 0
+
+State 16: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 15
+/\ y = 0
+/\ z = 0
+
+State 17: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 16
+/\ y = 0
+/\ z = 0
+
+State 18: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 17
+/\ y = 0
+/\ z = 0
+
+State 19: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 18
+/\ y = 0
+/\ z = 0
+
+State 20: <Next line 6, col 12 to line 6, col 89 of module grid_error>
+/\ x = 19
+/\ y = 0
+/\ z = 0
+
+State 21: <Next line 7, col 12 to line 7, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 0
+
+State 22: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 1
+
+State 23: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 2
+
+State 24: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 3
+
+State 25: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 4
+
+State 26: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 5
+
+State 27: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 6
+
+State 28: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 7
+
+State 29: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 8
+
+State 30: <Next line 8, col 12 to line 8, col 38 of module grid_error>
+/\ x = 19
+/\ y = 1
+/\ z = 9
+
+12318 states generated, 4486 distinct states found, 331 states left on queue.
+exit 255

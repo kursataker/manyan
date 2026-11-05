@@ -1,0 +1,166 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Low is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 1
+/\ y = 0
+/\ z = 0
+
+State 3: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 2
+/\ y = 0
+/\ z = 0
+
+State 4: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 3
+/\ y = 0
+/\ z = 0
+
+State 5: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 4
+/\ y = 0
+/\ z = 0
+
+State 6: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 5
+/\ y = 0
+/\ z = 0
+
+State 7: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 6
+/\ y = 0
+/\ z = 0
+
+State 8: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 7
+/\ y = 0
+/\ z = 0
+
+State 9: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 8
+/\ y = 0
+/\ z = 0
+
+State 10: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 9
+/\ y = 0
+/\ z = 0
+
+State 11: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 10
+/\ y = 0
+/\ z = 0
+
+State 12: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 11
+/\ y = 0
+/\ z = 0
+
+State 13: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 12
+/\ y = 0
+/\ z = 0
+
+State 14: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 13
+/\ y = 0
+/\ z = 0
+
+State 15: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 14
+/\ y = 0
+/\ z = 0
+
+State 16: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 15
+/\ y = 0
+/\ z = 0
+
+State 17: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 16
+/\ y = 0
+/\ z = 0
+
+State 18: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 17
+/\ y = 0
+/\ z = 0
+
+State 19: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 18
+/\ y = 0
+/\ z = 0
+
+State 20: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 19
+/\ y = 0
+/\ z = 0
+
+State 21: <Next line 7, col 12 to line 7, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 0
+/\ z = 0
+
+State 22: <Next line 8, col 12 to line 8, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 1
+/\ z = 0
+
+State 23: <Next line 8, col 12 to line 8, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 0
+
+State 24: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 1
+
+State 25: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 2
+
+State 26: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 3
+
+State 27: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 4
+
+State 28: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 5
+
+State 29: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 6
+
+State 30: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 7
+
+State 31: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 8
+
+State 32: <Next line 9, col 12 to line 9, col 38 of module grid_invariant>
+/\ x = 20
+/\ y = 2
+/\ z = 9
+
+13249 states generated, 4806 distinct states found, 331 states left on queue.
+The depth of the complete state graph search is 32.
+exit 12

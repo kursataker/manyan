@@ -1,0 +1,192 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Short is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ s = "a"
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 1
+/\ y = 0
+/\ z = 0
+
+State 3: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 2
+/\ y = 0
+/\ z = 0
+
+State 4: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 3
+/\ y = 0
+/\ z = 0
+
+State 5: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 4
+/\ y = 0
+/\ z = 0
+
+State 6: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 5
+/\ y = 0
+/\ z = 0
+
+State 7: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 6
+/\ y = 0
+/\ z = 0
+
+State 8: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 7
+/\ y = 0
+/\ z = 0
+
+State 9: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 8
+/\ y = 0
+/\ z = 0
+
+State 10: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 9
+/\ y = 0
+/\ z = 0
+
+State 11: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 10
+/\ y = 0
+/\ z = 0
+
+State 12: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 11
+/\ y = 0
+/\ z = 0
+
+State 13: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 12
+/\ y = 0
+/\ z = 0
+
+State 14: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 13
+/\ y = 0
+/\ z = 0
+
+State 15: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 14
+/\ y = 0
+/\ z = 0
+
+State 16: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 15
+/\ y = 0
+/\ z = 0
+
+State 17: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 16
+/\ y = 0
+/\ z = 0
+
+State 18: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 17
+/\ y = 0
+/\ z = 0
+
+State 19: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 18
+/\ y = 0
+/\ z = 0
+
+State 20: <Next line 7, col 12 to line 7, col 41 of module grid_strings>
+/\ s = "a"
+/\ x = 19
+/\ y = 0
+/\ z = 0
+
+State 21: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "ab"
+/\ x = 19
+/\ y = 0
+/\ z = 1
+
+State 22: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abb"
+/\ x = 19
+/\ y = 0
+/\ z = 2
+
+State 23: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbb"
+/\ x = 19
+/\ y = 0
+/\ z = 3
+
+State 24: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 4
+
+State 25: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 5
+
+State 26: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 6
+
+State 27: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 7
+
+State 28: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 8
+
+State 29: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 9
+
+State 30: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 10
+
+State 31: <Next line 9, col 12 to line 9, col 55 of module grid_strings>
+/\ s = "abbbbbbbbbbb"
+/\ x = 19
+/\ y = 0
+/\ z = 11
+
+12324 states generated, 4488 distinct states found, 331 states left on queue.
+The depth of the complete state graph search is 31.
+exit 12

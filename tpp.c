@@ -7,7 +7,11 @@
    resolves names (resolver), binds the constants from the configuration,
    and explores the state graph breadth first (checker), evaluating
    expressions (evaluator) and enumerating the states an initial predicate
-   or an action allows (generator). */
+   or an action allows (generator). Worker processes may expand the
+   states of a level in parallel; the search merges what they find in
+   order, so the result is the same with any number of them. */
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include "tpp.h"
 
 #include <ctype.h>
@@ -18,6 +22,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 typedef struct Value Value;
 typedef struct Expr Expr;
@@ -130,8 +138,11 @@ static uint64_t hash_bytes(const void *p, size_t n, uint64_t h) {
     return h;
 }
 
+static int in_worker;   /* this process expands states for the search: it changes no shared data */
+static _Noreturn void worker_cannot(void);
+
 static int intern_n(const char *s, int len) {
-    if (nstrs * 2 >= str_table_size) {
+    if (nstrs * 2 >= str_table_size && !in_worker) {
         int size = str_table_size ? str_table_size * 2 : 1024;
         int *table = calloc((size_t)size, sizeof(int));
         for (int i = 0; i < nstrs; i++) {
@@ -151,6 +162,7 @@ static int intern_n(const char *s, int len) {
         if (t->len == len && memcmp(t->s, s, (size_t)len) == 0) return str_table[j] - 1;
         j = (j + 1) & (str_table_size - 1);
     }
+    if (in_worker) worker_cannot();   /* a new string gets its number from the search */
     if (nstrs == capstrs) {
         capstrs = capstrs ? capstrs * 2 : 1024;
         strs = xrealloc(strs, sizeof(Str) * (size_t)capstrs);
@@ -185,7 +197,7 @@ static const char *builtin_names[] = {
 
 /* An error unwinds to the innermost handler with its message. */
 typedef struct Expr Expr;
-static jmp_buf *handler;
+static sigjmp_buf *handler;
 static Buf error_message;
 static Expr *error_expr;   /* the expression an evaluation error names, if any */
 static int error_status;   /* the exit status the error implies */
@@ -204,7 +216,7 @@ static _Noreturn void raise_error(void) {
         fputs(error_message.s ? error_message.s : "error", stdout);
         exit(TPP_ERROR);
     }
-    longjmp(*handler, 1);
+    siglongjmp(*handler, 1);
 }
 
 static _Noreturn void vfail(Expr *e, int module, const char *fmt, va_list ap) {
@@ -231,6 +243,9 @@ static _Noreturn void fail_module(const char *fmt, ...) {
 }
 
 #define fail(...) fail_at(NULL, __VA_ARGS__)
+
+/* A worker gives a state back to the search, which expands it itself. */
+static _Noreturn void worker_cannot(void) { fail("A worker cannot expand this state."); }
 
 /* ---------------------------------------------------------------- values */
 
@@ -1096,7 +1111,7 @@ struct Expr {
     int l1, c1, l2, c2;
 };
 
-enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE };
+enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM };   /* D_THM: a theorem's or assumption's name */
 
 typedef Value *(*Native)(Expr *call, Value **args, Ctx c);
 
@@ -1129,7 +1144,7 @@ struct Def {
 typedef struct { int name; Def *def; Def **path; int npath; int local; } Sym;
 
 typedef struct {
-    int kind;             /* 0 definition, 1 instance, 2 assume, 3 nested module */
+    int kind;             /* 0 definition, 1 instance, 2 assume, 3 nested module, 4 name only */
     Def *def;
     Expr *expr;
     Module *module;
@@ -2318,6 +2333,16 @@ static void add_unit(Module *m, int kind, Def *d, Expr *e, Module *nested, int l
     u->kind = kind; u->def = d; u->expr = e; u->module = nested; u->local = local;
 }
 
+/* A name SANY records where it appears: a RECURSIVE operator's, a theorem's or an assumption's. */
+static void add_name(Module *m, Def *d) { add_unit(m, 4, d, NULL, NULL, 0); }
+
+static Def *thm_name(int name) {
+    Def *d = NEW(Def);
+    d->kind = D_THM;
+    d->name = name;
+    return d;
+}
+
 static int at_unit_start(void) {
     Tok *t = &P->t[P->pos];
     return t->kind == T_EOF || t->kind == T_END || t->kind == T_SEP || t->col == 1;
@@ -2370,13 +2395,15 @@ static Module *parse_module(Module *outer) {
         }
         if (is_kw(t, "ASSUME") || is_kw(t, "ASSUMPTION") || is_kw(t, "AXIOM")) {
             next();
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { next(); next(); }
+            int name = -1;
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { name = next()->id; next(); }
             add_unit(m, 2, NULL, parse_expr(), NULL, 0);
+            if (name >= 0) add_name(m, thm_name(name));
             continue;
         }
         if (is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY")) {
             next();
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { next(); next(); }
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { add_name(m, thm_name(next()->id)); next(); }
             parse_expr();
             while (!at_unit_start()) next();
             continue;
@@ -2389,7 +2416,7 @@ static Module *parse_module(Module *outer) {
         }
         if (is_kw(t, "RECURSIVE")) {
             next();
-            do parse_param(D_RECURSIVE); while (is_op(peek(), ",") && next());
+            do add_name(m, parse_param(D_RECURSIVE)); while (is_op(peek(), ",") && next());
             continue;
         }
         if (is_kw(t, "INSTANCE")) {
@@ -3927,9 +3954,9 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         if (def_level(d) == 0) {
             Arena *saved = arena;
             arena = &perm_arena;
-            jmp_buf *outer = handler, here;
+            sigjmp_buf *outer = handler, here;
             handler = &here;
-            if (setjmp(here)) { handler = outer; arena = saved; raise_error(); }
+            if (sigsetjmp(here, 0)) { handler = outer; arena = saved; raise_error(); }
             Ctx bare = {NULL, NULL};
             Value *v = eval(d->body, bare);
             handler = outer;
@@ -4100,6 +4127,7 @@ NATIVE(n_cardinality) {
 
 NATIVE(n_print) {
     UNUSED;
+    if (in_worker) worker_cannot();   /* the search prints in order */
     printf("%s  %s\n", pretty(a[0]), pretty(a[1]));
     fflush(stdout);
     return a[1];
@@ -4107,6 +4135,7 @@ NATIVE(n_print) {
 
 NATIVE(n_printt) {
     UNUSED;
+    if (in_worker) worker_cannot();
     printf("%s\n", pretty(a[0]));
     fflush(stdout);
     return TRUEV;
@@ -4292,9 +4321,9 @@ static int assignable(Expr *lhs, Ctx c) {
         if (lhs->kind != K_PRIME) return -1;
         lhs = lhs->args[0];
     }
-    while (lhs->kind == K_CALL && lhs->n == 0) {
+    while (lhs->kind == K_BOUND || (lhs->kind == K_CALL && lhs->n == 0)) {
         Def *d = lhs->def;
-        if (d->kind == D_PARAM || d->local == 2) {
+        if (lhs->kind == K_BOUND || d->kind == D_PARAM || d->local == 2) {
             Env *b = env_find(c.env, d);
             if (!b || !b->e) return -1;
             lhs = b->e;
@@ -4749,12 +4778,23 @@ static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
     table[j].state = idx + 1;
 }
 
+static char *fp_region;       /* shared memory the tables are taken from, in turn */
+static size_t fp_region_used, fp_region_size;
+
 static void fp_insert(int idx) {
     if ((nstates + 1) * 2 >= fp_size) {
         int size = fp_size ? fp_size * 2 : 1 << 16;
-        FpSlot *table = calloc((size_t)size, sizeof(FpSlot));
+        size_t bytes = sizeof(FpSlot) * (size_t)size;
+        FpSlot *table;
+        if (fp_region) {
+            if (fp_region_used + bytes > fp_region_size) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
+            table = (FpSlot *)(fp_region + fp_region_used);
+            fp_region_used += bytes;
+        } else {
+            table = calloc((size_t)size, sizeof(FpSlot));
+        }
         for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, fp_table[i].fp, fp_table[i].state - 1);
-        free(fp_table);
+        if (!fp_region) free(fp_table);
         fp_table = table;
         fp_size = size;
     }
@@ -4841,16 +4881,19 @@ static uint64_t fingerprint(Value **st) {
     return best;
 }
 
-static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
+static int nworkers = 1;   /* processes expanding states; with more than one, the store is shared */
+
+/* A new state whose encoding ends the store. */
+static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
+        if (nworkers > 1) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
     StateRec *r = &states[nstates];
     r->fp = fp;
-    r->off = store.n;
-    for (int i = 0; i < nvars; i++) encode(&store, st[i]);
-    r->len = (int)(store.n - r->off);
+    r->off = off;
+    r->len = (int)(store.n - off);
     r->parent = parent;
     r->action = action;
     r->depth = depth;
@@ -4858,6 +4901,17 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
     r->nedges = r->capedges = 0;
     fp_insert(nstates);
     return nstates++;
+}
+
+static void store_add(const char *bytes, size_t n) {
+    if (nworkers > 1 && store.n + n + 1 > store.cap) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
+    buf_add(&store, bytes, n);
+}
+
+static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
+    size_t off = store.n;
+    for (int i = 0; i < nvars; i++) encode(&store, st[i]);
+    return add_record(off, fp, parent, action, depth);
 }
 
 /* ---------------------------------------------------------------- reporting */
@@ -4933,9 +4987,9 @@ static void replay(Value **from, Value **to) {
    of the state it failed in, again to locate the error: from == NULL
    replays Init with its checks. The error happens again and ends it. */
 static void replay_error(Value **from) {
-    jmp_buf here, *saved = handler;
+    sigjmp_buf here, *saved = handler;
     handler = &here;
-    if (!setjmp(here)) {
+    if (!sigsetjmp(here, 0)) {
         replay_checks = !from;
         replay(from, NULL);
     }
@@ -5109,12 +5163,296 @@ static int next_emit(void) {
 static int check_liveness(void);
 static FILE *dump_file;
 
+/* Expands state idx: its successors join the search. Returns the exit
+   status of a violation it reports, 0 if none. */
+static int expand_state(int idx) {
+    expanding = idx;
+    expanded = idx + 1;
+    cur_level = states[idx].depth;
+    cur_state = decode_state(idx);
+    succ_count = 0;
+    for (int a = 0; a < nactions; a++) {
+        cur_action = a;
+        memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+        next_state = succ;
+        gen_target = succ;
+        gen(actions[a].e, actions[a].c, NULL);
+        if (violation) {
+            print_counts(nstates - expanded - (violation == TPP_VIOLATION_SAFETY ? 1 : 0), 1);
+            return violation;
+        }
+    }
+    if (succ_count == 0 && check_deadlock) {
+        printf("Error: Deadlock reached.\n");
+        print_trace(idx, NULL, 0);
+        print_counts(nstates - expanded, 1);
+        return TPP_VIOLATION_DEADLOCK;
+    }
+    arena_reset(&scratch_arena);
+    return 0;
+}
+
+/* ---------------------------------------------------------------- workers */
+
+/* Worker processes expand the states of a level in batches. They read the
+   store, the state records and the fingerprint set, which live in shared
+   memory, and write what they find to their own shared region. For each
+   state: whether it is clean (no error, violation or deadlock to report)
+   and its successors in order, each seen before the level, outside the
+   constraints, or new, with its encoding. The search merges the batches in
+   order and expands each state that is not clean itself, so it reports
+   exactly what one process would. */
+#define PARALLEL_LEVEL 256    /* smaller levels are expanded by the search alone */
+#define BATCH 32
+#define SEEN (-1)
+#define CONSTRAINED (-2)
+
+typedef struct { uint64_t fp; int action; int len; } Found;   /* len: SEEN, CONSTRAINED or bytes */
+typedef struct { int worker; size_t off; } Batch;
+
+typedef struct {
+    atomic_int next;          /* the next batch to take */
+    int lo, hi, nbatches;     /* the level */
+    FpSlot *fp_table;         /* the fingerprint set as the level starts */
+    int fp_size;
+} Control;
+
+static Control *control;
+static Batch *batches;
+static char **results;         /* each worker's region */
+static int (*to_worker)[2], (*from_worker)[2];
+static pid_t *worker_pids;
+static int workers_running, forked_strs;
+
+static char *w_out;            /* in a worker: its region, w_n bytes used */
+static size_t w_n;
+static int w_clean, w_found;
+static Buf w_bytes;
+static uint64_t *w_sent;       /* fingerprints of the new states it sent for the level */
+static int w_sent_size, w_nsent;
+
+/* Whether the worker sent the state fp for the level, which it then
+   records. Its batches merge in the order it took them, so by the time a
+   later mention of the state merges, the state is in the search. */
+static int w_was_sent(uint64_t fp) {
+    if (w_nsent * 2 >= w_sent_size) {
+        uint64_t *old = w_sent;
+        int size = w_sent_size;
+        w_sent_size = size ? size * 2 : 4096;
+        w_sent = calloc((size_t)w_sent_size, sizeof(uint64_t));
+        w_nsent = 0;
+        for (int i = 0; i < size; i++) if (old[i]) w_was_sent(old[i]);
+        free(old);
+    }
+    fp |= 1;   /* 0 marks an empty slot */
+    int j = (int)(fp & (uint64_t)(w_sent_size - 1));
+    for (; w_sent[j]; j = (j + 1) & (w_sent_size - 1)) if (w_sent[j] == fp) return 1;
+    w_sent[j] = fp;
+    w_nsent++;
+    return 0;
+}
+
+static void *shared(size_t bytes) {
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) { fputs("tpp: cannot reserve shared memory for workers\n", stderr); exit(TPP_ERROR); }
+    return p;
+}
+
+/* Puts the store, the state records and the fingerprint set in shared memory. */
+static void share_search(void) {
+    store.cap = (size_t)1 << 37;
+    store.s = shared(store.cap);
+    capstates = 1 << 29;
+    states = shared(sizeof(StateRec) * (size_t)capstates);
+    fp_region_size = (size_t)1 << 36;
+    fp_region = shared(fp_region_size);
+    control = shared(sizeof(Control));
+    batches = shared(sizeof(Batch) * (size_t)(capstates / BATCH + 1));
+    results = xmalloc(sizeof(char *) * (size_t)nworkers);
+    for (int i = 0; i < nworkers; i++) results[i] = shared((size_t)1 << 34);
+}
+
+static void w_put(const void *p, size_t n) {
+    memcpy(w_out + w_n, p, n);
+    w_n += n;
+}
+
+static int worker_emit(void) {
+    succ_count++;
+    for (int i = 0; i < nvars; i++) if (!succ[i]) { w_clean = 0; return 1; }
+    Found f = {0, cur_action, 0};
+    if (check_list(constraints, nconstraints, succ) >= 0 ||
+        check_actions(action_constraints, naction_constraints, cur_state, succ) >= 0) {
+        f.len = CONSTRAINED;
+        w_put(&f, sizeof f);
+        w_found++;
+        return 0;
+    }
+    f.fp = fingerprint(succ);
+    int seen = fp_find(f.fp) >= 0 || w_was_sent(f.fp);
+    if ((!seen && check_list(invariants, ninvariants, succ) >= 0) ||
+        check_actions(action_props, naction_props, cur_state, succ) >= 0) {
+        w_clean = 0;
+        return 1;
+    }
+    w_bytes.n = 0;
+    if (!seen) for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
+    f.len = seen ? SEEN : (int)w_bytes.n;
+    w_put(&f, sizeof f);
+    if (f.len > 0) w_put(w_bytes.s, w_bytes.n);
+    w_found++;
+    return 0;
+}
+
+static void worker_expand(int idx) {
+    size_t head = w_n;
+    w_n += 2 * sizeof(int);
+    w_clean = 1;
+    w_found = 0;
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        w_clean = 0;
+    } else {
+        cur_level = states[idx].depth;
+        cur_state = decode_state(idx);
+        succ_count = 0;
+        for (int a = 0; a < nactions && w_clean; a++) {
+            cur_action = a;
+            memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+            next_state = succ;
+            gen_target = succ;
+            gen(actions[a].e, actions[a].c, NULL);
+        }
+        if (succ_count == 0 && check_deadlock) w_clean = 0;
+    }
+    handler = NULL;
+    if (!w_clean) { w_n = head + 2 * sizeof(int); w_found = 0; }
+    int header[2] = {w_clean, w_found};
+    memcpy(w_out + head, header, sizeof header);
+    arena_reset(&scratch_arena);
+}
+
+static _Noreturn void worker_main(int id) {
+    in_worker = 1;
+    gen_emit = worker_emit;
+    w_out = results[id];
+    char c;
+    while (read(to_worker[id][0], &c, 1) == 1) {
+        fp_table = control->fp_table;
+        fp_size = control->fp_size;
+        w_n = 0;
+        if (w_nsent) memset(w_sent, 0, sizeof(uint64_t) * (size_t)w_sent_size);
+        w_nsent = 0;
+        for (;;) {
+            int b = atomic_fetch_add(&control->next, 1);
+            if (b >= control->nbatches) break;
+            batches[b].worker = id;
+            batches[b].off = w_n;
+            int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
+            for (int idx = lo; idx < hi; idx++) worker_expand(idx);
+        }
+        fflush(stdout);
+        if (write(from_worker[id][1], "x", 1) != 1) _exit(1);
+    }
+    _exit(0);
+}
+
+static void start_workers(void) {
+    fflush(stdout);
+    to_worker = xmalloc(sizeof *to_worker * (size_t)nworkers);
+    from_worker = xmalloc(sizeof *from_worker * (size_t)nworkers);
+    worker_pids = xmalloc(sizeof(pid_t) * (size_t)nworkers);
+    for (int i = 0; i < nworkers; i++) {
+        if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
+        pid_t pid = fork();
+        if (pid < 0) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
+        if (pid == 0) {
+            for (int j = 0; j < i; j++) { close(to_worker[j][1]); close(from_worker[j][0]); }
+            close(to_worker[i][1]);
+            close(from_worker[i][0]);
+            worker_main(i);
+        }
+        close(to_worker[i][0]);
+        close(from_worker[i][1]);
+        worker_pids[i] = pid;
+    }
+    workers_running = 1;
+    forked_strs = nstrs;
+}
+
+static void stop_workers(void) {
+    if (!workers_running) return;
+    for (int i = 0; i < nworkers; i++) close(to_worker[i][1]);
+    for (int i = 0; i < nworkers; i++) waitpid(worker_pids[i], NULL, 0);
+    workers_running = 0;
+}
+
+/* Merges the successors a worker found for state idx. */
+static const char *merge_state(int idx, const char *p, int nfound) {
+    expanding = idx;
+    expanded = idx + 1;
+    for (int k = 0; k < nfound; k++) {
+        Found f;
+        memcpy(&f, p, sizeof f);
+        p += sizeof f;
+        generated++;
+        if (f.len == CONSTRAINED) continue;
+        int found = fp_find(f.fp);
+        if (found < 0) {
+            /* Unseen as the level started, and not found since: new. */
+            size_t off = store.n;
+            store_add(p, (size_t)f.len);
+            int depth = states[idx].depth + 1;
+            found = add_record(off, f.fp, idx, f.action, depth);
+            if (depth > max_depth) max_depth = depth;
+        }
+        if (ntemporal_props) add_edge(idx, found, f.action);
+        if (f.len > 0) p += f.len;
+    }
+    return p;
+}
+
+static int expand_level(int lo, int hi) {
+    /* Workers know the strings there were when they started; states may
+       now hold newer ones. */
+    if (workers_running && nstrs != forked_strs) stop_workers();
+    if (!workers_running) start_workers();
+    control->lo = lo;
+    control->hi = hi;
+    control->nbatches = (hi - lo + BATCH - 1) / BATCH;
+    control->fp_table = fp_table;
+    control->fp_size = fp_size;
+    atomic_store(&control->next, 0);
+    fflush(stdout);
+    char c;
+    for (int i = 0; i < nworkers; i++)
+        if (write(to_worker[i][1], "x", 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+    for (int i = 0; i < nworkers; i++)
+        if (read(from_worker[i][0], &c, 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+    for (int b = 0; b < control->nbatches; b++) {
+        const char *p = results[batches[b].worker] + batches[b].off;
+        int end = lo + (b + 1) * BATCH < hi ? lo + (b + 1) * BATCH : hi;
+        for (int idx = lo + b * BATCH; idx < end; idx++) {
+            int header[2];
+            memcpy(header, p, sizeof header);
+            p += sizeof header;
+            if (header[0]) { p = merge_state(idx, p, header[1]); continue; }
+            int status = expand_state(idx);
+            if (status) return status;
+        }
+    }
+    return 0;
+}
+
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
+    if (dump_file) nworkers = 1;
+    if (nworkers > 1) share_search();
     succ = NEWN(Value *, nvars);
-    jmp_buf here;
+    sigjmp_buf here;
     handler = &here;
-    if (setjmp(here)) {
+    if (sigsetjmp(here, 0)) {
         handler = NULL;
         int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
         if (expanding < 0) {
@@ -5167,32 +5505,12 @@ static int search(void) {
     fflush(stdout);
     gen_init = 0;
     gen_emit = next_emit;
-    for (int idx = 0; idx < nstates; idx++) {
-        expanding = idx;
-        expanded = idx + 1;
-        cur_level = states[idx].depth;
-        Value **st = decode_state(idx);
-        cur_state = st;
-        succ_count = 0;
-        for (int a = 0; a < nactions; a++) {
-            cur_action = a;
-            memset(succ, 0, sizeof(Value *) * (size_t)nvars);
-            next_state = succ;
-            gen_target = succ;
-            gen(actions[a].e, actions[a].c, NULL);
-            if (violation) {
-                int queued = nstates - expanded - (violation == TPP_VIOLATION_SAFETY ? 1 : 0);
-                print_counts(queued, violation != TPP_FAILURE_EVAL || 1);
-                return violation;
-            }
-        }
-        if (succ_count == 0 && check_deadlock) {
-            printf("Error: Deadlock reached.\n");
-            print_trace(idx, NULL, 0);
-            print_counts(nstates - expanded, 1);
-            return TPP_VIOLATION_DEADLOCK;
-        }
-        arena_reset(&scratch_arena);
+    for (int lo = 0; lo < nstates;) {
+        int hi = nstates, status = 0;
+        if (nworkers > 1 && hi - lo >= PARALLEL_LEVEL) status = expand_level(lo, hi);
+        else for (int idx = lo; idx < hi && !status; idx++) status = expand_state(idx);
+        if (status) return status;
+        lo = hi;
     }
     expanding = -1;
     if (ntemporal_props) {
@@ -5522,9 +5840,9 @@ static void evaluate_constants(Module *m) {
     for (int i = 0; i < m->ndecls; i++) {
         Def *c = m->decls[i];
         if (c->kind != D_CONST || !c->replacement || c->replacement->nparams) continue;
-        jmp_buf here;
+        sigjmp_buf here;
         handler = &here;
-        if (setjmp(here)) {
+        if (sigsetjmp(here, 0)) {
             handler = NULL;
             Buf b = {0};
             loc_text(&b, error_expr);
@@ -5540,9 +5858,9 @@ static void evaluate_constants(Module *m) {
         if (u->kind != 0) continue;
         Def *d = u->def;
         if (d->kind != D_OP || d->nparams || d->native || d->cache || def_level(d) != 0) continue;
-        jmp_buf here;
+        sigjmp_buf here;
         handler = &here;
-        if (!setjmp(here)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
         handler = NULL;
     }
     arena = saved;
@@ -5553,9 +5871,9 @@ static void check_assumptions(Module *m, int *done_status) {
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         if (u->kind != 2) continue;
-        jmp_buf here;
+        sigjmp_buf here;
         handler = &here;
-        if (setjmp(here)) {
+        if (sigsetjmp(here, 0)) {
             handler = NULL;
             Buf b = {0};
             loc_text(&b, u->expr);
@@ -5581,14 +5899,148 @@ static void check_assumptions(Module *m, int *done_status) {
     }
 }
 
+/* ---------------------------------------------------------------- TLC's order of the variables */
+
+/* TLC lists the variables of a state in the order the root module's
+   context, a java.util.Hashtable, enumerates them, reversed. That order
+   follows from the names the context holds and the order SANY put them
+   in: its built-in operators, in reverse, then the module's symbols as
+   SANY meets them. */
+typedef struct { const char *name; int module; int local; Def *def; } CtxName;
+typedef struct { CtxName *a; int n, cap; } CtxNames;
+
+static const char *sany_builtins[] = {
+    "STRING", "FALSE", "TRUE", "BOOLEAN", "=", "/=", ".", "'", "\\lnot", "\\neg", "\\land",
+    "\\lor", "\\equiv", "=>", "SUBSET", "UNION", "DOMAIN", "\\subseteq", "\\in", "\\notin", "\\",
+    "\\intersect", "\\union", "\\times", "~>", "[]", "<>", "ENABLED", "UNCHANGED", "\\cdot",
+    "-+->", "$AngleAct", "$BoundedChoose", "$BoundedExists", "$BoundedForall", "$CartesianProd",
+    "$Case", "$ConjList", "$DisjList", "$Except", "$FcnApply", "$FcnConstructor", "$IfThenElse",
+    "$NonRecursiveFcnSpec", "$Pair", "$RcdConstructor", "$RcdSelect", "$RecursiveFcnSpec", "$Seq",
+    "$SetEnumerate", "$SetOfAll", "$SetOfFcns", "$SetOfRcds", "$SF", "$SquareAct", "$SubsetOf",
+    "$TemporalExists", "$TemporalForall", "$TemporalWhile", "$Tuple", "$UnboundedChoose",
+    "$UnboundedExists", "$UnboundedForall", "$WF", "$Nop", "$Qed", "$Pfcase", "$Have", "$Take",
+    "$Pick", "$Witness", "$Suffices", NULL
+};
+
+static void ctx_put(CtxNames *c, CtxName e) {
+    for (int i = 0; i < c->n; i++) if (c->a[i].module == e.module && strcmp(c->a[i].name, e.name) == 0) return;
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 64;
+        c->a = xrealloc(c->a, sizeof(CtxName) * (size_t)c->cap);
+    }
+    c->a[c->n++] = e;
+}
+
+static CtxNames context_enumeration(Module *m);
+
+/* The symbols of m's context, in the order SANY adds them. */
+static CtxNames context_names(Module *m) {
+    CtxNames c = {0};
+    for (int i = 0; i < m->nextends; i++) {
+        CtxNames x = context_names(load_module(m->extends[i], m));
+        for (int k = 0; k < x.n; k++) if (!x.a[k].local) ctx_put(&c, x.a[k]);
+        free(x.a);
+    }
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        Def *d = u->def;
+        if (u->kind == 2) continue;
+        if (u->kind == 3) { ctx_put(&c, (CtxName){S(u->module->name), 1, 0, NULL}); continue; }
+        if (u->kind == 1 || d->kind == D_INST) {
+            /* An instance brings its module's definitions, then its theorems
+               and assumptions, as that module's context enumerates them;
+               a named instance I brings Op as I!Op, and instances too. */
+            CtxNames t = context_enumeration(d->target);
+            for (int pass = 0; pass < 2; pass++)
+                for (int k = 0; k < t.n; k++) {
+                    CtxName e = t.a[k];
+                    if (e.local || e.module) continue;
+                    int kind = e.def->kind;
+                    int op = kind == D_OP || kind == D_FCN || kind == D_RECURSIVE || (kind == D_INST && u->kind == 0);
+                    if (pass == 0 ? !op : kind != D_THM) continue;
+                    if (u->kind == 0) {
+                        char *name = xmalloc(strlen(S(d->name)) + strlen(e.name) + 2);
+                        sprintf(name, "%s!%s", S(d->name), e.name);
+                        e.name = name;
+                    }
+                    e.local = u->local;
+                    ctx_put(&c, e);
+                }
+            free(t.a);
+            if (u->kind == 1) continue;
+        }
+        ctx_put(&c, (CtxName){S(d->name), 0, u->local, d});
+    }
+    return c;
+}
+
+static unsigned java_hash(const char *s) {
+    unsigned h = 0;
+    for (; *s; s++) h = 31 * h + (unsigned char)*s;
+    return h & 0x7fffffff;
+}
+
+/* The symbols of m's context, in the order its Hashtable enumerates them:
+   the table holds SANY's built-in operators, put in reverse, then the
+   symbols. It starts with 11 buckets and grows to 2n + 1 when it is three
+   quarters full, putting each bucket's entries, from the last bucket to
+   the first, at the head of their new bucket. */
+static CtxNames context_enumeration(Module *m) {
+    CtxNames c = context_names(m);
+    int nbuiltins = (int)(sizeof sany_builtins / sizeof *sany_builtins) - 1, nkeys = nbuiltins + c.n;
+    unsigned *hash = xmalloc(sizeof(unsigned) * (size_t)nkeys);
+    int *link = xmalloc(sizeof(int) * (size_t)nkeys);
+    for (int k = 0; k < nkeys; k++) hash[k] = java_hash(k < nbuiltins ? sany_builtins[nbuiltins - 1 - k] : c.a[k - nbuiltins].name);
+    int cap = 11, count = 0, *head = xmalloc(sizeof(int) * (size_t)cap);
+    for (int i = 0; i < cap; i++) head[i] = -1;
+    for (int k = 0; k < nkeys; k++) {
+        if (count >= cap * 3 / 4) {
+            int bigger = cap * 2 + 1, *heads = xmalloc(sizeof(int) * (size_t)bigger);
+            for (int i = 0; i < bigger; i++) heads[i] = -1;
+            for (int i = cap - 1; i >= 0; i--)
+                for (int e = head[i], next; e >= 0; e = next) {
+                    next = link[e];
+                    link[e] = heads[hash[e] % (unsigned)bigger];
+                    heads[hash[e] % (unsigned)bigger] = e;
+                }
+            free(head);
+            cap = bigger;
+            head = heads;
+        }
+        link[k] = head[hash[k] % (unsigned)cap];
+        head[hash[k] % (unsigned)cap] = k;
+        count++;
+    }
+    CtxNames out = {0};
+    for (int i = cap - 1; i >= 0; i--)
+        for (int e = head[i]; e >= 0; e = link[e])
+            if (e >= nbuiltins) ctx_put(&out, c.a[e - nbuiltins]);
+    free(hash);
+    free(link);
+    free(head);
+    free(c.a);
+    return out;
+}
+
+/* Puts the variables in TLC's order: its context's, reversed. */
+static void order_variables(void) {
+    CtxNames c = context_enumeration(root);
+    Def **order = NEWN(Def *, nvars);
+    int n = nvars;
+    for (int i = 0; i < c.n; i++)
+        if (c.a[i].def && c.a[i].def->kind == D_VAR && n > 0) order[--n] = c.a[i].def;
+    if (n == 0) memcpy(vars, order, sizeof(Def *) * (size_t)nvars);
+    for (int i = 0; i < nvars; i++) vars[i]->var_index = i;
+    free(c.a);
+}
+
 static int setup_model(void) {
-    /* State variables, in declaration order. */
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
             vars = xrealloc(vars, sizeof(Def *) * (size_t)(nvars + 1));
-            root->decls[i]->var_index = nvars;
             vars[nvars++] = root->decls[i];
         }
+    order_variables();
     Def *spec = NULL, *init = NULL, *next = NULL;
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
@@ -6422,9 +6874,9 @@ int tpp_check(const TPPOptions *o) {
     }
     if (!next_expr) config_error("The configuration file did not specify the next state action.");
     arena = &perm_arena;
-    jmp_buf here;
+    sigjmp_buf here;
     handler = &here;
-    if (setjmp(here)) {
+    if (sigsetjmp(here, 0)) {
         handler = NULL;
         print_error_message();
         return TPP_FAILURE_EVAL;
@@ -6432,7 +6884,10 @@ int tpp_check(const TPPOptions *o) {
     split_action(next_expr, root_ctx, next_expr->kind == K_CALL ? next_expr->def->name : intern("Next"));
     handler = NULL;
     if (o->dump) dump_file = fopen(o->dump, "w");
-    return search();
+    nworkers = o->workers > 1 ? o->workers : 1;
+    status = search();
+    stop_workers();
+    return status;
 }
 
 #ifndef TPP_NO_MAIN
@@ -6442,7 +6897,10 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
         else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
-        else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) i++;
+        else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) {
+            i++;
+            o.workers = strcmp(argv[i], "auto") == 0 ? (int)sysconf(_SC_NPROCESSORS_ONLN) : atoi(argv[i]);
+        }
         else if (strcmp(argv[i], "-dump") == 0 && i + 1 < argc) {
             if (strcmp(argv[i + 1], "dot") == 0 && i + 2 < argc) i++;
             o.dump = argv[++i];
@@ -6451,7 +6909,7 @@ int main(int argc, char **argv) {
         else o.spec = argv[i];
     }
     if (!o.spec) {
-        fprintf(stderr, "usage: tpp [-config FILE] [-deadlock] [-dump dot FILE] SPEC\n");
+        fprintf(stderr, "usage: tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n");
         return TPP_ERROR;
     }
     return tpp_check(&o);
