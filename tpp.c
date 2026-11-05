@@ -390,6 +390,15 @@ static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
 
 static void print_value(Buf *b, Value *v);
 static Value *normalize_set(Value *v);
+static int set_is_infinite(Value *s);
+static int64_t set_size(Value *s);
+
+/* A lazy set TLC prints by its elements; others it prints as written. */
+static int expandable(Value *v) {
+    if (set_is_infinite(v)) return 0;
+    int64_t n = set_size(v);
+    return n >= 0 && n < 2000000;
+}
 
 /* A function whose domain is 1..n prints as a tuple. */
 static int fcn_is_tuple(Value *f) {
@@ -443,6 +452,34 @@ static void print_value(Buf *b, Value *v) {
             print_value(b, v->u.l.b);
             return;
         }
+        if (expandable(v)) { print_value(b, normalize_set(v)); return; }
+        if (v->lazy == L_SUBSET) { buf_puts(b, "SUBSET "); print_value(b, v->u.l.a); return; }
+        if (v->lazy == L_FCNSET) {
+            buf_puts(b, "[");
+            print_value(b, v->u.l.a);
+            buf_puts(b, " -> ");
+            print_value(b, v->u.l.b);
+            buf_puts(b, "]");
+            return;
+        }
+        if (v->lazy == L_RCDSET) {
+            buf_puts(b, "[");
+            for (int i = 0; i < v->n; i++) {
+                buf_printf(b, "%s%s: ", i ? ", " : "", S(v->u.l.names[i]->u.i));
+                print_value(b, v->u.l.names[v->n + i]);
+            }
+            buf_puts(b, "]");
+            return;
+        }
+        if (v->lazy == L_TIMES) {
+            buf_puts(b, "(");
+            for (int i = 0; i < v->n; i++) {
+                if (i) buf_puts(b, " \\X ");
+                print_value(b, v->u.l.names[v->n + i]);
+            }
+            buf_puts(b, ")");
+            return;
+        }
         print_value(b, normalize_set(v));
         return;
     case V_SET:
@@ -493,10 +530,9 @@ static char *value_str(Value *v) {
 
 /* TLC's pretty printer (tlc2.pprint.Format) breaks a value longer than
    the line width, element by element (§7.6). */
-static int set_is_infinite(Value *s);
 
 static int pp_plain(Value *v) {
-    if (v->kind == V_INTERVAL || (v->kind == V_LAZY && set_is_infinite(v))) return 1;
+    if (v->kind == V_INTERVAL || (v->kind == V_LAZY && !expandable(v))) return 1;
     if (v->kind == V_LAZY) return pp_plain(normalize_set(v));
     if (v->kind == V_SET)
         for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
@@ -553,7 +589,7 @@ static void pp_pairs(Buf *b, Value *f, int record, int width, int trailer, const
 }
 
 static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad) {
-    if (v->kind == V_LAZY && !set_is_infinite(v)) v = normalize_set(v);
+    if (v->kind == V_LAZY && expandable(v)) v = normalize_set(v);
     char *flat = value_str(v);
     if ((int)strlen(flat) <= width - trailer || pp_plain(v) || v->n == 0) { buf_puts(b, flat); return; }
     if (v->kind == V_SET) {
@@ -868,6 +904,27 @@ static Value *enumerate(Value *s) {
 }
 
 static Value *normalize_set(Value *v) { return enumerate(v); }
+
+/* The number of elements of a finite set, without enumerating a product of
+   sets, or -1 when it is not a 32-bit int, TLC's count. */
+static int64_t set_size(Value *s) {
+    if (s->kind != V_LAZY || (s->lazy != L_SUBSET && s->lazy != L_FCNSET && s->lazy != L_RCDSET && s->lazy != L_TIMES))
+        return enumerate(s)->n;
+    int64_t n = 1, k;
+    if (s->lazy == L_SUBSET) {
+        if ((k = set_size(s->u.l.a)) < 0 || k > 30) return -1;
+        return (int64_t)1 << k;
+    }
+    if (s->lazy == L_FCNSET) {
+        int64_t r = set_size(s->u.l.b);
+        if ((k = set_size(s->u.l.a)) < 0 || r < 0) return -1;
+        for (; k > 0 && n; k--) if ((n *= r) > 2147483647) return -1;
+        return n;
+    }
+    for (int i = 0; i < s->n; i++)
+        if ((k = set_size(s->u.l.names[s->n + i])) < 0 || (n *= k) > 2147483647) return -1;
+    return n;
+}
 
 static int set_member(Value *v, Value *s);
 
@@ -1698,6 +1755,8 @@ static int binder_ahead(void) {
     return peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), "\\in");
 }
 
+static _Noreturn void semantic_error(Expr *where, const char *fmt, ...);
+
 static Expr *parse_junction(Tok *bullet) {
     int col = bullet->col;
     int op = canonical(bullet->id);
@@ -1999,7 +2058,10 @@ static Expr *parse_primary(void) {
                 int n = 0;
                 do {
                     if (n == 256) syntax_error("record too long");
+                    Tok *field = peek();
                     names[n] = expect_ident();
+                    for (int i = 0; i < n; i++)
+                        if (names[i] == names[n]) semantic_error(mk_expr(X_NAME, field), "Non-unique fields in constructor.");
                     expect_op(set ? ":" : "|->");
                     a[n++] = parse_expr();
                 } while (is_op(peek(), ",") && next());
@@ -3795,8 +3857,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
             if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
             s->u.l.names[e->n + i] = a;
         }
-        if (!set_is_infinite(s)) return enumerate(s);
-        return s;
+        return expandable(s) ? enumerate(s) : s;
     }
     case X_SETENUM: {
         List l = {0};
@@ -4102,11 +4163,12 @@ NATIVE(n_range) {
 }
 
 /* A sequence: a function on 1..n, or a string. */
-static Value *seq_arg(Value *v, int which, const char *op) {
-    if (is_fcn(v) && fcn_is_tuple(v)) return v;
-    if (is_fcn(v) && v->n == 0) return v;
-    fail_module("The %s argument of %s should be a sequence, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
+static Value *seq_arg(Value *v, const char *error) {
+    if (is_fcn(v) && (fcn_is_tuple(v) || v->n == 0)) return v;
+    fail_module("%s:\n%s", error, pretty(v));
 }
+
+#define NOT_SEQ(arg, op) "The " arg " of " op " should be a sequence, but instead it is"
 
 static Value *seq_of(Value *f) {
     if (f->kind == V_TUPLE) return f;
@@ -4120,7 +4182,7 @@ NATIVE(n_seq) { UNUSED; Value *s = mk_lazy(L_SEQ); s->u.l.a = a[0]; return s; }
 NATIVE(n_len) {
     UNUSED;
     if (a[0]->kind == V_STR) return mk_int(strs[a[0]->u.i].len);
-    return mk_int(seq_arg(a[0], 1, "Len")->n);
+    return mk_int(seq_arg(a[0], NOT_SEQ("argument", "Len"))->n);
 }
 
 NATIVE(n_concat) {
@@ -4133,7 +4195,8 @@ NATIVE(n_concat) {
         free(b.s);
         return mk_str(id);
     }
-    Value *x = seq_arg(a[0], 1, "\\o"), *y = seq_arg(a[1], 2, "\\o");
+    Value *x = seq_arg(a[0], "Evaluating an expression of the form s \\o t when s is not a sequence"),
+          *y = seq_arg(a[1], "Evaluating an expression of the form t \\o s when s is not a sequence");
     Value *t = mk_tuple(x->n + y->n);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     for (int i = 0; i < y->n; i++) t->u.fcn.vals[x->n + i] = y->u.fcn.vals[i];
@@ -4142,7 +4205,7 @@ NATIVE(n_concat) {
 
 NATIVE(n_append) {
     UNUSED;
-    Value *x = seq_arg(a[0], 1, "Append");
+    Value *x = seq_arg(a[0], "Evaluating an expression of the form Append(v, s) when s is not a sequence");
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     t->u.fcn.vals[x->n] = a[1];
@@ -4151,14 +4214,14 @@ NATIVE(n_append) {
 
 NATIVE(n_head) {
     UNUSED;
-    Value *x = seq_arg(a[0], 1, "Head");
+    Value *x = seq_arg(a[0], NOT_SEQ("argument", "Head"));
     if (x->n == 0) fail_module("Attempted to apply Head to the empty sequence.");
     return x->u.fcn.vals[0];
 }
 
 NATIVE(n_tail) {
     UNUSED;
-    Value *x = seq_arg(a[0], 1, "Tail");
+    Value *x = seq_arg(a[0], NOT_SEQ("argument", "Tail"));
     if (x->n == 0) fail_module("Attempted to apply Tail to the empty sequence.");
     Value *t = mk_tuple(x->n - 1);
     for (int i = 1; i < x->n; i++) t->u.fcn.vals[i - 1] = x->u.fcn.vals[i];
@@ -4167,7 +4230,7 @@ NATIVE(n_tail) {
 
 NATIVE(n_subseq) {
     UNUSED;
-    Value *x = seq_arg(a[0], 1, "SubSeq");
+    Value *x = seq_arg(a[0], NOT_SEQ("first argument", "SubSeq"));
     int64_t m = int_arg(a[1], 2, "SubSeq"), n = int_arg(a[2], 3, "SubSeq");
     if (m > n) return mk_tuple(0);
     if (m < 1 || n > x->n)
@@ -4179,7 +4242,7 @@ NATIVE(n_subseq) {
 
 NATIVE(n_selectseq) {
     UNUSED;
-    Value *x = seq_arg(a[0], 1, "SelectSeq");
+    Value *x = seq_arg(a[0], NOT_SEQ("first argument", "SelectSeq"));
     List l = {0};
     for (int i = 0; i < x->n; i++) {
         Value *r = apply_oper(a[1], &x->u.fcn.vals[i], 1, call);
@@ -4195,9 +4258,14 @@ NATIVE(n_isfinite) { UNUSED; return BOOLV(is_set(a[0]) && !set_is_infinite(a[0])
 
 NATIVE(n_cardinality) {
     UNUSED;
-    if (!is_set(a[0])) fail_module("The argument of Cardinality should be a finite set, but instead it is:\n%s", pretty(a[0]));
-    if (set_is_infinite(a[0])) fail_module("Attempted to compute the cardinality of the infinite set\n%s.", pretty(a[0]));
-    return mk_int(enumerate(a[0])->n);
+    if (!is_set(a[0]) || set_is_infinite(a[0])) fail_module("Attempted to compute cardinality of the value\n%s", pretty(a[0]));
+    int64_t n = set_size(a[0]);
+    if (n < 0)
+        fail_module("Attempted to apply the operator overridden by the Java method\n"
+                    "public static tlc2.value.impl.IntValue tlc2.module.FiniteSets.Cardinality(tlc2.value.impl.Value),\n"
+                    "but it produced the following error:\nOverflow when computing the number of elements in%s%s",
+                    a[0]->lazy == L_TIMES ? " " : ":\n", pretty(a[0]));
+    return mk_int(n);
 }
 
 NATIVE(n_print) {
@@ -4283,7 +4351,7 @@ NATIVE(n_permutations) {
 
 NATIVE(n_sortseq) {
     UNUSED;
-    Value *x = seq_of(seq_arg(a[0], 1, "SortSeq"));
+    Value *x = seq_of(seq_arg(a[0], NOT_SEQ("first argument", "SortSeq")));
     Value *t = mk_tuple(x->n);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     for (int i = 1; i < t->n; i++) {
