@@ -767,6 +767,20 @@ static int vcmp(Value *a, Value *b) {
     return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
 }
 
+/* vcmp, inline for atoms and tuples of atoms, the common elements of sets. */
+static inline int vcmp_quick(Value *a, Value *b) {
+    if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
+    if (a->kind == V_TUPLE && b->kind == V_TUPLE && a->n == b->n) {
+        for (int i = 0; i < a->n; i++) {
+            Value *x = a->u.fcn.vals[i], *y = b->u.fcn.vals[i];
+            if (x->kind != y->kind || x->kind > V_MODEL) return vcmp(a, b);
+            if (x->u.i != y->u.i) return x->u.i < y->u.i ? -1 : 1;
+        }
+        return 0;
+    }
+    return vcmp(a, b);
+}
+
 static _Noreturn void equality_error(Value *a, Value *b) {
     const char *k = kind_name(a);
     if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", a->n ? pretty(a) : "<< >>", pretty(b));
@@ -1061,7 +1075,7 @@ static int set_member(Value *v, Value *s) {
         /* TLC's search: its probes decide which element an error names. */
         while (lo < hi) {
             int mid = (lo + hi) >> 1;
-            int c = vcmp(v, s->u.set.elems[mid]);
+            int c = vcmp_quick(v, s->u.set.elems[mid]);
             if (!c) return 1;
             if (c < 0) hi = mid; else lo = mid + 1;
         }
