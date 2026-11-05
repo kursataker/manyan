@@ -245,13 +245,14 @@ enum {
 };
 
 enum LazyKind {
-    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES
+    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_CUP, L_CAP, L_DIFF
 };
 
 struct Value {
     unsigned char kind;
     unsigned char lazy;      /* LazyKind of a V_LAZY */
     unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
+    unsigned char perm;      /* a V_LAZY made in the permanent arena */
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
@@ -264,8 +265,8 @@ struct Value {
     } u;
 };
 
-static Value value_true = {V_BOOL, 0, 0, 0, {.i = 1}};
-static Value value_false = {V_BOOL, 0, 0, 0, {.i = 0}};
+static Value value_true = {V_BOOL, 0, 0, 0, 0, {.i = 1}};
+static Value value_false = {V_BOOL, 0, 0, 0, 0, {.i = 0}};
 #define TRUEV (&value_true)
 #define FALSEV (&value_false)
 #define BOOLV(b) ((b) ? TRUEV : FALSEV)
@@ -324,6 +325,7 @@ static Value *mk_lazy(int kind) {
     Value *v = NEW(Value);
     v->kind = V_LAZY;
     v->lazy = (unsigned char)kind;
+    v->perm = arena == &perm_arena;
     return v;
 }
 
@@ -360,6 +362,9 @@ static const char *kind_string(Value *v) {
     case L_RCDSET: return "a set of the form [d1 : S1, ... , dN : SN]";
     case L_FILTER: return "a set of the form {x \\in S : expr}";
     case L_TIMES: return "a cartesian product";
+    case L_CUP: return "a set of the form S \\cup T";
+    case L_CAP: return "a set of the form S \\cap T";
+    case L_DIFF: return "a set of the form S \\ T";
     default: return "a special set constant";
     }
 }
@@ -417,6 +422,12 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_INT) { buf_puts(b, "Int"); return; }
         if (v->lazy == L_STRING) { buf_puts(b, "STRING"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
+        if (v->lazy >= L_CUP) {
+            print_value(b, v->u.l.a);
+            buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
+            print_value(b, v->u.l.b);
+            return;
+        }
         print_value(b, normalize_set(v));
         return;
     case V_SET:
@@ -720,7 +731,9 @@ static int set_is_infinite(Value *s) {
     switch (s->lazy) {
     case L_NAT: case L_INT: case L_STRING: case L_SEQ: return 1;
     case L_SUBSET: case L_FILTER: return set_is_infinite(s->u.l.a);
-    case L_FCNSET: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
+    case L_FCNSET: case L_CUP: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
+    case L_CAP: return set_is_infinite(s->u.l.a) && set_is_infinite(s->u.l.b);
+    case L_DIFF: return set_is_infinite(s->u.l.a);
     case L_RCDSET: case L_TIMES:
         for (int i = 0; i < s->n; i++) if (set_is_infinite(s->u.l.names[s->n + i])) return 1;
         return 0;
@@ -806,13 +819,17 @@ static Value *enumerate(Value *s) {
         return list_set(&out);
     }
     case L_FILTER: {
+        if (s->u.l.b) return s->u.l.b;
         if (set_is_infinite(s->u.l.a))
             fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
         Value *base = enumerate(s->u.l.a);
         List out = {0};
         for (int i = 0; i < base->n; i++)
             if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
-        return list_set(&out);
+        Value *set = list_set(&out);
+        /* Keep the elements unless they would outlive the filter's arena. */
+        if (!s->perm || arena == &perm_arena) s->u.l.b = set;
+        return set;
     }
     default:
         fail("TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
@@ -889,7 +906,11 @@ static int set_member(Value *v, Value *s) {
             return 1;
         }
         case L_FILTER:
+            if (s->u.l.b) return set_member(v, s->u.l.b);
             return set_member(v, s->u.l.a) && filter_member_test(s, v) == TRUEV;
+        case L_CUP: return set_member(v, s->u.l.a) || set_member(v, s->u.l.b);
+        case L_CAP: return set_member(v, s->u.l.a) && set_member(v, s->u.l.b);
+        case L_DIFF: return set_member(v, s->u.l.a) && !set_member(v, s->u.l.b);
         }
         return 0;
     default:
@@ -897,7 +918,16 @@ static int set_member(Value *v, Value *s) {
     }
 }
 
+/* A set operation whose result may be infinite stays lazy (§7). */
+static Value *lazy_op(int kind, Value *a, Value *b) {
+    Value *s = mk_lazy(kind);
+    s->u.l.a = a;
+    s->u.l.b = b;
+    return s;
+}
+
 static Value *set_union(Value *a, Value *b) {
+    if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
     a = enumerate(a); b = enumerate(b);
     List l = {0};
     for (int i = 0; i < a->n; i++) list_add(&l, a->u.set.elems[i]);
@@ -906,6 +936,10 @@ static Value *set_union(Value *a, Value *b) {
 }
 
 static Value *set_inter(Value *a, Value *b) {
+    if (set_is_infinite(a)) {
+        if (set_is_infinite(b)) return lazy_op(L_CAP, a, b);
+        Value *t = a; a = b; b = t;
+    }
     a = enumerate(a);
     List l = {0};
     for (int i = 0; i < a->n; i++) if (set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
@@ -913,6 +947,7 @@ static Value *set_inter(Value *a, Value *b) {
 }
 
 static Value *set_minus(Value *a, Value *b) {
+    if (set_is_infinite(a)) return lazy_op(L_DIFF, a, b);
     a = enumerate(a);
     List l = {0};
     for (int i = 0; i < a->n; i++) if (!set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
@@ -3126,24 +3161,66 @@ static Env *mk_binding(Def *d, Value *v, Env *next) {
     return b;
 }
 
-static Value *lambda_apply(Value *f, Value *a, Expr *where) {
-    for (int i = f->n - 1; i >= 0; i--)
-        if (veq(f->u.l.names[2 * i], a)) return f->u.l.names[2 * i + 1];
-    if (!set_member(a, f->u.l.a))
-        fail_at(where, "Attempted to apply function to argument %s, which is not in the domain of the function.", pretty(a));
-    Expr *e = f->u.l.expr;
-    Env *env = f->u.l.env;
+/* The domain of [x \in S, <<y, z>> \in T |-> e]: the bound set, or the
+   product of one set per variable (a tuple pattern is one). */
+static Value *bounds_domain(Bound *bs, int nb, Ctx c) {
     int total = 0, k = 0;
-    for (int i = 0; i < e->nb; i++) total += e->bounds[i].tuple ? 1 : e->bounds[i].n;
-    for (int i = 0; i < e->nb; i++) {
-        Bound *b = &e->bounds[i];
+    for (int i = 0; i < nb; i++) {
+        if (!bs[i].set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(bs[i].names[0]));
+        total += bs[i].tuple ? 1 : bs[i].n;
+    }
+    Value *dom = mk_lazy(L_TIMES);
+    dom->n = total;
+    dom->u.l.names = NEWN(Value *, 2 * total);
+    for (int i = 0; i < nb; i++) {
+        Value *set = eval(bs[i].set, c);
+        if (!is_set(set)) fail_at(bs[i].set, "Attempted to enumerate a value that is not a set:\n%s", pretty(set));
+        for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) dom->u.l.names[total + k++] = set;
+    }
+    if (total == 1) return dom->u.l.names[1];
+    return set_is_infinite(dom) ? dom : enumerate(dom);
+}
+
+/* Binds the variables of the bounds to the parts of a domain element. */
+static Env *bind_key(Bound *bs, int nb, Value *key, Env *env, Expr *where) {
+    int total = 0, k = 0;
+    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    for (int i = 0; i < nb; i++) {
+        Bound *b = &bs[i];
         for (int j = 0; j < (b->tuple ? 1 : b->n); j++, k++) {
-            Value *part = total == 1 ? a : fcn_apply(a, mk_int(k + 1), where);
+            Value *part = total == 1 ? key : fcn_apply(key, mk_int(k + 1), where);
             if (!b->tuple) { env = mk_binding(b->defs[j], part, env); continue; }
             for (int m = 0; m < b->n; m++) env = mk_binding(b->defs[m], fcn_apply(part, mk_int(m + 1), where), env);
         }
     }
-    return eval(e->args[0], (Ctx){env, f->u.l.inst});
+    return env;
+}
+
+/* A function over an infinite domain: [x \in S |-> e] (expr) or a
+   function definition (def), kept as its definition. */
+static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
+    Value *f = NEW(Value);
+    f->kind = V_LAMBDA;
+    f->u.l.a = dom;
+    f->u.l.expr = e;
+    f->u.l.binder = d;
+    f->u.l.env = c.env;
+    f->u.l.inst = c.inst;
+    return f;
+}
+
+static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where);
+
+static Value *lambda_apply(Value *f, Value *a, Expr *where) {
+    for (int i = f->n - 1; i >= 0; i--)
+        if (veq(f->u.l.names[2 * i], a)) return f->u.l.names[2 * i + 1];
+    Ctx c = {f->u.l.env, f->u.l.inst};
+    if (f->u.l.binder) return fcndef_apply(f->u.l.binder, a, c, where);
+    if (!set_member(a, f->u.l.a))
+        fail_at(where, "Attempted to apply function to argument %s, which is not in the domain of the function.", pretty(a));
+    Expr *e = f->u.l.expr;
+    c.env = bind_key(e->bounds, e->nb, a, c.env, where);
+    return eval(e->args[0], c);
 }
 
 static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {
@@ -3315,46 +3392,11 @@ static int choose_fn(Ctx c, void *data) {
     return 1;
 }
 
-typedef struct { Expr *body; List out; List keys; } MapData;
+typedef struct { Expr *body; List out; } MapData;
 
 static int map_fn(Ctx c, void *data) {
     MapData *d = data;
     list_add(&d->out, eval(d->body, c));
-    return 0;
-}
-
-/* The value of a bound name: an element, or the tuple a binder names. */
-/* The element a binding stands for: the value of x in x \in S, the tuple
-   in <<x, y>> \in S; a tuple of them when there are several. */
-static Value *bound_key(Bound *bs, int nb, Ctx c) {
-    int total = 0;
-    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
-    Value *key = mk_tuple(total);
-    int k = 0;
-    for (int i = 0; i < nb; i++) {
-        if (bs[i].tuple) {
-            Value *t = mk_tuple(bs[i].n);
-            for (int j = 0; j < bs[i].n; j++) t->u.fcn.vals[j] = env_find(c.env, bs[i].defs[j])->v;
-            key->u.fcn.vals[k++] = t;
-        } else {
-            for (int j = 0; j < bs[i].n; j++) key->u.fcn.vals[k++] = env_find(c.env, bs[i].defs[j])->v;
-        }
-    }
-    return total == 1 ? key->u.fcn.vals[0] : key;
-}
-
-static int fcn_fn(Ctx c, void *data) {
-    MapData *d = data;
-    Expr *e = d->body;
-    list_add(&d->keys, bound_key(e->bounds, e->nb, c));
-    list_add(&d->out, eval(e->args[0], c));
-    return 0;
-}
-
-static int filter_fn(Ctx c, void *data) {
-    MapData *d = data;
-    Expr *e = d->body;
-    if (eval_bool(e->args[0], c)) list_add(&d->out, bound_key(e->bounds, e->nb, c));
     return 0;
 }
 
@@ -3383,7 +3425,7 @@ static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where) {
         env = NULL;
     }
     int total = 0;
-    for (int i = 0; i < d->nb; i++) total += d->bounds[i].n;
+    for (int i = 0; i < d->nb; i++) total += d->bounds[i].tuple ? 1 : d->bounds[i].n;
     Value **parts = &a;
     if (total > 1) {
         if (!is_fcn(a) || a->n != total) goto outside;
@@ -3416,31 +3458,16 @@ outside:
 }
 
 static Value *fcndef_value(Def *d, Ctx c) {
-    Env *env = NULL;
-    if (d->local == 2) { Env *b = env_find(c.env, d); if (b) env = b->ctx_env; }
-    Expr fake;
-    memset(&fake, 0, sizeof fake);
-    fake.bounds = d->bounds;
-    fake.nb = d->nb;
-    MapData data;
-    memset(&data, 0, sizeof data);
-    Ctx dc = {env, c.inst};
-    /* Collect the domain, then apply the definition at each point. */
-    Expr body;
-    memset(&body, 0, sizeof body);
-    body.bounds = d->bounds;
-    body.nb = d->nb;
-    Expr *self = NEW(Expr);
-    self->kind = X_BOOL;
-    self->num = 1;
-    body.n = 1;
-    Expr *args[1] = {self};
-    body.args = args;
-    data.body = &body;
-    for_bindings(d->bounds, d->nb, dc, filter_fn, &data);
-    List vals = {0};
-    for (int i = 0; i < data.out.n; i++) list_add(&vals, fcndef_apply(d, data.out.v[i], c, NULL));
-    return mk_fcn_from(&data.out, &vals);
+    Value *dom = bounds_domain(d->bounds, d->nb, c);
+    if (set_is_infinite(dom)) return mk_lambda(dom, NULL, d, c);
+    dom = enumerate(dom);
+    Value *f = mk_fcn(dom->n);
+    for (int i = 0; i < dom->n; i++) {
+        f->u.fcn.keys[i] = dom->u.set.elems[i];
+        f->u.fcn.vals[i] = fcndef_apply(d, dom->u.set.elems[i], c, NULL);
+    }
+    if (!dom->n) f->empty_fcn = 1;
+    return f;
 }
 
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
@@ -3684,40 +3711,16 @@ static Value *eval_inner(Expr *e, Ctx c) {
         return s;
     }
     case X_FCN: {
-        /* The domain: the bound set, or the product of one per variable. */
-        int total = 0, k = 0, bounded = 1;
-        for (int i = 0; i < e->nb; i++) { total += e->bounds[i].tuple ? 1 : e->bounds[i].n; bounded &= e->bounds[i].set != NULL; }
-        Value *dom = mk_lazy(L_TIMES);
-        dom->n = total;
-        dom->u.l.names = NEWN(Value *, 2 * total);
-        for (int i = 0; i < e->nb && bounded; i++) {
-            Value *set = eval(e->bounds[i].set, c);
-            if (!is_set(set)) { bounded = 0; break; }
-            for (int j = 0; j < (e->bounds[i].tuple ? 1 : e->bounds[i].n); j++) dom->u.l.names[total + k++] = set;
+        Value *dom = bounds_domain(e->bounds, e->nb, c);
+        if (set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
+        dom = enumerate(dom);
+        Value *f = mk_fcn(dom->n);
+        for (int i = 0; i < dom->n; i++) {
+            f->u.fcn.keys[i] = dom->u.set.elems[i];
+            f->u.fcn.vals[i] = eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, dom->u.set.elems[i], c.env, e), c.inst});
         }
-        if (bounded && total == 1) dom = dom->u.l.names[1];
-        if (bounded && set_is_infinite(dom)) {
-            Value *f = NEW(Value);
-            f->kind = V_LAMBDA;
-            f->u.l.a = dom;
-            f->u.l.expr = e;
-            f->u.l.env = c.env;
-            f->u.l.inst = c.inst;
-            return f;
-        }
-        MapData d;
-        memset(&d, 0, sizeof d);
-        d.body = e;
-        if (bounded && e->nb == 1 && e->bounds[0].n == 1 && !e->bounds[0].tuple) {
-            dom = enumerate(dom);
-            for (int i = 0; i < dom->n; i++) {
-                list_add(&d.keys, dom->u.set.elems[i]);
-                list_add(&d.out, eval(e->args[0], (Ctx){mk_binding(e->bounds[0].defs[0], dom->u.set.elems[i], c.env), c.inst}));
-            }
-            return mk_fcn_from(&d.keys, &d.out);
-        }
-        for_bindings(e->bounds, e->nb, c, fcn_fn, &d);
-        return mk_fcn_from(&d.keys, &d.out);
+        if (!dom->n) f->empty_fcn = 1;
+        return f;
     }
     case X_APPLY: {
         Expr *fe = e->args[0];
@@ -3746,19 +3749,13 @@ static Value *eval_inner(Expr *e, Ctx c) {
         Bound *b = &e->bounds[0];
         Value *s = eval(b->set, c);
         if (!is_set(s)) fail_at(e, "Attempted to compute a subset of the non-set:\n%s", pretty(s));
-        if (set_is_infinite(s)) {
-            Value *l = mk_lazy(L_FILTER);
-            l->u.l.a = s;
-            l->u.l.expr = e;
-            l->u.l.env = c.env;
-            l->u.l.inst = c.inst;
-            return l;
-        }
-        MapData d;
-        memset(&d, 0, sizeof d);
-        d.body = e;
-        for_bindings(e->bounds, e->nb, c, filter_fn, &d);
-        return list_set(&d.out);
+        /* Lazy, as in TLC: membership evaluates the predicate on that element only. */
+        Value *l = mk_lazy(L_FILTER);
+        l->u.l.a = s;
+        l->u.l.expr = e;
+        l->u.l.env = c.env;
+        l->u.l.inst = c.inst;
+        return l;
     }
     case X_MAP: {
         MapData d;
