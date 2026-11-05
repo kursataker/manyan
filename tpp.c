@@ -275,7 +275,7 @@ struct Value {
         struct { Value **keys, **vals; } fcn;        /* V_TUPLE has no keys */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
         struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; void *pattern; } l;
-        /* V_LAMBDA: [x \in dom |-> expr] in env, then n EXCEPT pairs (key, value) */
+        /* V_LAMBDA: [x \in a |-> expr] in env, with b for @, then n EXCEPT pairs (key, value) */
         struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
     } u;
 };
@@ -662,10 +662,14 @@ static _Noreturn void compare_error(Value *a, Value *b) {
     fail("Attempted to compare %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
 }
 
+/* Nat or Int, which TLC orders and compares without enumerating: Nat first. */
+static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; }
+
 /* The standard order (§7.4). Model values come first; other values of
    different kinds cannot be compared. */
 static int vcmp(Value *a, Value *b) {
     if (a == b) return 0;
+    if (number_set(a) && number_set(b)) return (a->lazy > b->lazy) - (a->lazy < b->lazy);
     if (a->kind == V_MODEL || b->kind == V_MODEL) {
         if (a->kind != b->kind) return a->kind == V_MODEL ? -1 : 1;
         return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
@@ -718,6 +722,7 @@ static int veq(Value *a, Value *b) {
         if (a->kind == V_INTERVAL && b->kind == V_INTERVAL)
             return a->n == b->n && (a->n == 0 || a->u.range.lo == b->u.range.lo);
         if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 1;
+        if (number_set(a) && number_set(b)) return 0;
         if (set_is_infinite(a) || set_is_infinite(b)) {
             if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy == L_SEQ)
                 return veq(a->u.l.a, b->u.l.a);
@@ -3364,6 +3369,7 @@ static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     f->kind = V_LAMBDA;
     f->u.l.a = dom;
     f->u.l.expr = e;
+    f->u.l.b = at_value;
     f->u.l.binder = d;
     f->u.l.env = c.env;
     f->u.l.inst = c.inst;
@@ -3381,7 +3387,11 @@ static Value *lambda_apply(Value *f, Value *a, Expr *where) {
         fail_at(where, "Attempted to apply function to argument %s, which is not in the domain of the function.", pretty(a));
     Expr *e = f->u.l.expr;
     c.env = bind_key(e->bounds, e->nb, a, c.env, where);
-    return eval(e->args[0], c);
+    Value *saved = at_value;
+    at_value = f->u.l.b;
+    Value *v = eval(e->args[0], c);
+    at_value = saved;
+    return v;
 }
 
 static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {

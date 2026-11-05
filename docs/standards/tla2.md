@@ -329,7 +329,8 @@ Every set prints and enumerates its elements in the standard order:
 Booleans `FALSE` before `TRUE`; integers by value; strings in order of
 first appearance (§7.5); model values by declaration order; tuples and
 functions by domain size, then element by element; sets by size, then
-element by element. Elements of different kinds are ordered by kind.
+element by element; `Nat` before `Int`, which equal only themselves.
+Elements of different kinds are ordered by kind.
 
 ### 7.5 String order
 
