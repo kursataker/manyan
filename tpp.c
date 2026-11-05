@@ -3361,6 +3361,14 @@ static Value *at_value;         /* @ in an EXCEPT */
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
 
+/* The body of a definition: only calls nest without bound. */
+static Value *eval_body(Expr *body, Ctx c) {
+    if (++eval_depth > 5000) { eval_depth = 0; fail_at(body, "The evaluation nested too deeply (infinite recursion?)."); }
+    Value *v = eval(body, c);
+    eval_depth--;
+    return v;
+}
+
 static Value *boolean_set;
 
 static Env *mk_binding(Def *d, Value *v, Env *next) {
@@ -3671,7 +3679,7 @@ static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where) {
     }
     {
         Ctx inner = {env, c.inst};
-        return eval(d->body, inner);
+        return eval_body(d->body, inner);
     }
 outside:
     fail_at(where, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
@@ -3753,7 +3761,7 @@ static Inst *instance_chain(Expr *e, Ctx c) {
     return inst;
 }
 
-static Value *eval_inner(Expr *e, Ctx c) {
+static Value *eval(Expr *e, Ctx c) {
     switch (e->kind) {
     case X_NUM:
         if (e->num > 2147483647LL) fail_at(e, "Integer literal too large.");
@@ -3805,7 +3813,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
             return d->native(e, vals, ic);
         }
         Ctx body = {env, inst};
-        return eval(d->body, body);
+        return eval_body(d->body, body);
     }
     case K_PARAMCALL: {
         Value *op;
@@ -4056,12 +4064,6 @@ static Value *eval_inner(Expr *e, Ctx c) {
     }
 }
 
-static Value *eval(Expr *e, Ctx c) {
-    if (++eval_depth > 20000) { eval_depth = 0; fail_at(e, "The evaluation nested too deeply (infinite recursion?)."); }
-    Value *v = eval_inner(e, c);
-    eval_depth--;
-    return v;
-}
 
 /* An argument for an operator parameter: an operator. */
 static Value *eval_operator_arg(Expr *a, Ctx c) {
@@ -4090,7 +4092,7 @@ static Value *call_values(Def *d, Value **vals, int n, Ctx c, Expr *where) {
     if (d->kind == D_FCN) return fcndef_apply(d, n == 1 ? vals[0] : NULL, c, where);
     for (int i = 0; i < n && i < d->nparams; i++) env = mk_binding(d->params[i], vals[i], env);
     Ctx inner = {env, c.inst};
-    return eval(d->body, inner);
+    return eval_body(d->body, inner);
 }
 
 static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
@@ -4130,7 +4132,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
             else env = mk_thunk(d->params[i], args[i], c, env);
         }
         Ctx inner = {env, b->ctx_inst};
-        return eval(d->body, inner);
+        return eval_body(d->body, inner);
     }
     if (d->native) {
         Value **vals = NEWN(Value *, n);
@@ -4160,7 +4162,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         else env = mk_thunk(d->params[i], args[i], c, env);
     }
     Ctx inner = {env, c.inst};
-    return eval(d->body, inner);
+    return eval_body(d->body, inner);
 }
 
 /* ---------------------------------------------------------------- standard modules */
