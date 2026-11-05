@@ -705,8 +705,6 @@ static _Noreturn void compare_error(Value *a, Value *b) {
 /* Nat or Int, which TLC orders and compares without enumerating: Nat first. */
 static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; }
 
-/* The standard order (§7.4). Model values come first; other values of
-   different kinds cannot be compared. */
 /* TLC's error comparing sets of which one is infinite. */
 static _Noreturn void incomparable(Value *a, Value *b) {
     if (user_set(a)) fail("Attempted to compare overridden value %s with non-overridden value:\n%s", pretty(a), pretty(b));
@@ -715,13 +713,16 @@ static _Noreturn void incomparable(Value *a, Value *b) {
     abort();
 }
 
+/* The standard order (§7.4). Model values come first; other values of
+   different kinds cannot be compared. */
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
     if (a->kind == V_TUPLE && b->kind == V_TUPLE) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         for (int i = 0; i < a->n; i++) {
-            int c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+            Value *x = a->u.fcn.vals[i], *y = b->u.fcn.vals[i];
+            int c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
             if (c) return c;
         }
         return 0;
@@ -3612,6 +3613,16 @@ static Env *env_find(Env *env, Def *d) {
     return NULL;
 }
 
+/* An argument for parameter d: a thunk, or the value of a bound name that
+   already has one that no state changes, as forcing the thunk would give. */
+static Env *mk_arg(Def *d, Expr *e, Ctx c, Env *next) {
+    if (e->kind == K_BOUND) {
+        Env *b = env_find(c.env, e->def);
+        if (b && b->v && !b->stateful) return mk_binding(d, b->v, next);
+    }
+    return mk_thunk(d, e, c, next);
+}
+
 /* The value of a binding, evaluated once where that is safe: a value read
    from no state at all, or from the current state by a binding that lives
    no longer than one state's expansion, as the scratch arena does. */
@@ -3725,7 +3736,23 @@ typedef int (*BindFn)(Ctx c, void *data);
 /* Iterates the product of bindings with an explicit stack. */
 typedef struct { Value *set; int index; } BindLevel;
 
+/* The set a bound ranges over, enumerated. */
+static Value *bound_set(Bound *b, Ctx c) {
+    if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
+    Value *s = eval(b->set, c);
+    if (!is_set(s)) fail_at(b->set, "Attempted to enumerate a value that is not a set:\n%s", pretty(s));
+    if (set_is_infinite(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+    return enumerate(s);
+}
+
 static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
+    if (nb == 1 && bs[0].n == 1 && !bs[0].tuple) {
+        /* x \in S, the common case, without the stack. */
+        Value *s = bound_set(&bs[0], c);
+        for (int i = 0; i < s->n; i++)
+            if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
+        return 0;
+    }
     int total = 0;
     for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
     if (total == 0) return fn(c, data);
@@ -3744,12 +3771,7 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
     while (depth >= 0) {
         Bound *b = owner[depth];
         if (!lv[depth].set) {
-            if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
-            Ctx sc = {envs[depth], c.inst};
-            Value *s = eval(b->set, sc);
-            if (!is_set(s)) fail_at(b->set, "Attempted to enumerate a value that is not a set:\n%s", pretty(s));
-            if (set_is_infinite(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
-            lv[depth].set = enumerate(s);
+            lv[depth].set = bound_set(b, (Ctx){envs[depth], c.inst});
             lv[depth].index = 0;
         }
         if (lv[depth].index >= lv[depth].set->n) {
@@ -4356,7 +4378,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Env *env = b->ctx_env;
         for (int i = 0; i < n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(args[i], c), env);
-            else env = mk_thunk(d->params[i], args[i], c, env);
+            else env = mk_arg(d->params[i], args[i], c, env);
         }
         Ctx inner = {env, b->ctx_inst};
         return eval_body(d->body, inner);
@@ -4387,7 +4409,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     Env *env = NULL;
     for (int i = 0; i < n; i++) {
         if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(args[i], c), env);
-        else env = mk_thunk(d->params[i], args[i], c, env);
+        else env = mk_arg(d->params[i], args[i], c, env);
     }
     Ctx inner = {env, c.inst};
     return eval_body(d->body, inner);
@@ -4920,7 +4942,7 @@ static Ctx instance_ctx(Expr *e, Ctx c) {
     Env *env = NULL;
     for (int i = 0; i < e->n && i < d->nparams; i++) {
         if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-        else env = mk_thunk(d->params[i], e->args[i], c, env);
+        else env = mk_arg(d->params[i], e->args[i], c, env);
     }
     return (Ctx){env, inst};
 }
@@ -4963,7 +4985,7 @@ static int gen(Expr *e, Ctx c, Cont *k) {
             Env *env = b->ctx_env;
             for (int i = 0; i < e->n; i++) {
                 if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-                else env = mk_thunk(d->params[i], e->args[i], c, env);
+                else env = mk_arg(d->params[i], e->args[i], c, env);
             }
             return gen(d->body, (Ctx){env, b->ctx_inst}, k);
         }
@@ -4971,7 +4993,7 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-            else env = mk_thunk(d->params[i], e->args[i], c, env);
+            else env = mk_arg(d->params[i], e->args[i], c, env);
         }
         return gen(d->body, (Ctx){env, c.inst}, k);
     }
@@ -5122,7 +5144,7 @@ static void split_action(Expr *e, Ctx c, int name) {
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-            else env = mk_thunk(d->params[i], e->args[i], c, env);
+            else env = mk_arg(d->params[i], e->args[i], c, env);
         }
         split_action(d->body, (Ctx){env, c.inst}, d->name);
         return;
