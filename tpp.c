@@ -429,6 +429,9 @@ static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
 /* ---------------------------------------------------------------- printing */
 
 static void print_value(Buf *b, Value *v);
+static Value *realize_lambda(Value *f);
+/* A lazy function over a finite domain as the function it is (§6.6). */
+static inline Value *realize(Value *v) { return v->kind == V_LAMBDA ? realize_lambda(v) : v; }
 static Value *normalize_set(Value *v);
 static int set_is_infinite(Value *s);
 static int64_t set_size(Value *s);
@@ -472,6 +475,7 @@ static void print_string(Buf *b, int id) {
 }
 
 static void print_value(Buf *b, Value *v) {
+    v = realize(v);
     switch (v->kind) {
     case V_BOOL: buf_puts(b, v->u.i ? "TRUE" : "FALSE"); return;
     case V_INT: buf_printf(b, "%lld", (long long)v->u.i); return;
@@ -718,6 +722,7 @@ static _Noreturn void incomparable(Value *a, Value *b) {
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
+    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) { a = realize(a); b = realize(b); }
     if (a->kind == V_TUPLE && b->kind == V_TUPLE) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         for (int i = 0; i < a->n; i++) {
@@ -769,6 +774,7 @@ static _Noreturn void equality_error(Value *a, Value *b) {
 
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
+    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) { a = realize(a); b = realize(b); }
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
     if (is_fcn(a) && is_fcn(b)) {
         if (a->n != b->n) return 0;
@@ -1042,6 +1048,7 @@ static _Noreturn void not_a_set(Value *v, Value *s) {
 
 static int set_member(Value *v, Value *s) {
     if (!is_set(s)) not_a_set(v, s);
+    v = realize(v);
     switch (s->kind) {
     case V_SET: {
         int lo = 0, hi = s->n;
@@ -1311,6 +1318,7 @@ typedef struct { int n; Expr **keys; int *fields; } Path;  /* an EXCEPT path: fi
 
 struct Expr {
     short kind;
+    unsigned char lazy;   /* X_FCN around a use of the function being defined: kept as its definition */
     int op;               /* operator or name; field of X_DOT */
     int n;
     Expr **args;
@@ -3247,6 +3255,21 @@ static void resolve_name(Expr *e, Scope *sc) {
     }
 }
 
+/* The function constructors being resolved, and the function definitions
+   with how many constructors were open when each began. A use of such a
+   function makes the constructors around it lazy, as all are in TLC, so
+   that f[i] may use other values of f[i] (§6.6). */
+static Expr *open_fcns[256];
+static int nopen_fcns;
+static struct { Def *def; int open; } open_defs[64];
+static int nopen_defs;
+
+static void mark_lazy(Def *d) {
+    for (int i = 0; i < nopen_defs; i++)
+        if (open_defs[i].def == d)
+            for (int j = open_defs[i].open; j < nopen_fcns; j++) open_fcns[j]->lazy = 1;
+}
+
 static void resolve_expr(Expr *e, Scope *sc) {
     switch (e->kind) {
     case X_NUM: case X_BOOL: case X_AT:
@@ -3256,6 +3279,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         return;
     case X_NAME:
         resolve_name(e, sc);
+        if (e->def && e->def->kind == D_FCN) mark_lazy(e->def);
         return;
     case X_OPREF:
         e->def = operator_def(e, e->op, sc);
@@ -3292,7 +3316,10 @@ static void resolve_expr(Expr *e, Scope *sc) {
     case X_TFORALL: case X_TEXISTS: {
         Scope *inner = sc;
         resolve_bounds(e, &inner);
+        int open = e->kind == X_FCN && nopen_fcns < 256;
+        if (open) open_fcns[nopen_fcns++] = e;
         resolve_args(e->args, e->n, inner);
+        nopen_fcns -= open;
         check_temporal(e);
         return;
     }
@@ -3381,7 +3408,10 @@ static void resolve_def(Def *d, Scope *sc) {
         d->subst_expr = exprs;
         return;
     }
+    int open = d->kind == D_FCN && nopen_defs < 64;
+    if (open) { open_defs[nopen_defs].def = d; open_defs[nopen_defs++].open = nopen_fcns; }
     if (d->body) resolve_expr(d->body, inner);
+    nopen_defs -= open;
 }
 
 static void resolve_module(Module *m) {
@@ -3569,8 +3599,8 @@ static Env *bind_key(Bound *bs, int nb, Value *key, Env *env, Expr *where) {
     return env;
 }
 
-/* A function over an infinite domain: [x \in S |-> e] (expr) or a
-   function definition (def), kept as its definition. */
+/* A function kept as its definition: [x \in S |-> e] (expr) or a
+   function definition (def), over an infinite domain or made lazy (§6.6). */
 static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     Value *f = NEW(Value);
     f->kind = V_LAMBDA;
@@ -3580,6 +3610,7 @@ static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     f->u.l.binder = d;
     f->u.l.env = c.env;
     f->u.l.inst = c.inst;
+    f->perm = arena == &perm_arena;
     return f;
 }
 
@@ -3599,6 +3630,22 @@ static Value *lambda_apply(Value *f, Value *a, Expr *where) {
     Value *v = eval(e->args[0], c);
     at_value = saved;
     return v;
+}
+
+/* The function a lazy one is, which it becomes in place where the arenas
+   allow; one over an infinite domain stays as it is. */
+static __attribute__((cold)) Value *realize_lambda(Value *f) {
+    if (set_is_infinite(f->u.l.a)) return f;
+    Value *dom = enumerate(f->u.l.a);
+    Value *g = mk_fcn(dom->n);
+    for (int i = 0; i < dom->n; i++) {
+        g->u.fcn.keys[i] = dom->u.set.elems[i];
+        g->u.fcn.vals[i] = lambda_apply(f, dom->u.set.elems[i], NULL);
+    }
+    if (!dom->n) g->empty_fcn = 1;
+    g->made = MADE_LAMBDA;
+    if (!f->perm || arena == &perm_arena) { *f = *g; return f; }
+    return g;
 }
 
 static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {
@@ -4193,7 +4240,7 @@ static Value *eval(Expr *e, Ctx c) {
     }
     case X_FCN: {
         Value *dom = bounds_domain(e->bounds, e->nb, c);
-        if (set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
+        if (e->lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
         dom = enumerate(dom);
         Value *f = mk_fcn(dom->n);
         for (int i = 0; i < dom->n; i++) {
@@ -4477,6 +4524,7 @@ NATIVE(n_range) {
 
 /* A sequence: a function on 1..n, or a string. */
 static Value *seq_arg(Value *v, const char *error) {
+    v = realize(v);
     if (is_fcn(v) && (fcn_is_tuple(v) || v->n == 0)) return v;
     if (v->kind == V_STR) return str_chars(v);
     fail_module("%s:\n%s", error, pretty(v));
@@ -4640,6 +4688,7 @@ NATIVE(n_singleton) {
 NATIVE(n_merge) {
     UNUSED;
     for (int i = 0; i < 2; i++) {
+        a[i] = realize(a[i]);
         if (a[i]->kind == V_LAMBDA) enumerate(a[i]->u.l.a);   /* TLC enumerates the domain, which fails */
         if (!is_fcn(a[i]))
             fail_module("The %s argument of @@ should be a function, but instead it is:\n%s", i ? "second" : "first", pretty(a[i]));
@@ -5169,6 +5218,15 @@ static uint64_t mix(uint64_t h, uint64_t x) {
     return h ^ (h >> 29);
 }
 
+static uint64_t hash_value(Value *v, uint64_t h);
+
+/* A lazy function hashes as the function it is; out of hash_value's way. */
+static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v, uint64_t h) {
+    Value *f = realize(v);
+    if (f->kind == V_LAMBDA) fail("Attempted to fingerprint the infinite set %s.", pretty(f->u.l.a));
+    return hash_value(f, h);
+}
+
 static uint64_t hash_value(Value *v, uint64_t h) {
     /* An atom's tag is its low byte. */
     switch (v->kind) {
@@ -5189,6 +5247,7 @@ static uint64_t hash_value(Value *v, uint64_t h) {
         for (int i = 0; i < set->n; i++) h = hash_value(set->u.set.elems[i], h);
         return h;
     }
+    case V_LAMBDA: return hash_lambda(v, h);
     case V_TUPLE: case V_FCN: {
         if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
         int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
@@ -5209,6 +5268,7 @@ static uint64_t hash_value(Value *v, uint64_t h) {
 static void put32(Buf *b, int64_t v) { int32_t x = (int32_t)v; buf_add(b, (char *)&x, 4); }
 
 static void encode(Buf *b, Value *v) {
+    if (v->kind == V_LAMBDA) v = realize(v);
     char tag;
     switch (v->kind) {
     case V_BOOL: tag = 'b'; buf_add(b, &tag, 1); tag = (char)v->u.i; buf_add(b, &tag, 1); return;

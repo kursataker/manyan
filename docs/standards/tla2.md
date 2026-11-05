@@ -278,7 +278,9 @@ infinite set is an error.
 `f[a, b]` (which is `f[<<a, b>>]`); `DOMAIN f`; the function set
 `[S -> T]`; `[f EXCEPT ![a] = e, ![b][c] = e2, !.r = e3]`, where `@` in a
 replacement is the old value at that path. Applying `f` outside its domain
-is an error. An EXCEPT path whose key is outside the domain leaves the
+is an error. As in TLC, a function is evaluated only where it is applied:
+`f[i \in S] == [j \in T |-> ... f[i][k] ...]` may use other values of
+`f[i]` within `f[i]`, which does not then recurse forever. An EXCEPT path whose key is outside the domain leaves the
 value unchanged and prints TLC's warning, `Warning: The EXCEPT was applied
 to non-existing fields of the value at` and the location of `f`; the first
 warning of a run adds `(Use the -nowarning option to disable this
