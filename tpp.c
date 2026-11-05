@@ -2300,7 +2300,7 @@ static Def *parse_definition(int local) {
         d->bounds = tmp.bounds;
         d->nb = tmp.nb;
         expect_op("]");
-    } else if (t->kind == T_IDENT && (peek_at(1)->kind == T_OP || peek_at(1)->kind == T_KW) &&
+    } else if (t->kind == T_IDENT && op_info(peek_at(1), INFIX) &&
                peek_at(2)->kind == T_IDENT && is_op(peek_at(3), "==")) {
         Tok *op = peek_at(1);
         d = new_def(D_OP, canonical(op->id), op);
@@ -2309,14 +2309,14 @@ static Def *parse_definition(int local) {
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
         next();
-    } else if ((t->kind == T_OP || t->kind == T_KW) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==")) {
+    } else if (op_info(t, PREFIX) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==")) {
         int name = canonical(t->id);
         if (strcmp(S(name), "-") == 0) name = intern("-.");
         d = new_def(D_OP, name, t);
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
         next();
-    } else if (t->kind == T_IDENT && (peek_at(1)->kind == T_OP) && is_op(peek_at(2), "==")) {
+    } else if (t->kind == T_IDENT && op_info(peek_at(1), POSTFIX) && is_op(peek_at(2), "==")) {
         Tok *op = peek_at(1);
         d = new_def(D_OP, canonical(op->id), op);
         params[np++] = new_def(D_PARAM, t->id, t);
