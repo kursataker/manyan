@@ -295,6 +295,12 @@ In an action, `e'` is `e` evaluated in the next state; `UNCHANGED e` is
 `ENABLED A` is true in a state from which `A` has a successor; `A \cdot B`
 is composition.
 
+Inside `ENABLED`, as in TLC, a primed variable of an instantiated module
+written in `A` itself is not replaced by its substitution: `x' = e` gives
+the variable named `x` a value, so with `INSTANCE M WITH x <- z, y <- z`,
+`ENABLED (x' = 0 /\ y' = 1)` in `M` is true. An action passed to an
+operator argument from outside the instance keeps its substitutions.
+
 ### 6.10 Temporal operators
 
 `[]F`, `<>F`, `F ~> G` (`[](F => <>G)`), `WF_e(A)`, `SF_e(A)`, and

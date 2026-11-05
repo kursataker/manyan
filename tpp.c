@@ -2775,6 +2775,13 @@ static Module *parse_text(const char *text, const char *path) {
     return m;
 }
 
+static void check_file_name(Module *m, const char *name) {
+    if (strcmp(S(m->name), name) == 0) return;
+    printf("File name '%s' does not match the name '%s' of the top level module it contains.\n\n", name, S(m->name));
+    printf("Error: Parsing or semantic analysis failed.\n");
+    exit(TPP_ERROR_PARSE);
+}
+
 static Module *load_module(int name, Module *from) {
     for (Module *o = from; o; o = o->outer)
         for (int i = 0; i < o->nnested; i++) if (o->nested[i]->name == name) return o->nested[i];
@@ -2798,11 +2805,7 @@ static Module *load_module(int name, Module *from) {
     }
     m = parse_text(text, path);
     m->standard = standard;
-    if (m->name != name) {
-        printf("File name '%s' does not match the name '%s' of the top level module it contains.\n\n", S(name), S(m->name));
-        printf("Error: Parsing or semantic analysis failed.\n");
-        exit(TPP_ERROR_PARSE);
-    }
+    check_file_name(m, S(name));
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = m;
     load_references(m);
@@ -4465,6 +4468,21 @@ static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
     return k;
 }
 
+/* ENABLED marks the instance chain where it is evaluated. As in TLC, a
+   variable reached from there, not through an argument from outside, is
+   not substituted: it is bound by name, in a slot past the state's own
+   when no state variable has that name (§6.9). */
+static Def enabled_mark;
+static int enabled_names[16], nenabled_names;
+
+static int enabled_slot(Def *d) {
+    for (int i = 0; i < nvars; i++) if (vars[i]->name == d->name) return i;
+    for (int i = 0; i < nenabled_names; i++) if (enabled_names[i] == d->name) return nvars + i;
+    if (nenabled_names == 16) return -1;
+    enabled_names[nenabled_names] = d->name;
+    return nvars + nenabled_names++;
+}
+
 /* The variable an expression assigns: v (initial predicate) or v'
    (action), through operator parameters, definitions and instance
    substitutions that stand for it; -1 if none. */
@@ -4491,9 +4509,11 @@ static int assignable(Expr *lhs, Ctx c) {
         Def *d = lhs->def;
         Expr *sub = NULL;
         Ctx outer = c;
-        for (Inst *in = c.inst; in && !sub; in = in->parent)
+        for (Inst *in = c.inst; in && !sub; in = in->parent) {
+            if (in->def == &enabled_mark) return d->kind == D_VAR ? enabled_slot(d) : -1;
             for (int i = 0; i < in->def->nsubst; i++)
                 if (in->def->subst_decl[i] == d) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; break; }
+        }
         if (!sub) return d->kind == D_VAR ? d->var_index : -1;
         lhs = sub;
         c = outer;
@@ -4686,13 +4706,19 @@ static int enabled(Expr *a, Ctx c) {
     Value **saved_target = gen_target, **saved_next = next_state;
     int saved_init = gen_init, saved_primed = primed;
     int (*saved_emit)(void) = gen_emit;
-    Value **fresh = NEWN(Value *, nvars);
+    int saved_names = nenabled_names;
+    Value **fresh = NEWN(Value *, nvars + 16);
     gen_target = next_state = fresh;
     gen_init = 0;
     primed = 0;
     gen_emit = enabled_emit;
     enabled_found = 0;
+    Inst *mark = NEW(Inst);
+    mark->def = &enabled_mark;
+    mark->parent = c.inst;
+    c.inst = mark;
     gen(a, c, NULL);
+    nenabled_names = saved_names;
     int found = enabled_found;
     gen_target = saved_target;
     next_state = saved_next;
@@ -7051,6 +7077,9 @@ int tpp_check(const TPPOptions *o) {
     check_deadlock = o->check_deadlock;
 
     root = parse_text(text, path);
+    char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
+    check_file_name(root, base);
+    free(base);
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
     load_references(root);
