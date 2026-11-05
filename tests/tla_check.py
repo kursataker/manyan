@@ -100,9 +100,9 @@ def allowed(checker, n, succ, init, bad, outcome):
 
 def graphs(engine, tlc, count, seed):
     rng = random.Random(seed)
-    checker = tlc_command(tlc) if tlc else engine
     failed = 0
     for i in range(count):
+        checker = tlc_command(tlc) if tlc else engine   # TLC needs a fresh metadir for each run
         n = rng.randint(1, 6)
         succ = [{m for m in range(1, n + 1) if rng.random() < 0.35} for _ in range(n)]
         init = {m for m in range(1, n + 1) if rng.random() < 0.3} or {1}

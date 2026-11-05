@@ -217,7 +217,7 @@ overlap, unless `op1` and `op2` are the same left-associative operator.
 | `SUBSET` `UNION` `DOMAIN` (prefix) | 10–13 | |
 | `\X` `\times` | 10–13 | n-ary |
 | `+` `++` `\oplus` `(+)` | 10–10 | left |
-| `%` `\mod` | 10–11 | |
+| `%` | 10–11 | |
 | `%%` `\|` `\|\|` | 10–11 | left |
 | `-` `--` `\ominus` `(-)` | 11–11 | left |
 | `-` (prefix) | 12–12 | |

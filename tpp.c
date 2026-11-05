@@ -1144,6 +1144,7 @@ struct Expr {
     int len;
     Module *mod;
     int l1, c1, l2, c2;
+    int pl1, pc1, pl2, pc2;   /* with the parentheses around it, if any */
 };
 
 enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM };   /* D_THM: a theorem's or assumption's name */
@@ -1470,6 +1471,15 @@ static void finish(Expr *e) {
     e->l2 = t->eline; e->c2 = t->ecol;
 }
 
+/* e starts where a does, or at the parenthesis before it. */
+static void span_from(Expr *e, Expr *a) {
+    if (a->pl1) { e->l1 = a->pl1; e->c1 = a->pc1; } else { e->l1 = a->l1; e->c1 = a->c1; }
+}
+
+static void span_to(Expr *e, Expr *a) {
+    if (a->pl1) { e->l2 = a->pl2; e->c2 = a->pc2; } else { e->l2 = a->l2; e->c2 = a->c2; }
+}
+
 static Expr **args_array(Expr **a, int n) {
     Expr **r = NEWN(Expr *, n);
     for (int i = 0; i < n; i++) r[i] = a[i];
@@ -1519,7 +1529,7 @@ static int canonical(int id) {
     static const char *syn[][2] = {
         {"\\land", "/\\"}, {"\\lor", "\\/"}, {"\\lnot", "~"}, {"\\neg", "~"}, {"\\equiv", "<=>"},
         {"#", "/="}, {"\\intersect", "\\cap"}, {"\\union", "\\cup"}, {"\\times", "\\X"},
-        {"<=", "\\leq"}, {"=<", "\\leq"}, {">=", "\\geq"}, {"\\circ", "\\o"}, {"\\mod", "%"},
+        {"<=", "\\leq"}, {"=<", "\\leq"}, {">=", "\\geq"}, {"\\circ", "\\o"},
         {"(+)", "\\oplus"}, {"(-)", "\\ominus"}, {"(.)", "\\odot"}, {"(/)", "\\oslash"},
         {"(\\X)", "\\otimes"}, {NULL, NULL}};
     for (int i = 0; syn[i][0]; i++) if (strcmp(S(id), syn[i][0]) == 0) return intern(syn[i][1]);
@@ -1703,7 +1713,6 @@ static Expr *parse_junction(Tok *bullet) {
         items[n++] = parse_expr();
         P->limit = saved;
     }
-    if (n == 1) { P->limit = saved; return items[0]; }
     list->op = op;
     list->n = n;
     list->args = args_array(items, n);
@@ -1877,9 +1886,9 @@ static Expr *parse_primary(void) {
             e = parse_expr();
             P->limit = saved;
             expect_op(")");
-            /* A parenthesized expression is located by its parentheses. */
-            e->l1 = t->line; e->c1 = t->col;
-            finish(e);
+            /* A parenthesized expression keeps its location; what encloses it spans the parentheses. */
+            Tok *close = prev_tok();
+            e->pl1 = t->line; e->pc1 = t->col; e->pl2 = close->eline; e->pc2 = close->ecol;
             return e;
         }
         if (is_op(t, "@")) {
@@ -2120,7 +2129,7 @@ static Expr *parse_postfix(void) {
             expect_op("]");
             P->limit = saved;
             Expr *app = mk_expr(X_APPLY, start);
-            app->l1 = e->l1; app->c1 = e->c1;
+            span_from(app, e);
             app->n = n;
             app->args = args_array(a, n);
             finish(app);
@@ -2128,7 +2137,7 @@ static Expr *parse_postfix(void) {
         } else if (is_op(t, ".") && peek_at(1)->kind == T_IDENT) {
             next();
             Expr *d = mk_expr(X_DOT, t);
-            d->l1 = e->l1; d->c1 = e->c1;
+            span_from(d, e);
             d->op = expect_ident();
             d->n = 1;
             d->args = NEWN(Expr *, 1);
@@ -2158,7 +2167,7 @@ static Expr *parse_unary(void) {
         next();
         Expr *arg = parse_binary(info->hi);
         Expr *e = mk_op(t, intern(info->name), 1, &arg);
-        e->l2 = arg->l2; e->c2 = arg->c2;
+        span_to(e, arg);
         return e;
     }
     return parse_postfix();
@@ -2174,7 +2183,7 @@ static Expr *parse_binary(int bound) {
         if (post && post->lo > bound) {
             next();
             Expr *e = mk_op(t, intern(post->name), 1, &left);
-            e->l1 = left->l1; e->c1 = left->c1;
+            span_from(e, left);
             left = e;
             continue;
         }
@@ -2197,8 +2206,8 @@ static Expr *parse_binary(int bound) {
                 a[n++] = parse_binary(info->hi);
             }
             Expr *e = mk_op(t, intern("\\X"), n, a);
-            e->l1 = left->l1; e->c1 = left->c1;
-            e->l2 = a[n - 1]->l2; e->c2 = a[n - 1]->c2;
+            span_from(e, left);
+            span_to(e, a[n - 1]);
             left = e;
             last = info;
             continue;
@@ -2206,8 +2215,8 @@ static Expr *parse_binary(int bound) {
         Expr *right = parse_binary(info->hi);
         Expr *pair[2] = {left, right};
         Expr *e = mk_op(t, intern(info->name), 2, pair);
-        e->l1 = left->l1; e->c1 = left->c1;
-        e->l2 = right->l2; e->c2 = right->c2;
+        span_from(e, left);
+        span_to(e, right);
         left = e;
         last = info;
     }
