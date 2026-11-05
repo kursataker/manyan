@@ -43,6 +43,7 @@ built in.
 | `-depth D` | the length of each random behavior, in states (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
+| `-nowarning`, `-metadir DIR` | accepted for TLC's command lines, and ignored: tpp prints no such warnings and writes no metadata |
 
 A run prints TLC's report on standard output: the initial states, then
 either `Model checking completed. No error has been found.` or the first

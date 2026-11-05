@@ -8928,6 +8928,8 @@ int main(int argc, char **argv) {
             sprintf(path, "%s%s", file, n >= 4 && strcmp(file + n - 4, ".dot") == 0 ? "" : ".dot");
             o.dump = path;
         } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
+        else if (strcmp(argv[i], "-nowarning") == 0) continue;               /* TLC's; tpp has no such warnings */
+        else if (strcmp(argv[i], "-metadir") == 0 && i + 1 < argc) i++;    /* TLC's; tpp writes no metadata */
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];
     }
