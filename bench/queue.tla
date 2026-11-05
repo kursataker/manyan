@@ -9,7 +9,7 @@ Recv == q # <<>> /\ q' = Tail(q) /\ got' = (got + Head(q).val) % 7 /\ UNCHANGED 
 Next == (\E m \in Msgs : Send(m)) \/ Recv
 TypeOK == Len(q) <= Cap /\ \A i \in 1..Len(q) : q[i].val \in Msgs
 ====
-CONSTANTS Msgs = {1, 2, 3} Cap = 5
+CONSTANTS Msgs = {1, 2, 3} Cap = 7
 INIT Init
 NEXT Next
 INVARIANT TypeOK

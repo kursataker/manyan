@@ -20,7 +20,7 @@ Exit(p) == pc[p] = "cs" /\ pc' = [pc EXCEPT ![p] = "idle"] /\ level' = [level EX
 Next == \E p \in Procs : Try(p) \/ Climb(p) \/ Exit(p)
 Mutex == \A p, q \in Procs : p # q => ~(pc[p] = "cs" /\ pc[q] = "cs")
 ====
-CONSTANT N = 4
+CONSTANT N = 5
 INIT Init
 NEXT Next
 INVARIANT Mutex

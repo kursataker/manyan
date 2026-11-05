@@ -54,10 +54,8 @@ static void *alloc(size_t n) {
     Chunk *c = arena->head;
     if (!c || c->used + n > c->size) {
         size_t size = n > 1 << 20 ? n : 1 << 20;
-        if (c && !c->next) {
-            /* reuse nothing: chunks are only freed by arena_reset */
-        }
         Chunk *fresh = xmalloc(sizeof(Chunk) + size);
+
         fresh->next = c; fresh->used = 0; fresh->size = size;
         arena->head = c = fresh;
     }
@@ -958,27 +956,32 @@ static Value *set_minus(Value *a, Value *b) {
 
 static Value *lambda_apply(Value *f, Value *a, Expr *where);
 
+/* The index of a in the domain of the function or tuple f, or -1. */
+static int fcn_index(Value *f, Value *a) {
+    if (f->kind == V_TUPLE) return a->kind == V_INT && a->u.i >= 1 && a->u.i <= f->n ? (int)a->u.i - 1 : -1;
+    int models = f->n && f->u.fcn.keys[0]->kind == V_MODEL && f->u.fcn.keys[f->n - 1]->kind == V_MODEL;
+    if (a->kind == V_MODEL ? !models : f->n && f->u.fcn.keys[0]->kind == V_MODEL) {
+        /* A domain mixing model values with others: compare for equality. */
+        for (int i = 0; i < f->n; i++) if (veq(a, f->u.fcn.keys[i])) return i;
+        return -1;
+    }
+    /* Probing as TLC tests membership in a function's domain. */
+    int lo = 0, hi = f->n;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        int c = vcmp(a, f->u.fcn.keys[mid]);
+        if (!c) return mid;
+        if (c < 0) hi = mid; else lo = mid + 1;
+    }
+    return -1;
+}
+
 /* Applies f to the argument a. */
 static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     if (f->kind == V_LAMBDA) return lambda_apply(f, a, where);
-    if (f->kind == V_TUPLE) {
-        if (a->kind == V_INT && a->u.i >= 1 && a->u.i <= f->n) return f->u.fcn.vals[a->u.i - 1];
-    } else if (f->kind == V_FCN) {
-        int lo = 0, hi = f->n;
-        if (a->kind == V_MODEL || (f->n && f->u.fcn.keys[0]->kind == V_MODEL)) {
-            for (int i = 0; i < f->n; i++) if (veq(a, f->u.fcn.keys[i])) return f->u.fcn.vals[i];
-        } else {
-            /* Probing as TLC tests membership in a function's domain. */
-            while (lo < hi) {
-                int mid = (lo + hi) >> 1;
-                int c = vcmp(a, f->u.fcn.keys[mid]);
-                if (!c) return f->u.fcn.vals[mid];
-                if (c < 0) hi = mid; else lo = mid + 1;
-            }
-        }
-    } else {
-        fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
-    }
+    if (!is_fcn(f)) fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
+    int i = fcn_index(f, a);
+    if (i >= 0) return f->u.fcn.vals[i];
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(f), pretty(a));
 }
@@ -1019,16 +1022,13 @@ static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
         g->u.l.names[2 * f->n + 1] = val;
         return g;
     }
+    int i = fcn_index(f, key);
+    (void)where;
+    if (i < 0) return f;
     g->u.fcn.vals = NEWN(Value *, f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
-    if (f->kind == V_TUPLE) {
-        if (key->kind == V_INT && key->u.i >= 1 && key->u.i <= f->n) { g->u.fcn.vals[key->u.i - 1] = val; return g; }
-    } else if (f->kind == V_FCN) {
-        for (int i = 0; i < f->n; i++)
-            if (veq(f->u.fcn.keys[i], key)) { g->u.fcn.vals[i] = val; return g; }
-    }
-    (void)where;
-    return f;
+    g->u.fcn.vals[i] = val;
+    return g;
 }
 
 /* ---------------------------------------------------------------- syntax */
@@ -3542,7 +3542,20 @@ static Value *eval_inner(Expr *e, Ctx c) {
         return force(b);
     }
     case K_DECL: return decl_value(e->def, c, e);
-    case K_CALL: return call_def(e->def, e->args, e->n, c, e);
+    case K_CALL: {
+        Def *d = e->def;
+        if (d->native && !d->replacement && e->n <= 4 && e->n == d->nparams) {
+            /* The common operators of the standard modules: no arena for the arguments. */
+            Value *vals[4];
+            int plain = 1;
+            for (int i = 0; i < e->n && plain; i++) plain = !d->params[i]->arity;
+            if (plain) {
+                for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
+                return d->native(e, vals, c);
+            }
+        }
+        return call_def(d, e->args, e->n, c, e);
+    }
     case K_INSTCALL: {
         Inst *inst = c.inst;
         for (int i = 0; i < e->ndefs; i++) {
@@ -4600,35 +4613,71 @@ static void split_action(Expr *e, Ctx c, int name) {
 
 /* ---------------------------------------------------------------- states */
 
-/* A state is stored as the bytes of its values. The canonical encoding,
-   which the fingerprint hashes, is the same for equal values; the stored
-   encoding also keeps how a value prints. */
+/* The fingerprint of a value hashes its canonical form, the same for
+   equal values: a set is its elements in order, a function its pairs, and
+   a function on 1..n is a tuple. */
+static uint64_t mix(uint64_t h, uint64_t x) {
+    h = (h ^ x) * 0x9e3779b97f4a7c15ULL;
+    return h ^ (h >> 29);
+}
+
+static uint64_t hash_value(Value *v, uint64_t h) {
+    switch (v->kind) {
+    case V_BOOL: return mix(h, 0x100 | (uint64_t)v->u.i);
+    case V_INT: return mix(mix(h, 0x200), (uint64_t)v->u.i);
+    case V_STR: return mix(mix(h, 0x300), (uint64_t)v->u.i);
+    case V_MODEL: return mix(mix(h, 0x400), (uint64_t)v->u.i);
+    case V_INTERVAL: {
+        int64_t lo = v->u.range.lo, hi = v->u.range.hi;
+        h = mix(h, 0x500 | (uint64_t)(hi >= lo ? hi - lo + 1 : 0) << 16);
+        for (int64_t i = lo; i <= hi; i++) h = mix(mix(h, 0x200), (uint64_t)i);
+        return h;
+    }
+    case V_SET: case V_LAZY: {
+        if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
+        Value *set = enumerate(v);
+        h = mix(h, 0x500 | (uint64_t)set->n << 16);
+        for (int i = 0; i < set->n; i++) h = hash_value(set->u.set.elems[i], h);
+        return h;
+    }
+    case V_TUPLE: case V_FCN: {
+        int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
+        h = mix(h, (tuple ? 0x600 : 0x700) | (uint64_t)v->n << 16);
+        for (int i = 0; i < v->n; i++) {
+            if (!tuple) h = hash_value(v->u.fcn.keys[i], h);
+            h = hash_value(v->u.fcn.vals[i], h);
+        }
+        return h;
+    }
+    default:
+        fail("Attempted to fingerprint an operator.");
+    }
+}
+
+/* A state is stored as the bytes of its values, which keep how a value
+   prints. */
 static void put32(Buf *b, int64_t v) { int32_t x = (int32_t)v; buf_add(b, (char *)&x, 4); }
 
-static void encode(Buf *b, Value *v, int canon) {
+static void encode(Buf *b, Value *v) {
     char tag;
     switch (v->kind) {
     case V_BOOL: tag = 'b'; buf_add(b, &tag, 1); tag = (char)v->u.i; buf_add(b, &tag, 1); return;
     case V_INT: tag = 'i'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
     case V_STR: tag = 's'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
     case V_MODEL: tag = 'm'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
-    case V_INTERVAL:
-        if (!canon) { tag = 'I'; buf_add(b, &tag, 1); put32(b, v->u.range.lo); put32(b, v->u.range.hi); return; }
-        /* fall through */
+    case V_INTERVAL: tag = 'I'; buf_add(b, &tag, 1); put32(b, v->u.range.lo); put32(b, v->u.range.hi); return;
     case V_SET: case V_LAZY: {
-        if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
-        Value *s = enumerate(v);
-        tag = 'S'; buf_add(b, &tag, 1); put32(b, s->n);
-        for (int i = 0; i < s->n; i++) encode(b, s->u.set.elems[i], canon);
+        Value *set = enumerate(v);
+        tag = 'S'; buf_add(b, &tag, 1); put32(b, set->n);
+        for (int i = 0; i < set->n; i++) encode(b, set->u.set.elems[i]);
         return;
     }
     case V_TUPLE: case V_FCN: {
-        int tuple = v->kind == V_TUPLE || (canon && fcn_is_tuple(v)) || (canon && v->n == 0);
-        if (!canon && v->kind == V_FCN && v->n == 0) { tag = v->empty_fcn ? 'E' : 'T'; buf_add(b, &tag, 1); put32(b, 0); return; }
-        tag = tuple ? 'T' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
+        if (v->kind == V_FCN && v->n == 0) { tag = v->empty_fcn ? 'E' : 'T'; buf_add(b, &tag, 1); put32(b, 0); return; }
+        tag = v->kind == V_TUPLE ? 'T' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
         for (int i = 0; i < v->n; i++) {
-            if (!tuple) encode(b, v->u.fcn.keys[i], canon);
-            encode(b, v->u.fcn.vals[i], canon);
+            if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
+            encode(b, v->u.fcn.vals[i]);
         }
         return;
     }
@@ -4674,43 +4723,42 @@ typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int d
 static StateRec *states;
 static int nstates, capstates;
 static Buf store;
-static int *fp_table;
-static int fp_size;
-static Buf scratch_buf;
+/* The fingerprint set: open addressing on the fingerprint, which each
+   slot keeps beside its state's index (0 is an empty slot). */
+typedef struct { uint64_t fp; int state; } FpSlot;
 
-static uint64_t fp_of_bytes(const char *s, size_t n) {
-    uint64_t h = hash_bytes(s, n, 0xcbf29ce484222325ULL);
-    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
+static FpSlot *fp_table;
+static int fp_size;
+
+static uint64_t fp_finish(uint64_t h) {
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL; h ^= h >> 33;
     return h;
 }
 
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
-    int j = (int)(fp & (uint64_t)(fp_size - 1));
-    while (fp_table[j]) {
-        if (states[fp_table[j] - 1].fp == fp) return fp_table[j] - 1;
-        j = (j + 1) & (fp_size - 1);
-    }
+    for (int j = (int)(fp & (uint64_t)(fp_size - 1)); fp_table[j].state; j = (j + 1) & (fp_size - 1))
+        if (fp_table[j].fp == fp) return fp_table[j].state - 1;
     return -1;
+}
+
+static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
+    int j = (int)(fp & (uint64_t)(size - 1));
+    while (table[j].state) j = (j + 1) & (size - 1);
+    table[j].fp = fp;
+    table[j].state = idx + 1;
 }
 
 static void fp_insert(int idx) {
     if ((nstates + 1) * 2 >= fp_size) {
         int size = fp_size ? fp_size * 2 : 1 << 16;
-        int *table = calloc((size_t)size, sizeof(int));
-        for (int i = 0; i < nstates; i++) {
-            if (i == idx) continue;
-            int j = (int)(states[i].fp & (uint64_t)(size - 1));
-            while (table[j]) j = (j + 1) & (size - 1);
-            table[j] = i + 1;
-        }
+        FpSlot *table = calloc((size_t)size, sizeof(FpSlot));
+        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, fp_table[i].fp, fp_table[i].state - 1);
         free(fp_table);
         fp_table = table;
         fp_size = size;
     }
-    int j = (int)(states[idx].fp & (uint64_t)(fp_size - 1));
-    while (fp_table[j]) j = (j + 1) & (fp_size - 1);
-    fp_table[j] = idx + 1;
+    fp_put(fp_table, fp_size, states[idx].fp, idx);
 }
 
 static Value **decode_state(int idx) {
@@ -4780,16 +4828,14 @@ static uint64_t fingerprint(Value **st) {
         cur_state = st;
         Value *v = eval(view_expr, root_ctx);
         cur_state = saved;
-        scratch_buf.n = 0;
-        encode(&scratch_buf, v, 1);
-        return fp_of_bytes(scratch_buf.s, scratch_buf.n);
+        return fp_finish(hash_value(v, 0));
     }
     uint64_t best = 0;
     for (int p = 0; p <= nsymmetry; p++) {
         if (p == 0 && nsymmetry) continue;
-        scratch_buf.n = 0;
-        for (int i = 0; i < nvars; i++) encode(&scratch_buf, nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], 1);
-        uint64_t fp = fp_of_bytes(scratch_buf.s, scratch_buf.n);
+        uint64_t h = 0;
+        for (int i = 0; i < nvars; i++) h = hash_value(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], h);
+        uint64_t fp = fp_finish(h);
         if (p <= 1 || fp < best) best = fp;
     }
     return best;
@@ -4803,7 +4849,7 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
     StateRec *r = &states[nstates];
     r->fp = fp;
     r->off = store.n;
-    for (int i = 0; i < nvars; i++) encode(&store, st[i], 0);
+    for (int i = 0; i < nvars; i++) encode(&store, st[i]);
     r->len = (int)(store.n - r->off);
     r->parent = parent;
     r->action = action;

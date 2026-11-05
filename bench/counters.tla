@@ -9,7 +9,7 @@ Reset(p) == c[p] = Max /\ c' = [c EXCEPT ![p] = 0]
 Next == \E p \in Procs : Inc(p) \/ Reset(p)
 Bounded == \A p \in Procs : c[p] <= Max
 ====
-CONSTANTS Procs = {p1, p2, p3, p4, p5, p6} Max = 6
+CONSTANTS Procs = {p1, p2, p3, p4, p5, p6, p7} Max = 6
 INIT Init
 NEXT Next
 INVARIANT Bounded
