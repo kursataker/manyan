@@ -284,8 +284,10 @@ enum {
 /* How a function was made, which decides TLC's errors applying it: a
    record, or [x \in S |-> e] not yet stored in a state or a constant. */
 /* MADE_LAMBDA: computed by [x \in S |-> e], which TLC keeps until it normalizes it;
-   MADE_PARAMS: the same, of several bounds, which TLC keeps in its order (§6.6) */
-enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS };
+   MADE_PARAMS: the same, of several bounds, which TLC keeps in its order (§6.6);
+   MADE_HELD: a V_SET that TLC keeps as its definition, a UNION or a \cup, \cap
+   or \ of such sets, so that a filter or function over it is lazy (§6.5) */
+enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS, MADE_HELD };
 
 enum LazyKind {
     L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_CUP, L_CAP, L_DIFF
@@ -295,7 +297,7 @@ struct Value {
     unsigned char kind;
     union {
         unsigned char lazy;  /* LazyKind of a V_LAZY */
-        unsigned char made;  /* Made of a V_FCN */
+        unsigned char made;  /* Made of a V_FCN or V_SET */
         unsigned char keep;  /* V_LAMBDA: TLC's KeepLazy when it was made, which it is computed in full with */
     };
     unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
@@ -591,6 +593,7 @@ static char *value_str(Value *v) {
    the line width, element by element (§7.6). */
 
 static int pp_plain(Value *v) {
+    if (v->kind == V_LAMBDA) return try_realize(v)->kind == V_LAMBDA;   /* TLC cannot parse <expression ...> */
     if (v->kind == V_INTERVAL || (v->kind == V_LAZY && !expandable(v))) return 1;
     if (v->kind == V_LAZY) return pp_plain(normalize_set(v));
     if (v->kind == V_SET)
@@ -1003,7 +1006,7 @@ static Value *enumerate(Value *s) {
     }
     case L_FILTER: {
         if (s->u.l.b) return s->u.l.b;
-        if (set_is_infinite(s->u.l.a))
+        if (!is_set(s->u.l.a) || user_set(s->u.l.a))
             fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
         Value *base = enumerate(s->u.l.a);
         List out = {0};
@@ -1178,8 +1181,24 @@ static Value *lazy_op(int kind, Value *a, Value *b) {
     return s;
 }
 
+/* A set TLC holds as its elements: one it computes filters and functions
+   over at once (TLC's Reducible). */
+static int reducible(Value *s) {
+    return s->kind == V_INTERVAL || (s->kind == V_SET && s->made != MADE_HELD);
+}
+
+/* s, as a set TLC holds as its definition. */
+static Value *held(Value *s) {
+    if (s->kind != V_SET || s->made == MADE_HELD) return s;
+    Value *t = NEW(Value);
+    *t = *s;
+    t->made = MADE_HELD;
+    return t;
+}
+
 static Value *set_union(Value *a, Value *b) {
     if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
+    if (!reducible(a) || !reducible(b)) return held(set_union(enumerate(a), enumerate(b)));
     a = enumerate(a); b = enumerate(b);
     if (!b->n) return a;
     if (!a->n) return b;
@@ -1204,18 +1223,20 @@ static Value *set_inter(Value *a, Value *b) {
         if (set_is_infinite(b)) return lazy_op(L_CAP, a, b);
         Value *t = a; a = b; b = t;
     }
+    int hold = !reducible(a) && !reducible(b);
     a = enumerate(a);
     List l = {0};
     for (int i = 0; i < a->n; i++) if (set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
-    return list_set(&l);
+    return hold ? held(list_set(&l)) : list_set(&l);
 }
 
 static Value *set_minus(Value *a, Value *b) {
     if (set_is_infinite(a)) return lazy_op(L_DIFF, a, b);
+    int hold = !reducible(a);
     a = enumerate(a);
     List l = {0};
     for (int i = 0; i < a->n; i++) if (!set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
-    return list_set(&l);
+    return hold ? held(list_set(&l)) : list_set(&l);
 }
 
 /* ---------------------------------------------------------------- functions */
@@ -1453,6 +1474,7 @@ struct Module {
     int resolved;         /* 1 while resolving, 2 after */
     int standard;         /* read from the text of a standard module */
     int instantiated;     /* the target of an INSTANCE */
+    Expr *odd[3];         /* its first decimal or too big integer: in a definition, an assumption, a theorem */
 };
 
 /* ---------------------------------------------------------------- lexer */
@@ -1570,6 +1592,10 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 int64_t v = 0;
                 for (int i = 0; i < len; i++) { v = v * 10 + (s[i] - '0'); if (v > 0x7fffffffffffLL) v = 0x7fffffffffffLL; }
                 t->num = v;
+                if (s[len] == '.' && isdigit((unsigned char)s[len + 1])) {   /* a decimal: -1 */
+                    for (len++; isdigit((unsigned char)s[len]); len++) {}
+                    t->num = -1;
+                }
                 t->id = intern_n(s, len);
             } else if ((len > 3 && (strncmp(s, "WF_", 3) == 0 || strncmp(s, "SF_", 3) == 0))) {
                 len = 3;
@@ -2003,6 +2029,8 @@ static Expr *parse_subscript(void) {
     syntax_error("expected a subscript");
 }
 
+static int unit_section;   /* the part of the module being parsed, as Module.odd counts them */
+
 static Expr *parse_primary(void) {
     Tok *t = peek();
     Expr *e;
@@ -2011,6 +2039,8 @@ static Expr *parse_primary(void) {
         next();
         e = mk_expr(X_NUM, t);
         e->num = t->num;
+        e->op = t->id;
+        if ((e->num < 0 || e->num > 2147483647) && !P->mod->odd[unit_section]) P->mod->odd[unit_section] = e;
         return e;
     case T_STR:
         next();
@@ -2766,6 +2796,7 @@ static Module *parse_module(Module *outer) {
     }
     for (;;) {
         Tok *t = peek();
+        unit_section = 0;
         if (t->kind == T_END) { next(); break; }
         if (t->kind == T_EOF) syntax_error("missing ==== at the end of the module");
         if (t->kind == T_SEP) {
@@ -2789,6 +2820,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         if (is_kw(t, "ASSUME") || is_kw(t, "ASSUMPTION") || is_kw(t, "AXIOM")) {
+            unit_section = 1;
             next();
             Def *d = NULL;
             if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); }
@@ -2798,6 +2830,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         if (is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY")) {
+            unit_section = 2;
             next();
             Def *d = NULL;
             if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); add_name(m, d); }
@@ -2861,6 +2894,15 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "EXTENDS Naturals\n"
      "Int  ==  { }\n"
      "-. a == 0 - a\n"
+     "====\n"},
+    /* TLC's, which cannot compute with real numbers; its definitions on TLC's lines */
+    {"Reals",
+     "---- MODULE Reals ----\n\n\n\n\n\n\n\n\n\n\n\n"
+     "EXTENDS Integers\n"
+     "\n"
+     "Real  == \"Reals\"\n"
+     "a / b == CHOOSE m \\in Real : m * b = a\n"
+     "Infinity == CHOOSE i : (i \\notin Real) /\\ (\\A r \\in Real : i > r)\n"
      "====\n"},
     {"Sequences",
      "---- MODULE Sequences ----\n"
@@ -3099,11 +3141,18 @@ static void loc_text(Buf *b, Expr *e) {
     buf_printf(b, "line %d, col %d to line %d, col %d of module %s", e->l1, e->c1, e->l2, e->c2, S(e->mod->name));
 }
 
-/* A new line naming e's location, if it has one. */
+/* An expression as TLC names it after a message: a number as written,
+   else its location. */
+static void node_text(Buf *b, Expr *e) {
+    if (e && e->kind == X_NUM) buf_puts(b, S(e->op));
+    else loc_text(b, e);
+}
+
+/* A new line naming e, if it has a location. */
 static void loc_line(Buf *b, Expr *e) {
     if (!e || !e->mod) return;
     buf_puts(b, "\n");
-    loc_text(b, e);
+    node_text(b, e);
 }
 
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
@@ -3971,10 +4020,17 @@ static Value *bounds_domain(Bound *bs, int nb, Ctx c) {
     dom->u.l.names = NEWN(Value *, 2 * total);
     for (int i = 0; i < nb; i++) {
         Value *set = eval(bs[i].set, c);
-        if (!is_set(set)) fail_at(bs[i].set, "Attempted to enumerate a value that is not a set:\n%s", pretty(set));
         for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) dom->u.l.names[total + k++] = set;
     }
     return total == 1 ? dom->u.l.names[1] : dom;
+}
+
+/* Whether TLC computes a function over a domain bounds_domain made at
+   once: if each bound's set is reducible (§6.6). */
+static int bounds_reducible(Value *dom, int total) {
+    if (total == 1) return reducible(dom);
+    for (int k = 0; k < total; k++) if (!reducible(dom->u.l.names[total + k])) return 0;
+    return 1;
 }
 
 /* Binds the variables of the bounds to the parts of a domain element. */
@@ -4126,7 +4182,7 @@ static const char *java_class(Value *v) {
     case L_SUBSET: return "SubsetValue";
     case L_FCNSET: return "SetOfFcnsValue";
     case L_RCDSET: return "SetOfRcdsValue";
-    case L_FILTER: return v->u.l.a->kind == V_LAZY ? "SetPredValue" : "SetEnumValue";   /* TLC filters an enumerated set at once */
+    case L_FILTER: return "SetPredValue";
     case L_TIMES: return "SetOfTuplesValue";
     case L_CUP: return "SetCupValue";
     case L_CAP: return "SetCapValue";
@@ -4188,8 +4244,7 @@ typedef struct { Value *set; int index; } BindLevel;
 static Value *bound_set(Bound *b, Ctx c) {
     if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
     Value *s = eval(b->set, c);
-    if (!is_set(s)) fail_at(b->set, "Attempted to enumerate a value that is not a set:\n%s", pretty(s));
-    if (set_is_infinite(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+    if (!is_set(s) || user_set(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
     return enumerate(s);
 }
 
@@ -4263,22 +4318,6 @@ static int exists_fn(Ctx c, void *data) {
     return 0;
 }
 
-typedef struct { Expr *body; Bound *b; Value *found; } ChooseData;
-
-static int choose_fn(Ctx c, void *data) {
-    ChooseData *d = data;
-    if (!eval_bool(d->body, c)) return 0;
-    Env *env = env_find(c.env, d->b->defs[0]);
-    if (d->b->tuple) {
-        Value *t = mk_tuple(d->b->n);
-        for (int j = 0; j < d->b->n; j++) t->u.fcn.vals[j] = env_find(c.env, d->b->defs[j])->v;
-        d->found = t;
-    } else {
-        d->found = env->v;
-    }
-    return 1;
-}
-
 typedef struct { Expr *body; List out; } MapData;
 
 static int map_fn(Ctx c, void *data) {
@@ -4339,7 +4378,7 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
 
 static Value *fcndef_value(Def *d, Ctx c) {
     Value *dom = bounds_domain(d->bounds, d->nb, c);
-    if (d->self || keep_lazy || set_is_infinite(dom)) return mk_lambda(dom, NULL, d, c);
+    if (d->self || keep_lazy || !bounds_reducible(dom, bounds_total(d->bounds, d->nb))) return mk_lambda(dom, NULL, d, c);
     return fcn_in_full(dom, NULL, d, c, d->where);
 }
 
@@ -4547,15 +4586,19 @@ static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
 }
 
 static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
-    Value *s = enumerate(eval(e->args[0], c));
+    Value *s = eval(e->args[0], c);
+    int hold = s->kind != V_SET || s->made == MADE_HELD;   /* TLC combines only sets of their elements */
+    s = enumerate(s);
     List l = {0};
     for (int i = 0; i < s->n; i++) {
-        if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i]))
+        Value *t = s->u.set.elems[i];
+        if (is_set(t) && set_is_infinite(t))
             fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
-        Value *t = enumerate(s->u.set.elems[i]);
+        hold |= t->kind != V_SET || t->made == MADE_HELD;
+        t = enumerate(t);
         for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
     }
-    return list_set(&l);
+    return hold ? held(list_set(&l)) : list_set(&l);
 }
 
 static __attribute__((noinline)) Value *ev_domain(Expr *e, Ctx c) {
@@ -4639,7 +4682,7 @@ static __attribute__((noinline)) Value *ev_fcnset(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
     Value *dom = bounds_domain(e->bounds, e->nb, c);
-    if (keep_lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
+    if (keep_lazy || !bounds_reducible(dom, bounds_total(e->bounds, e->nb))) return mk_lambda(dom, e, NULL, c);
     return fcn_in_full(dom, e, NULL, c, e);
 }
 
@@ -4683,14 +4726,15 @@ static __attribute__((noinline)) Value *ev_except(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_filter(Expr *e, Ctx c) {
     Bound *b = &e->bounds[0];
     Value *s = eval(b->set, c);
-    if (!is_set(s)) fail_at(e, "Attempted to compute a subset of the non-set:\n%s", pretty(s));
-    /* Lazy, as in TLC: membership evaluates the predicate on that element only. */
     Value *l = mk_lazy(L_FILTER);
     l->u.l.a = s;
     l->u.l.expr = e;
     l->u.l.env = c.env;
     l->u.l.inst = c.inst;
-    return l;
+    /* As in TLC, a filter of a set of its elements or an interval is
+       computed at once; another is lazy, membership evaluating the
+       predicate on that element only. */
+    return reducible(s) ? enumerate(l) : l;
 }
 
 static __attribute__((noinline)) Value *ev_map(Expr *e, Ctx c) {
@@ -4710,12 +4754,26 @@ static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
 }
 
 static __attribute__((noinline)) Value *ev_choose(Expr *e, Ctx c) {
-    if (!e->bounds[0].set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
-    ChooseData d = {e->args[0], &e->bounds[0], NULL};
-    for_bindings(e->bounds, e->nb, c, choose_fn, &d);
-    if (!d.found)
-        fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
-    return d.found;
+    Bound *b = &e->bounds[0];
+    if (!b->set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
+    Value *s = eval(b->set, c);
+    if (!is_set(s) || user_set(s))
+        fail_at(e, "Attempted to compute the value of an expression of\nform CHOOSE x \\in S: P, but S was not enumerable.");
+    s = enumerate(s);
+    for (int i = 0; i < s->n; i++) {
+        Value *x = s->u.set.elems[i];
+        Env *env = c.env;
+        if (!b->tuple) {
+            env = mk_binding(b->defs[0], x, env);
+        } else {
+            if (!is_fcn(x) || !fcn_is_tuple(x) || x->n != b->n)
+                fail_at(e, "Attempted to compute the value of an expression of form\n"
+                           "CHOOSE <<x1, ... , xN>> \\in S: P, but S was not a set\nof N-tuples.");
+            for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], x->u.fcn.vals[j], env);
+        }
+        if (eval_bool(e->args[0], (Ctx){env, c.inst})) return x;
+    }
+    fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
 }
 
 static __attribute__((noinline)) Value *ev_if(Expr *e, Ctx c) {
@@ -4755,11 +4813,7 @@ static __attribute__((noinline)) Value *ev_sqact(Expr *e, Ctx c) {
 
 #define EVAL(name) static Value *name(Expr *e, Ctx c)
 #define UNUSED_C (void)c
-EVAL(ev_num) {
-    UNUSED_C;
-    if (e->num > 2147483647LL) fail_at(e, "Integer literal too large.");
-    return mk_int(e->num);
-}
+EVAL(ev_num) { UNUSED_C; return mk_int(e->num); }   /* larger ones are rejected before checking */
 EVAL(ev_str) { UNUSED_C; return mk_str((int)e->num); }
 EVAL(ev_bool) { UNUSED_C; return BOOLV(e->num); }
 EVAL(ev_boolean) { UNUSED_C; (void)e; return boolean_set; }
@@ -5456,7 +5510,7 @@ static void print_lambda(Buf *b, Value *f) {
         k += bs[i].tuple ? 1 : bs[i].n;
     }
     buf_puts(b, " |-> <expression ");
-    loc_text(b, f->u.l.binder ? f->u.l.binder->body : f->u.l.expr->args[0]);
+    node_text(b, f->u.l.binder ? f->u.l.binder->body : f->u.l.expr->args[0]);
     buf_puts(b, ">]");
 }
 
@@ -6246,7 +6300,7 @@ static void print_error_message(void) {
     printf("Error: %s", error_message.s ? error_message.s : "");
     if (error_expr && error_expr->mod) {
         Buf b = {0};
-        loc_text(&b, error_expr);
+        node_text(&b, error_expr);
         printf("\n%s", b.s);
         free(b.s);
     }
@@ -6742,7 +6796,7 @@ static void print_error_text(void) {
     printf("%s\n", error_message.s ? error_message.s : "");
     if (error_expr && error_expr->mod) {
         Buf b = {0};
-        loc_text(&b, error_expr);
+        node_text(&b, error_expr);
         printf("%s\n", b.s);
         free(b.s);
     }
@@ -7211,7 +7265,7 @@ static void evaluate_constants(Module *m) {
         if (sigsetjmp(here, 0)) {
             handler = NULL;
             Buf b = {0};
-            loc_text(&b, error_expr);
+            node_text(&b, error_expr);
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
                          S(c->replacement->name), error_module ? "" : " - specifically: ",
                          error_module ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? b.s : "");
@@ -7253,7 +7307,7 @@ static void check_assumptions(Module *m, int *done_status) {
             printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
             if (error_expr && error_expr->mod) {
                 Buf l = {0};
-                loc_text(&l, error_expr);
+                node_text(&l, error_expr);
                 printf("\n%s", l.s);
             }
             printf("\n");
@@ -7522,6 +7576,7 @@ static Expr *synth(int kind, Expr *at, int n, Expr *a, Expr *b) {
 }
 
 static TF *to_tf(Expr *e, Ctx c, int neg);
+static Expr *tf_unhandled;   /* the formula to_tf failed on as one it cannot handle */
 
 typedef struct { Expr *body; TF *acc; int op; } TfData;
 
@@ -7598,6 +7653,7 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
     }
     default: break;
     }
+    tf_unhandled = e;
     fail_at(e, "TLC cannot handle this temporal formula.");
 }
 
@@ -8183,7 +8239,40 @@ static int check_liveness(void) {
     return 0;
 }
 
+/* As TLC does before it checks a model: a property that is no formula it
+   can check, such as \EE x : F, is an error. Other errors are left for
+   the check. */
+static int check_temporal_forms(void) {
+    for (int p = 0; p < ntemporal_props; p++) {
+        EvalState s = eval_save();
+        sigjmp_buf here;
+        handler = &here;
+        tf_unhandled = NULL;
+        if (!sigsetjmp(here, 0)) to_tf(temporal_props[p].expr, root_ctx, 1);
+        eval_restore(s);
+        if (tf_unhandled) {
+            Buf b = {0};
+            loc_text(&b, tf_unhandled);
+            printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
+            return TPP_ERROR;
+        }
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------- driver */
+
+/* The literal TLC fails on first as it processes its constants: the
+   definitions of a module, its inner modules, its assumptions, its
+   theorems (§11.3). */
+static Expr *odd_literal(Module *m) {
+    if (m->odd[0]) return m->odd[0];
+    for (int i = 0; i < m->nnested; i++) {
+        Expr *e = odd_literal(m->nested[i]);
+        if (e) return e;
+    }
+    return m->odd[1] ? m->odd[1] : m->odd[2];
+}
 
 int tpp_check(const TPPOptions *o) {
     printf("tpp version %s\n", TPP_VERSION);
@@ -8235,6 +8324,14 @@ int tpp_check(const TPPOptions *o) {
     load_references(root);
     finish_module(root);
     resolve_module(root);
+    for (int i = 0; i < nfinished; i++) {
+        Expr *e = finished[i]->outer ? NULL : odd_literal(finished[i]);
+        if (e && e->num < 0) config_error("TLC can't handle real numbers.\n%s", S(e->op));
+        if (e) {
+            printf("Error: TLC can't handle a number this big.\n%s\n", S(e->op));
+            return TPP_ERROR;
+        }
+    }
     bind_natives();
     parse_config(config_text);
     setup_model();
@@ -8271,7 +8368,8 @@ int tpp_check(const TPPOptions *o) {
     handler = NULL;
     if (o->dump) dump_file = fopen(o->dump, "w");
     nworkers = o->workers > 1 ? o->workers : 1;
-    status = search();
+    status = check_temporal_forms();
+    if (!status) status = search();
     stop_workers();
     return status;
 }

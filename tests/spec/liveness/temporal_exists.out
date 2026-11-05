@@ -1,0 +1,2 @@
+Error: TLC cannot handle the temporal formula line 8, col 6 to line 8, col 24 of module temporal_exists
+exit 255

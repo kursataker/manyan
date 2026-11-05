@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 48 of module choose_tuples failed.
+Attempted to compute the value of an expression of form
+CHOOSE <<x1, ... , xN>> \in S: P, but S was not a set
+of N-tuples.
+line 4, col 15 to line 4, col 47 of module choose_tuples
+exit 10

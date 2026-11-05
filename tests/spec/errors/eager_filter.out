@@ -1,0 +1,3 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 48 of module eager_filter failed.
+The second argument of \div is 0.
+exit 10

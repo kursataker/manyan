@@ -97,7 +97,12 @@ subscript `vars`.
 
 A numeral is a sequence of decimal digits. `\b`, `\o`, and `\h` (or `\B`,
 `\O`, `\H`) introduce binary, octal, and hexadecimal numerals. A decimal
-`d.d` is accepted by the grammar (§12).
+`d.d` is accepted by the grammar. As TLC cannot compute with either, a
+spec with a decimal, or with a numeral above 2^31 - 1, anywhere in a
+definition, assumption or theorem is an error before checking (§11.3),
+whether it is used or not. The first is reported: the modules in the
+order they are finished (dependencies first), and in each its
+definitions, its inner modules, its assumptions, then its theorems.
 
 ### 3.6 Strings
 
@@ -320,6 +325,18 @@ be decided for the infinite sets `Nat`, `Int`, `STRING`, `Seq(S)`,
 `SUBSET S`, `[S -> T]`, `[a : S]`, and filters of them; enumerating an
 infinite set is an error.
 
+As in TLC, `{x \in S : p}` is computed at once when `S` is reducible: an
+interval, or a set of elements that is not one TLC keeps as its
+definition. TLC keeps as their definitions `SUBSET S`, `S \X T`,
+`[S -> T]`, `[a : S]`, `Seq(S)`, `Nat`, `Int`, `STRING`; `UNION S` unless
+`S` and its elements are sets of elements; `S \cup T` unless both are
+reducible; `S \cap T` unless one is; `S \ T` unless `S` is; and a filter
+of a set that is not reducible. Such a filter is lazy: membership
+evaluates `p` for that element only, and `S` may be any value until the
+filter is enumerated. A quantifier or `CHOOSE` over a value that is not a
+set, or over `Nat`, `Int`, `STRING` or `Seq(S)`, is an error at once; over
+another infinite set, the error is that of enumerating it.
+
 ### 6.6 Functions
 
 `[x \in S |-> e]` and `[x \in S, y \in T |-> e]`; application `f[a]` and
@@ -332,7 +349,8 @@ As in TLC, `[x \in S |-> e]` is computed in full where it is evaluated,
 except where it stays lazy: in the function position of an application
 `f[a]` (directly, or as the value of the operator, LET definition or arm
 `f` names), within the body of a lazy function, in a recursive function
-definition (§5.3), and over an infinite domain. A function definition that
+definition (§5.3), and over a domain whose sets are not all reducible
+(§6.5), such as an infinite one or one that is no set. A function definition that
 is not recursive and names no variable is computed in full once, before
 checking, if it can be. Applying a lazy function evaluates `e`
 at that argument only, so an error elsewhere in its domain is not raised,
@@ -341,7 +359,11 @@ and `f[i \in S] == [j \in T |-> ... f[i][k] ...]` may use other values of
 compared, fingerprinted, printed, or taken `DOMAIN` or `EXCEPT` of. One
 that cannot be, being over an infinite domain or failing, prints as
 `[x \in S |-> <expression LOC>]`: each bound's first name, or `<<a, b>>` for
-a tuple pattern, with its domain, then the location of `e` (§11.3).
+a tuple pattern, with its domain, then `e` as TLC names an expression:
+its location (§11.3), or, for a numeral, the numeral as written. A value
+that holds such a function prints on one line. A function of several
+bounds is computed with the first bound varying fastest, and an error
+message prints it in that order; `Print` and `PrintT` print it sorted.
 
 An EXCEPT path whose key is outside the domain leaves the
 value unchanged and prints TLC's warning, `Warning: The EXCEPT was applied
@@ -447,6 +469,9 @@ evaluated natively.
 - **Bags**: `IsABag`, `BagToSet`, `SetToBag`, `BagIn`, `EmptyBag`, `(+)`,
   `(-)`, `BagUnion`, `\sqsubseteq`, `SubBag`, `BagOfAll`, `BagCardinality`,
   `CopiesIn`.
+- **Reals**: TLC's module of placeholders: `Real` is the string
+  `"Reals"`, `a / b` is `CHOOSE m \in Real : m * b = a` (an error), and
+  `Infinity` an unbounded `CHOOSE`; their definitions are on TLC's lines.
 - **TLC**: `Print`, `PrintT`, `Assert`, `JavaTime`, `TLCGet`, `TLCSet`,
   `:>`, `@@`, `Permutations`, `SortSeq`, `RandomElement`, `Any`,
   `ToString`, `TLCEval`.
@@ -646,6 +671,9 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |
 | parse or semantic error | `Error: Parsing or semantic analysis failed.` | 150 |
+| a decimal in the spec (§3.5) | `Error: TLC can't handle real numbers.` and the decimal as written | 151 |
+| a numeral above 2^31 - 1 (§3.5) | `Error: TLC can't handle a number this big.` and the numeral | 255 |
+| a property TLC cannot check, such as `\EE x : F` or `\AA x : F` | `Error: TLC cannot handle the temporal formula` and its location, before checking | 255 |
 
 The evaluation messages, as the line after `Error: Evaluating assumption`
 or as the first line of an action error:
@@ -689,6 +717,7 @@ col c to line l2, col c2 of module M`.
 
 Not covered: the proof language (`PROOF`, steps, `USE`, `BY`; skipped,
 except that a `HIDE` may name only theorems, assumptions, and steps, and a
-theorem's statement is kept for §5.7), real numbers, `\AA` and `\EE`, `-simulate`, `-generate`,
+theorem's statement is kept for §5.7), computing with real numbers and
+with `\AA` and `\EE` (which TLC cannot either; §3.5, §11.3), `-simulate`, `-generate`,
 checkpointing, multiple workers' scheduling, distributed TLC, and the
 TLA⁺ Toolbox outputs (`-tool`).

@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 20 of module reals_divide failed.
+Attempted to compute the value of an expression of
+form CHOOSE x \in S: P, but S was not enumerable.
+line 16, col 10 to line 16, col 38 of module Reals
+exit 10

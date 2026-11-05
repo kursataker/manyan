@@ -1,0 +1,3 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 45 of module choose_subset_nat failed.
+Attempted to compute the number of elements in the overridden value Nat.
+exit 10

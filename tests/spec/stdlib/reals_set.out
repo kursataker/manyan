@@ -1,0 +1,6 @@
+"Reals"
+Error: Evaluating assumption line 5, col 8 to line 5, col 25 of module reals_set failed.
+Attempted to check if the value:
+3
+is an element of the string "Reals"
+exit 10
