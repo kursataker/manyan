@@ -1312,7 +1312,13 @@ typedef struct {
     Expr *set;      /* NULL for an unbounded binding */
 } Bound;
 
-typedef struct { int name; Expr **args; int n; } Seg;
+/* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
+   !:, !@ and !(x) are sel > 0 or the SEL_ kinds; a name is sel 0. */
+typedef struct { int name; int sel; Expr **args; int n; } Seg;
+enum { SEL_LL = -1, SEL_GG = -2, SEL_COLON = -3, SEL_AT = -4, SEL_NULL = -5 };
+
+/* lab(x, y) :: e names e, with the bound identifiers x and y, for selectors. */
+typedef struct { int name; int n; int *names; Def **defs; } Label;
 
 typedef struct { int n; Expr **keys; int *fields; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f */
 
@@ -1328,6 +1334,7 @@ struct Expr {
     Def **defs;           /* LET definitions; instance path of K_INSTCALL */
     int ndefs;
     Seg *segs;            /* X_NAME: A!B(x)!C */
+    Label *label;
     int nseg;
     Path *paths;          /* X_EXCEPT */
     int64_t num;
@@ -1359,6 +1366,8 @@ struct Def {
     Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
     int level;            /* 0 constant, 1 state, 2 action, 3 temporal; -1 unknown */
     int level_busy;
+    int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
+    int level_checked;
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
@@ -1399,7 +1408,7 @@ struct Module {
     int nnested;
     Tok *toks;
     int ntoks;
-    int resolved;
+    int resolved;         /* 1 while resolving, 2 after */
     int standard;         /* read from the text of a standard module */
     int instantiated;     /* the target of an INSTANCE */
 };
@@ -1828,23 +1837,30 @@ static Expr **parse_args(int *count) {
 static Expr *parse_name(void) {
     Tok *start = peek();
     Expr *e = mk_expr(X_NAME, start);
-    Seg segs[16];
+    Seg segs[32];
     int n = 0;
     for (;;) {
         Tok *t = peek();
         Seg *s = &segs[n++];
         memset(s, 0, sizeof *s);
-        if (t->kind == T_IDENT) s->name = t->id;
+        static const char *sels[] = {"<<", ">>", ":", "@", "("};
+        for (int k = 0; k < 5 && n > 1; k++) if (is_op(t, sels[k])) s->sel = -1 - k;
+        if (s->sel == SEL_NULL) { s->args = parse_args(&s->n); goto more; }
+        if (n > 1 && t->kind == T_NUM && t->num > 0) s->sel = (int)t->num;
+        else if (s->sel) ;
+        else if (t->kind == T_IDENT) s->name = t->id;
         else if (t->kind == T_OP || t->kind == T_KW) s->name = canonical(t->id);
         else syntax_error("expected a name");
         next();
-        if (is_op(peek(), "(") && n < 16) s->args = parse_args(&s->n);
-        if (is_op(peek(), "!") && n < 16) { next(); continue; }
+        if (!s->sel && is_op(peek(), "(")) s->args = parse_args(&s->n);
+    more:
+        if (is_op(peek(), "!") && n < 32) { next(); continue; }
         break;
     }
     e->segs = NEWN(Seg, n);
     memcpy(e->segs, segs, sizeof(Seg) * (size_t)n);
     e->nseg = n;
+    while (segs[n - 1].sel) n--;
     e->op = segs[n - 1].name;
     finish(e);
     return e;
@@ -2364,9 +2380,37 @@ static Expr *parse_postfix(void) {
 }
 
 /* An operand; *prefix is its prefix operator, if it is an application of one. */
+/* lab :: or lab(x, y) :: ahead. */
+static int label_ahead(void) {
+    if (peek()->kind != T_IDENT) return 0;
+    int k = 1;
+    if (is_op(peek_at(1), "(")) {
+        do k++; while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",") && k++);
+        if (peek_at(k)->kind != T_IDENT || !is_op(peek_at(k + 1), ")")) return 0;
+        k += 2;
+    }
+    return is_op(peek_at(k), "::");
+}
+
 static Expr *parse_unary(const OpInfo **prefix) {
     Tok *t = peek();
     *prefix = NULL;
+    if (label_ahead()) {
+        Label *l = NEW(Label);
+        l->name = next()->id;
+        int names[32];
+        if (is_op(peek(), "(")) {
+            next();
+            do names[l->n++] = expect_ident(); while (is_op(peek(), ",") && next() && l->n < 32);
+            expect_op(")");
+        }
+        l->names = NEWN(int, l->n);
+        memcpy(l->names, names, sizeof(int) * (size_t)l->n);
+        expect_op("::");
+        Expr *e = parse_expr();
+        e->label = l;
+        return e;
+    }
     const OpInfo *info = op_info(t, PREFIX), *named = op_info(t, INFIX);
     if (!named) named = op_info(t, POSTFIX);
     if (!info && named && !is_junction(t) && is_op(peek_at(1), "(")) {
@@ -2627,6 +2671,27 @@ static int at_unit_start(void) {
     return t->kind == T_EOF || t->kind == T_END || t->kind == T_SEP || t->col == 1;
 }
 
+/* The facts of a HIDE: names of theorems, assumptions, or steps, which
+   are the only expressions it may hide. */
+static void hide_facts(void) {
+    while (!at_unit_start() && !is_kw(peek(), "DEF") && !is_kw(peek(), "DEFS")) {
+        Tok *t = next();
+        if (is_kw(t, "MODULE")) next();
+        else if (is_op(t, "<")) { while (!at_unit_start() && !is_op(next(), ">")) continue; next(); }
+        else if (t->kind != T_IDENT)
+            semantic_error(mk_expr(X_NAME, t), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+        while (is_op(peek(), "!") && !at_unit_start()) { next(); next(); }
+        if (!is_op(peek(), ",")) return;
+        next();
+    }
+}
+
+/* A proof, or the rest of USE, HIDE, or BY: up to the next unit. */
+static void skip_proof(void) {
+    while (!at_unit_start())
+        if (is_kw(next(), "HIDE")) hide_facts();
+}
+
 /* A module: ---- MODULE Name ---- units ====. */
 static Module *parse_module(Module *outer) {
     Module *m = NEW(Module);
@@ -2674,23 +2739,30 @@ static Module *parse_module(Module *outer) {
         }
         if (is_kw(t, "ASSUME") || is_kw(t, "ASSUMPTION") || is_kw(t, "AXIOM")) {
             next();
-            int name = -1;
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { name = next()->id; next(); }
-            add_unit(m, 2, NULL, parse_expr(), NULL, 0);
-            if (name >= 0) add_name(m, thm_name(name));
+            Def *d = NULL;
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); }
+            Expr *e = parse_expr();
+            if (d) { d->body = e; add_name(m, d); }
+            add_unit(m, 2, d, e, NULL, 0);
             continue;
         }
         if (is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY")) {
             next();
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { add_name(m, thm_name(next()->id)); next(); }
-            parse_expr();
-            while (!at_unit_start()) next();
+            Def *d = NULL;
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); add_name(m, d); }
+            /* A theorem's statement is kept for its subexpressions; ASSUME ... PROVE is not. */
+            if (!is_kw(peek(), "ASSUME")) {
+                Expr *body = parse_expr();
+                if (d) d->body = body;
+            }
+            skip_proof();
             continue;
         }
         if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
             is_kw(t, "OMITTED") || (is_op(t, "<") && peek_at(1)->kind == T_NUM)) {
             next();
-            while (!at_unit_start()) next();
+            if (is_kw(t, "HIDE")) hide_facts();
+            skip_proof();
             continue;
         }
         if (is_kw(t, "RECURSIVE")) {
@@ -3053,6 +3125,8 @@ static void add_decl(Module *m, Def *d) {
 static void resolve_expr(Expr *e, Scope *sc);
 static void resolve_def(Def *d, Scope *sc);
 static void resolve_module(Module *m);
+static void check_levels(Expr *e, int max);
+static void check_def_levels(Def *d);
 
 static Def *scope_lookup(Scope *sc, int name) {
     for (; sc; sc = sc->next) if (sc->name == name) return sc->def;
@@ -3167,7 +3241,143 @@ static const struct { const char *name; int kind; } core_ops[] = {
     {"[]", K_ALWAYS}, {"<>", K_EVENTUALLY}, {"~>", K_LEADSTO}, {"\\X", K_TIMES}, {"\\cdot", K_CDOT},
     {"-+->", K_WHILE}, {"BOOLEAN", K_BOOLEAN}, {"STRING", K_STRINGSET}, {NULL, 0}};
 
-/* Resolves A!B(x)!C: each segment but the last names an instance. */
+/* The expression labeled `name` in x, but not in another label in it or
+   in a LET definition, which have labels of their own (§5.7). */
+static Expr *find_label(Expr *x, int name, int own) {
+    if (!x) return NULL;
+    if (x->label && !own) return x->label->name == name ? x : NULL;
+    if (x->kind == X_LET) return find_label(x->args[0], name, 0);
+    Expr *l = NULL;
+    for (int i = 0; i < x->n && !l; i++) l = find_label(x->args[i], name, 0);
+    for (int i = 0; i < x->nb && !l; i++) l = find_label(x->bounds[i].set, name, 0);
+    return l;
+}
+
+/* The LET expressions on the way from x to y, outermost first, after n
+   others; -1 if y is not in x. */
+static int lets_to(Expr *x, Expr *y, Expr **lets, int n) {
+    if (!x) return -1;
+    if (x == y) return n;
+    int r = -1;
+    if (x->kind == X_LET && n < 64) {
+        lets[n++] = x;
+        for (int i = 0; i < x->ndefs && r < 0; i++) r = lets_to(x->defs[i]->body, y, lets, n);
+    }
+    for (int i = 0; i < x->n && r < 0; i++) r = lets_to(x->args[i], y, lets, n);
+    for (int i = 0; i < x->nb && r < 0; i++) r = lets_to(x->bounds[i].set, y, lets, n);
+    for (int i = 0; x->kind == X_EXCEPT && i < x->n - 1 && r < 0; i++)
+        for (int k = 0; k < x->paths[i].n && r < 0; k++) r = lets_to(x->paths[i].keys[k], y, lets, n);
+    return r;
+}
+
+/* Which of n operands selector sel picks, from 1; 0 for none. */
+static int operand(int sel, int n) {
+    if (sel > 0) return sel <= n ? sel : 0;
+    if (sel == SEL_LL) return n > 0;
+    if (sel == SEL_GG) return n == 2 ? 2 : 0;
+    return 0;
+}
+
+/* d(a)!lab(b)!2!(c)...: the subexpression that segments i.. of e name, as
+   an operator of every parameter met on the way: d's, the labels', and the
+   identifiers !(c) or !@ bind. Its arguments, if given, are in *args. */
+static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
+    if (d->kind != D_OP || d->local == 2 || !d->body)
+        semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
+    Def *params[64];
+    Expr *given[64];
+    int np = 0, ng = 0, missing = 0;
+#define TAKE(defs, count, seg) do { \
+        if ((seg)->n && (seg)->n != (count)) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), (count)); \
+        if (np + (count) > 64) semantic_error(e, "Too many parameters."); \
+        for (int k_ = 0; k_ < (count); k_++) { params[np++] = (defs)[k_]; if ((seg)->n) given[ng++] = (seg)->args[k_]; } \
+        missing |= (count) && !(seg)->n; \
+    } while (0)
+    TAKE(d->params, d->nparams, &e->segs[i]);
+    Expr *cur = d->body;
+    int names = 1, own = 0;   /* a name next is a label, else a LET definition */
+    for (int k = i + 1; k < e->nseg; k++) {
+        Seg *s = &e->segs[k];
+        if (s->sel == 0 && names) {
+            cur = find_label(cur, s->name, own);
+            if (!cur) semantic_error(e, "Unknown label `%s'.", S(s->name));
+            Label *l = cur->label;
+            TAKE(l->defs, l->n, s);
+            own = 1;
+        } else if (s->sel == 0) {
+            Def *x = NULL;
+            for (int j = 0; cur->kind == X_LET && j < cur->ndefs && !x; j++)
+                if (cur->defs[j]->name == s->name) x = cur->defs[j];
+            if (!x || !x->body) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+            TAKE(x->params, x->nparams, s);
+            cur = x->body;
+            names = 1, own = 0;
+        } else if (s->sel == SEL_COLON) {
+            names = 0;
+        } else {
+            int n = 0, k0 = k;   /* CASE takes two selectors */
+            if (cur->kind == X_LET) {
+                if (operand(s->sel, 1)) n = 1, cur = cur->args[0];
+            } else if (cur->nb) {
+                if (s->sel == SEL_NULL || s->sel == SEL_AT) {
+                    Def *bound[64];
+                    int nbound = 0;
+                    for (int b = 0; b < cur->nb; b++)
+                        for (int j = 0; j < cur->bounds[b].n && nbound < 64; j++) bound[nbound++] = cur->bounds[b].defs[j];
+                    TAKE(bound, nbound, s);
+                    n = 1, cur = cur->args[0];
+                } else if ((n = operand(s->sel, cur->bounds[0].set ? cur->nb : 0))) {
+                    cur = cur->bounds[n - 1].set;
+                }
+            } else if (cur->kind == X_CASE) {
+                int arm = operand(s->sel, cur->n / 2);
+                if (arm && ++k < e->nseg && (n = operand(e->segs[k].sel, 2))) cur = cur->args[2 * arm - 3 + n];
+            } else if (cur->kind == X_DOT) {
+                if ((n = operand(s->sel, 2)) == 1) cur = cur->args[0];
+                else if (n) {
+                    Expr *f = NEW(Expr);
+                    *f = *cur;
+                    f->kind = X_STR, f->n = 0, f->label = NULL;
+                    f->num = cur->op;
+                    cur = f;
+                }
+            } else if ((n = operand(s->sel, cur->n)) && (cur->kind != X_EXCEPT || n == 1)) {
+                cur = cur->args[n - 1];
+            }
+            if (!n || !cur) semantic_error(e, "Nonexistent operand specified by selector %d of %s.", k0 - i, S(d->name));
+            names = 0, own = 0;
+        }
+    }
+#undef TAKE
+    if (missing && ng) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), np);
+    /* The LET definitions around the subexpression are in scope in it. */
+    Expr *lets[64];
+    Expr *body = cur;
+    for (int n = lets_to(d->body, cur, lets, 0); n > 0; n--) {
+        Expr *let = NEW(Expr);
+        *let = *lets[n - 1];
+        let->label = NULL;
+        let->args = NEWN(Expr *, 1);
+        let->args[0] = body;
+        body = let;
+    }
+    Def *f = NEW(Def);
+    *f = *d;
+    f->kind = D_OP;
+    f->nparams = np;
+    f->params = NEWN(Def *, np);
+    memcpy(f->params, params, sizeof(Def *) * (size_t)np);
+    f->body = body;
+    f->level = -1;
+    f->cache = NULL;
+    *nargs = ng;
+    *args = NEWN(Expr *, ng);
+    memcpy(*args, given, sizeof(Expr *) * (size_t)ng);
+    return f;
+}
+
+/* Resolves A!B(x)!C: each segment but the last names an instance, or
+   the segments after a definition select a subexpression of it. */
 static void resolve_path(Expr *e, Scope *sc) {
     Def *path[32];
     Seg pargs[32];
@@ -3175,9 +3385,11 @@ static void resolve_path(Expr *e, Scope *sc) {
     memset(pargs, 0, sizeof pargs);
     Module *m = cur_module;
     Def *d = NULL;
+    Expr **args = NULL;
+    int nargs = 0;
+    for (int i = 0; i < e->nseg; i++) resolve_args(e->segs[i].args, e->segs[i].n, sc);
     for (int i = 0; i < e->nseg; i++) {
         Seg *s = &e->segs[i];
-        resolve_args(s->args, s->n, sc);
         Sym *sym = NULL;
         if (i == 0) {
             d = scope_lookup(sc, s->name);
@@ -3191,24 +3403,28 @@ static void resolve_path(Expr *e, Scope *sc) {
             d = sym->def;
         }
         if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
-        if (i + 1 < e->nseg) {
-            if (d->kind != D_INST) semantic_error(e, "%s is not a module instance.", S(s->name));
+        if (i + 1 < e->nseg && d->kind == D_INST) {
             check_arity(e, d, s->n);
             pargs[np] = *s;
             path[np++] = d;
             m = d->target;
             d = NULL;
+        } else if (i + 1 < e->nseg) {
+            d = subexpression(e, d, i, &args, &nargs);
+            break;
         } else {
             check_arity(e, d, s->n);
+            args = s->args;
+            nargs = s->n;
         }
     }
-    e->kind = K_INSTCALL;
+    e->kind = np ? K_INSTCALL : K_CALL;
     e->def = d;
     e->defs = NEWN(Def *, np);
     memcpy(e->defs, path, sizeof(Def *) * (size_t)np);
     e->ndefs = np;
-    e->args = e->segs[e->nseg - 1].args;
-    e->n = e->segs[e->nseg - 1].n;
+    e->args = args;
+    e->n = nargs;
     /* segs now holds each instance's arguments, aligned with defs. */
     e->segs = NEWN(Seg, np);
     memcpy(e->segs, pargs, sizeof(Seg) * (size_t)np);
@@ -3271,6 +3487,12 @@ static void mark_lazy(Def *d) {
 }
 
 static void resolve_expr(Expr *e, Scope *sc) {
+    if (e->label && !e->label->defs) {
+        Label *l = e->label;
+        l->defs = NEWN(Def *, l->n);
+        for (int i = 0; i < l->n; i++)
+            if (!(l->defs[i] = scope_lookup(sc, l->names[i]))) semantic_error(e, "Unknown operator: `%s'.", S(l->names[i]));
+    }
     switch (e->kind) {
     case X_NUM: case X_BOOL: case X_AT:
         return;
@@ -3388,20 +3610,7 @@ static void resolve_def(Def *d, Scope *sc) {
                                    S(decl->name), S(t->name));
                 exprs[i] = ref;
             }
-            if (exprs[i]->kind == X_OPREF || (decl->arity && exprs[i]->kind == X_NAME)) {
-                Expr *x = exprs[i];
-                Def *op = x->kind == X_OPREF ? operator_def(x, x->op, inner) : NULL;
-                if (!op) {
-                    Def *b = scope_lookup(inner, x->op);
-                    Sym *s = b ? NULL : module_lookup(cur_module, x->op);
-                    op = b ? b : s ? s->def : NULL;
-                    if (!op) semantic_error(x, "Unknown operator: `%s'.", S(x->op));
-                }
-                x->kind = X_OPREF;
-                x->def = op;
-            } else {
-                resolve_expr(exprs[i], inner);
-            }
+            resolve_expr(exprs[i], inner);
         }
         d->nsubst = t->ndecls;
         d->subst_decl = decls;
@@ -3415,6 +3624,11 @@ static void resolve_def(Def *d, Scope *sc) {
 }
 
 static void resolve_module(Module *m) {
+    if (m->resolved == 1) {
+        printf("Circular dependency among .tla files: module %s depends on itself.\n", S(m->name));
+        printf("Error: Parsing or semantic analysis failed.\n");
+        exit(TPP_ERROR_PARSE);
+    }
     if (m->resolved) return;
     m->resolved = 1;
     Module *saved = cur_module;
@@ -3445,6 +3659,14 @@ static void resolve_module(Module *m) {
             } else {
                 resolve_def(d, NULL);
             }
+        } else if (u->kind == 4 && u->def->body) {
+            /* A theorem's or assumption's name is an operator without parameters. */
+            Def *d = NEW(Def);
+            *d = *u->def;
+            d->kind = D_OP;
+            d->level = d->var_index = -1;
+            resolve_def(d, NULL);
+            add_sym(m, d->name, d, NULL, 0, 0, NULL);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
             for (int k = i + 1; k < m->nunits; k++)
                 if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&
@@ -3465,14 +3687,99 @@ static void resolve_module(Module *m) {
                 memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
                 add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
             }
-        } else if (u->kind == 2) {
+        } else if (u->kind == 2 && !u->def) {   /* a named one is resolved with its name */
             resolve_expr(u->expr, NULL);
         } else if (u->kind == 3) {
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
         }
     }
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 2) check_levels(u->expr, 3);
+        else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
+        else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
+    }
+    m->resolved = 2;
     cur_module = saved;
+}
+
+/* Level checking (§5.8). Each parameter of a definition, and each
+   declaration of a module, may be used only where its argument or
+   substitute may have some level; an operator applied to arguments of
+   higher levels than its parameters allow is an error. */
+
+static int level_max(Def *d) { return d->level_max ? d->level_max - 1 : 3; }
+
+/* Argument i of op in e, where its level may be at most cap; e itself may be at most max. */
+static void check_argument(Expr *e, const char *op, int i, Expr *a, int cap, int max) {
+    if (!a) return;
+    if (expr_level(a) > cap)
+        semantic_error(e, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.", op, i + 1);
+    check_levels(a, cap < max ? cap : max);
+}
+
+/* The operands of e, the first of level at most first, the others at most rest. */
+static void check_operands(Expr *e, int first, int rest, int max) {
+    for (int i = 0; i < e->n; i++) check_argument(e, S(e->op), i, e->args[i], i ? rest : first, max);
+}
+
+/* Checks e, where its level may be at most max, and records that limit for
+   the parameters and declarations it uses. */
+static void check_levels(Expr *e, int max) {
+    if (!e) return;
+    Def *d = e->def;
+    switch (e->kind) {
+    case K_BOUND: case K_DECL:
+        if (max < level_max(d)) d->level_max = max + 1;
+        return;
+    case K_PRIME: case K_UNCHANGED: check_operands(e, 1, 1, max); return;
+    case K_ENABLED: case K_CDOT: check_operands(e, 2, 2, max); return;
+    case X_SQACT: case X_ANGLEACT: check_operands(e, 2, 1, max); return;   /* [A]_v */
+    case X_WF: case X_SF: check_operands(e, 1, 2, max); return;            /* WF_v(A) */
+    case K_CALL: case K_INSTCALL:
+        check_def_levels(d);
+        for (int i = 0; i < e->n; i++)
+            check_argument(e, S(d->name), i, e->args[i], i < d->nparams ? level_max(d->params[i]) : 3, max);
+        for (int k = 0; e->kind == K_INSTCALL && k < e->ndefs; k++) {
+            Def *in = e->defs[k];
+            check_def_levels(in);
+            for (int i = 0; i < e->segs[k].n && i < in->nparams; i++)
+                check_argument(e, S(in->name), i, e->segs[k].args[i], level_max(in->params[i]), max);
+        }
+        return;
+    case X_LET:
+        for (int i = 0; i < e->ndefs; i++) check_def_levels(e->defs[i]);
+        check_levels(e->args[0], max);
+        return;
+    case X_LAMBDA: check_def_levels(d); return;
+    default:
+        for (int i = 0; i < e->n; i++) check_levels(e->args[i], max);
+        for (int i = 0; i < e->nb; i++) check_levels(e->bounds[i].set, max);
+        for (int i = 0; e->kind == X_EXCEPT && i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) check_levels(e->paths[i].keys[k], max);
+        return;
+    }
+}
+
+/* A definition, once: its body, or an instance's substitutions, each of a
+   level its declaration allows. */
+static void check_def_levels(Def *d) {
+    if (d->level_checked) return;
+    d->level_checked = 1;
+    if (d->kind == D_INST) {
+        for (int i = 0; i < d->nsubst; i++) {
+            Def *decl = d->subst_decl[i];
+            Expr *x = d->subst_expr[i];
+            if (expr_level(x) > level_max(decl))
+                semantic_error(d->where, "Level error in instantiating module '%s':\nThe level of the expression or operator substituted for '%s' \nmust be at most %d.",
+                               S(d->target->name), S(decl->name), level_max(decl));
+            check_levels(x, level_max(decl));
+        }
+        return;
+    }
+    for (int i = 0; i < d->nb; i++) check_levels(d->bounds[i].set, 3);
+    check_levels(d->body, 3);
 }
 
 /* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
@@ -3755,7 +4062,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
                 Ctx outer = {in->env, in->parent};
                 Expr *x = id->subst_expr[i];
                 if (x->kind == X_OPREF) return mk_oper(x->def, outer);
-                return eval(x, outer);
+                return d->arity ? eval_operator_arg(x, outer) : eval(x, outer);
             }
     }
     if (d->kind == D_VAR) {
@@ -4357,10 +4664,12 @@ static Value *eval(Expr *e, Ctx c) {
 static Value *eval_operator_arg(Expr *a, Ctx c) {
     if (a->kind == X_LAMBDA || a->kind == X_OPREF) return eval(a, c);
     if (a->kind == K_CALL && a->n == 0) return mk_oper(a->def, (Ctx){a->def->local == 2 ? c.env : NULL, c.inst});
-    if (a->kind == K_BOUND || a->kind == K_PARAMCALL) {
-        Value *v = eval(a, c);
-        return v;
+    if (a->kind == K_PARAMCALL && a->n == 0 && a->def->kind == D_PARAM) {
+        Env *b = env_find(c.env, a->def);
+        if (!b) fail_at(a, "Unbound operator parameter %s.", S(a->def->name));
+        return force(b);
     }
+    if (a->kind == K_PARAMCALL && a->n == 0) return decl_value(a->def, c, a);
     if (a->kind == K_INSTCALL && a->n == 0) {
         Inst *inst = c.inst;
         for (int i = 0; i < a->ndefs; i++) {
@@ -6153,7 +6462,10 @@ static int search(void) {
     gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
     if (violation) return violation;
-    printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
+    if (generated == nstates)
+        printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
+    else
+        printf("Finished computing initial states: %ld states generated, with %d of them distinct.\n", generated, nstates);
     fflush(stdout);
     gen_init = 0;
     gen_emit = next_emit;

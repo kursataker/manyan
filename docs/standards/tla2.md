@@ -161,7 +161,7 @@ declares the state variables. The plural spellings are synonyms.
 `Op == e`, `Op(p1, ..., pn) == e`, and the infix, prefix, and postfix forms
 `a ++ b == e`, `-. a == e`, `a ^+ == e` define operators. A parameter may
 itself be an operator, written `F(_)` or `_ + _`, and an argument for it is
-an operator name or a `LAMBDA x, y : e`. Arguments are passed by name: the
+an operator name, an operator parameter, or a `LAMBDA x, y : e`. Arguments are passed by name: the
 argument expression is evaluated, in the context of the call, where the
 parameter is used.
 
@@ -189,6 +189,54 @@ sees itself only when it defines a function or was declared `RECURSIVE`. So
 `LET e == CHOOSE e \in S : TRUE IN e` is legal. A bound name may not reuse a
 name already visible in its scope, except that names introduced by different
 definitions do not conflict. A name refers to the innermost binding.
+
+### 5.7 Labels and subexpressions
+
+`lab :: e` or `lab(x, y) :: e`, at the start of an expression, labels `e`
+(which extends as far as possible); `x` and `y` are bound identifiers in
+scope. A label changes nothing in the value of `e`.
+
+`Op(a)!s1!s2...` names a subexpression of the definition of `Op` (an
+operator, a theorem, or an assumption, possibly reached through instances
+`I!Op`). Each selector `si` moves from the current expression to a part:
+
+- a name: after `Op`, after a label, or after a LET definition, a label in
+  it (not inside another label or LET definition); otherwise a definition
+  of the LET the current expression is, after `:` if it would be a label;
+- `:` makes the next name a LET definition;
+- `n`, `<<`, `>>`: operand `n` of an operator application, the first, or
+  the second of two; a LET expression has its body as only operand, a
+  label is transparent, `r.f` has operands `r` and `"f"`, a record its
+  values, `[f EXCEPT ...]` only `f`, a CASE arm `p -> e` is selected by
+  two selectors (`!1!>>` is `e` of the first arm); for a quantifier,
+  `CHOOSE`, set constructor or function constructor, operand `n` is the
+  set of the `n`-th group of bound identifiers;
+- `(e1, ..., en)` or `@`: the body of a quantifier, `CHOOSE`, set or
+  function constructor, its bound identifiers (all of them, tuples
+  flattened) as parameters.
+
+The result is an operator whose parameters are, in order, those met on the
+way: `Op`'s, each label's, each LET definition's, and the bound
+identifiers of each `(...)` or `@`. Arguments given to every selector
+(`Op(a)!lab(b)!(c)`) apply it; none at all (`Op!lab!@`) make it an
+operator argument. The LET definitions around the subexpression are in
+scope in it. `COp(1, 2)!(3)!++(4, 5)` is thus `{a, b, q, p, x}` of
+`COp(q, p) == CHOOSE x : LET a ++ b == {a, b, q, p, x} IN ...` with
+`q, p, x, a, b` = `1, 2, 3, 4, 5`.
+
+A theorem `THEOREM N == e` or assumption `ASSUME N == e` defines `N` as an
+operator `N == e` without parameters.
+
+### 5.8 Levels
+
+Each expression has a level: 0 constant, 1 state (it reads variables), 2
+action (it primes), 3 temporal. An operand of `'` or `UNCHANGED` must be of
+level at most 1, of `ENABLED` and `\cdot` at most 2; in `[A]_v`,
+`<<A>>_v`, `WF_v(A)` and `SF_v(A)`, `A` at most 2 and `v` at most 1. A
+parameter of a definition allows, for its argument, the least level its
+uses allow, and a declaration of a module the same for what an `INSTANCE`
+substitutes for it; an argument or a substitute of higher level is an
+error (§11.3).
 
 ## 6 Expressions
 
@@ -518,6 +566,10 @@ first. Then
 Finished computing initial states: N distinct states generated.
 ```
 
+or, when the initial predicate produced some state more than once,
+`Finished computing initial states: G states generated, with N of them
+distinct.`
+
 and, for a correct model,
 
 ```
@@ -618,7 +670,8 @@ col c to line l2, col c2 of module M`.
 
 ## 12 Exclusions
 
-Not covered: the proof language (`THEOREM`, `PROOF`, steps; parsed and
-ignored), real numbers, `\AA` and `\EE`, labels, `-simulate`, `-generate`,
+Not covered: the proof language (`PROOF`, steps, `USE`, `BY`; skipped,
+except that a `HIDE` may name only theorems, assumptions, and steps, and a
+theorem's statement is kept for §5.7), real numbers, `\AA` and `\EE`, `-simulate`, `-generate`,
 checkpointing, multiple workers' scheduling, distributed TLC, and the
 TLA+ Toolbox outputs (`-tool`).

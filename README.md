@@ -67,7 +67,8 @@ exit statuses and the C API.
 
 - The TLA+ language as TLC evaluates it: operators, functions, records,
   sequences, sets (including lazily evaluated infinite ones), `CHOOSE`,
-  `LET`, recursion, `EXTENDS`, parameterized `INSTANCE`, nested modules.
+  `LET`, recursion, `EXTENDS`, parameterized `INSTANCE`, nested modules,
+  labels and subexpression names (`Op(a)!lab!:!2`), SANY's level checks.
 - Standard modules: Naturals, Integers, Sequences, FiniteSets, TLC, Bags,
   Randomization.
 - Model configuration: `CONSTANT` values, model values and `<-`
