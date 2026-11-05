@@ -5544,13 +5544,15 @@ static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v, uint64_t h
     return hash_value(f, h);
 }
 
+/* An atom hashes as its kind, tag 1 to 4 in the low byte, and its payload;
+   inline, as most elements are atoms. */
+static inline uint64_t hash_elem(Value *v, uint64_t h) {
+    return v->kind <= V_MODEL ? mix(h, (uint64_t)(v->kind + 1) | (uint64_t)v->u.i << 8) : hash_value(v, h);
+}
+
 static uint64_t hash_value(Value *v, uint64_t h) {
-    /* An atom's tag is its low byte. */
     switch (v->kind) {
-    case V_BOOL: return mix(h, 0x01 | (uint64_t)v->u.i << 8);
-    case V_INT: return mix(h, 0x02 | (uint64_t)v->u.i << 8);
-    case V_STR: return mix(h, 0x03 | (uint64_t)v->u.i << 8);
-    case V_MODEL: return mix(h, 0x04 | (uint64_t)v->u.i << 8);
+    case V_BOOL: case V_INT: case V_STR: case V_MODEL: return hash_elem(v, h);
     case V_INTERVAL: {
         int64_t lo = v->u.range.lo, hi = v->u.range.hi;
         h = mix(h, 0x05 | (uint64_t)(hi >= lo ? hi - lo + 1 : 0) << 8);
@@ -5561,7 +5563,7 @@ static uint64_t hash_value(Value *v, uint64_t h) {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
         Value *set = enumerate(v);
         h = mix(h, 0x05 | (uint64_t)set->n << 8);
-        for (int i = 0; i < set->n; i++) h = hash_value(set->u.set.elems[i], h);
+        for (int i = 0; i < set->n; i++) h = hash_elem(set->u.set.elems[i], h);
         return h;
     }
     case V_LAMBDA: return hash_lambda(v, h);
@@ -5570,8 +5572,8 @@ static uint64_t hash_value(Value *v, uint64_t h) {
         int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
         h = mix(h, (tuple ? 0x06 : 0x07) | (uint64_t)v->n << 8);
         for (int i = 0; i < v->n; i++) {
-            if (!tuple) h = hash_value(v->u.fcn.keys[i], h);
-            h = hash_value(v->u.fcn.vals[i], h);
+            if (!tuple) h = hash_elem(v->u.fcn.keys[i], h);
+            h = hash_elem(v->u.fcn.vals[i], h);
         }
         return h;
     }
@@ -5773,7 +5775,7 @@ static uint64_t fingerprint(Value **st) {
     for (int p = 0; p <= nsymmetry; p++) {
         if (p == 0 && nsymmetry) continue;
         uint64_t h = 0;
-        for (int i = 0; i < nvars; i++) h = hash_value(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], h);
+        for (int i = 0; i < nvars; i++) h = hash_elem(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], h);
         uint64_t fp = fp_finish(h);
         if (p <= 1 || fp < best) best = fp;
     }
