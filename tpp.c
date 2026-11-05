@@ -2936,10 +2936,10 @@ static void resolve_name(Expr *e, Scope *sc) {
             if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
             e->kind = K_BOUND;
         } else if (d->kind == D_PARAM) {
-            check_arity(e, d, s->n);
+            if (s->n) check_arity(e, d, s->n);   /* bare, it is an operator argument */
             e->kind = K_PARAMCALL;
         } else {
-            check_arity(e, d, s->n);
+            if (s->n || !d->nparams) check_arity(e, d, s->n);
             e->kind = K_CALL;
         }
         e->def = d;
@@ -3595,6 +3595,24 @@ static Value *junction(Expr *e, Ctx c, int and) {
     return BOOLV(and);
 }
 
+/* The instances an instance call goes through, each with its parameters. */
+static Inst *instance_chain(Expr *e, Ctx c) {
+    Inst *inst = c.inst;
+    for (int i = 0; i < e->ndefs; i++) {
+        Def *id = e->defs[i];
+        Env *env = NULL;
+        Seg *s = &e->segs[i];
+        for (int k = 0; k < id->nparams && k < s->n; k++) env = mk_thunk(id->params[k], s->args[k], c, env);
+        if (id->local == 2) { Env *b = env_find(c.env, id); if (b) env = b->ctx_env; }
+        Inst *in = NEW(Inst);
+        in->def = id;
+        in->env = env;
+        in->parent = inst;
+        inst = in;
+    }
+    return inst;
+}
+
 static Value *eval_inner(Expr *e, Ctx c) {
     switch (e->kind) {
     case X_NUM:
@@ -3628,19 +3646,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
         return call_def(d, e->args, e->n, c, e);
     }
     case K_INSTCALL: {
-        Inst *inst = c.inst;
-        for (int i = 0; i < e->ndefs; i++) {
-            Def *id = e->defs[i];
-            Env *env = NULL;
-            Seg *s = &e->segs[i];
-            for (int k = 0; k < id->nparams && k < s->n; k++) env = mk_thunk(id->params[k], s->args[k], c, env);
-            if (id->local == 2) { Env *b = env_find(c.env, id); if (b) env = b->ctx_env; }
-            Inst *in = NEW(Inst);
-            in->def = id;
-            in->env = env;
-            in->parent = inst;
-            inst = in;
-        }
+        Inst *inst = instance_chain(e, c);
         Ctx ic = {c.env, inst};
         /* The arguments are evaluated in the caller's context. */
         Value **vals = NEWN(Value *, e->n);
@@ -4448,6 +4454,19 @@ static _Noreturn void not_boolean(Expr *e, Value *v) {
     fail_at(e, "TLC expected a boolean value, but did not find one.");
 }
 
+/* The context of the body of an instance call's definition: the chain
+   of instances (instance_chain) and the definition's parameters. */
+static Ctx instance_ctx(Expr *e, Ctx c) {
+    Def *d = e->def;
+    Inst *inst = instance_chain(e, c);
+    Env *env = NULL;
+    for (int i = 0; i < e->n && i < d->nparams; i++) {
+        if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+        else env = mk_thunk(d->params[i], e->args[i], c, env);
+    }
+    return (Ctx){env, inst};
+}
+
 static int gen(Expr *e, Ctx c, Cont *k) {
     switch (e->kind) {
     case X_BOOL:
@@ -4498,27 +4517,14 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         }
         return gen(d->body, (Ctx){env, c.inst}, k);
     }
-    case K_INSTCALL: {
-        Def *d = e->def;
-        if (d->kind != D_OP || d->native) break;
-        Inst *inst = c.inst;
-        for (int i = 0; i < e->ndefs; i++) {
-            Def *id = e->defs[i];
-            Env *env = NULL;
-            Seg *s = &e->segs[i];
-            for (int j = 0; j < id->nparams && j < s->n; j++) env = mk_thunk(id->params[j], s->args[j], c, env);
-            Inst *in = NEW(Inst);
-            in->def = id;
-            in->env = env;
-            in->parent = inst;
-            inst = in;
-        }
-        Env *env = NULL;
-        for (int i = 0; i < e->n && i < d->nparams; i++) {
-            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-            else env = mk_thunk(d->params[i], e->args[i], c, env);
-        }
-        return gen(d->body, (Ctx){env, inst}, k);
+    case K_INSTCALL:
+        if (e->def->kind != D_OP || e->def->native) break;
+        return gen(e->def->body, instance_ctx(e, c), k);
+    case K_BOUND: {
+        /* A parameter stands for its argument, which may be an action. */
+        Env *b = env_find(c.env, e->def);
+        if (!b || !b->e) break;
+        return gen(b->e, (Ctx){b->ctx_env, b->ctx_inst}, k);
     }
     case K_EQ: {
         int var = assignable(e->args[0], c);
@@ -4657,26 +4663,10 @@ static void split_action(Expr *e, Ctx c, int name) {
         split_action(d->body, (Ctx){env, c.inst}, d->name);
         return;
     }
-    case K_INSTCALL: {
-        Def *d = e->def;
-        if (d->kind != D_OP || d->native) break;
-        Inst *inst = c.inst;
-        for (int i = 0; i < e->ndefs; i++) {
-            Def *id = e->defs[i];
-            Env *env = NULL;
-            Seg *s = &e->segs[i];
-            for (int j = 0; j < id->nparams && j < s->n; j++) env = mk_thunk(id->params[j], s->args[j], c, env);
-            Inst *in = NEW(Inst);
-            in->def = id;
-            in->env = env;
-            in->parent = inst;
-            inst = in;
-        }
-        Env *env = NULL;
-        for (int i = 0; i < e->n && i < d->nparams; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
-        split_action(d->body, (Ctx){env, inst}, d->name);
+    case K_INSTCALL:
+        if (e->def->kind != D_OP || e->def->native) break;
+        split_action(e->def->body, instance_ctx(e, c), e->def->name);
         return;
-    }
     default:
         break;
     }
@@ -5685,6 +5675,19 @@ static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
     return 'p';
 }
 
+/* Where a name is expected, an operator symbol is one too: `++`, `\o`.
+   Joins the token just read with the characters that continue it. */
+static int cfg_operator(CfgLexer *L, int kind, int *id) {
+    if (kind != 'p' || cfg_scanning) return kind;
+    const char *s = L->s + L->pos - 1;
+    int n = 1;
+    if (*s == '\\') while (isalpha((unsigned char)s[n])) n++;
+    else while (s[n] && strchr("+-*/<>=!@#$%^&|~:.", s[n])) n++;
+    L->pos += n - 1;
+    *id = intern_n(s, n);
+    return 'a';
+}
+
 /* TLC makes the configuration's model values before it reads a module, so
    their names are interned first (§7.5). */
 static void intern_model_values(const char *text) {
@@ -5764,6 +5767,7 @@ static void parse_config(const char *text) {
         if (keyword < 0) config_error("TLC found an error in the configuration file at line 1\nIt was expecting a keyword, but did not find it.");
         const char *k = S(keyword);
         if (strncmp(k, "CONSTANT", 8) == 0) {
+            if (!(kind == 'p' && (strcmp(S(id), "=") == 0 || strcmp(S(id), "<-") == 0))) kind = cfg_operator(&L, kind, &id);
             if (kind != 'a') config_error("TLC found an error in the configuration file: expected a constant name.");
             int name = id;
             kind = cfg_token(&L, &id, &num);
@@ -5782,6 +5786,7 @@ static void parse_config(const char *text) {
                     cfg_token(&L, &id, &num);
                     kind = cfg_token(&L, &id, &num);
                 }
+                kind = cfg_operator(&L, kind, &id);
                 if (kind != 'a') config_error("TLC found an error in the configuration file: expected an operator after <-.");
                 cfg_add(keyword, name, '<', NULL, id);
             } else {
@@ -5838,6 +5843,21 @@ static void conjuncts(Expr *e, Expr ***out, int *n) {
     (*out)[(*n)++] = e;
 }
 
+/* part, a subexpression of the body of the instance call's definition,
+   as the instance sees it. */
+static Expr *in_instance(Expr *call, Expr *part) {
+    if (!call) return part;
+    Def *d = NEW(Def);
+    *d = *call->def;
+    d->body = part;
+    d->level = -1;
+    d->cache = NULL;
+    Expr *e = NEW(Expr);
+    *e = *call;
+    e->def = d;
+    return e;
+}
+
 static Expr *conjoin(Expr **parts, int n) {
     if (n == 1) return parts[0];
     Expr *e = NEW(Expr);
@@ -5851,27 +5871,28 @@ static Expr *conjoin(Expr **parts, int n) {
 
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
 static void use_specification(Def *spec) {
-    Expr **parts = NULL;
+    Expr **parts = NULL, *call = NULL, *body = unfold(spec->body);
     int n = 0;
-    conjuncts(spec->body, &parts, &n);
+    if (body->kind == K_INSTCALL && body->n == 0 && body->def->kind == D_OP && !body->def->native) {
+        /* A specification of an instance: Spec == I!Spec. */
+        call = body;
+        body = body->def->body;
+    }
+    conjuncts(body, &parts, &n);
     Expr **init = NULL;
     int ninit = 0;
     for (int i = 0; i < n; i++) {
         Expr *e = parts[i];
-        int level = expr_level(e);
-        if (level <= 1) {
+        if (expr_level(e) <= 1) {
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
-            init[ninit++] = e;
+            init[ninit++] = in_instance(call, e);
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             Expr *sq = unfold(e->args[0]);
-            next_expr = sq->args[0];
-            spec_subscript = sq->args[1];
-        } else if (e->kind == X_WF || e->kind == X_SF) {
-            fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
-            fairness[nfairness++] = e;
+            next_expr = in_instance(call, sq->args[0]);
+            spec_subscript = in_instance(call, sq->args[1]);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
-            fairness[nfairness++] = e;
+            fairness[nfairness++] = in_instance(call, e);
         }
     }
     if (ninit) init_expr = conjoin(init, ninit);
@@ -6242,6 +6263,9 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         for (int i = 0; i < e->n; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
         return to_tf(d->body, (Ctx){env, c.inst}, neg);
     }
+    case K_INSTCALL:
+        if (e->def->kind != D_OP || e->def->native) break;
+        return to_tf(e->def->body, instance_ctx(e, c), neg);
     case K_AND: case K_OR: {
         int op = (e->kind == K_AND) != neg ? TF_AND : TF_OR;
         TF *t = to_tf(e->args[0], c, neg);
@@ -6550,6 +6574,10 @@ static void collect_fairness(Expr *e, Ctx c) {
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) env = mk_thunk(e->def->params[i], e->args[i], c, env);
         collect_fairness(e->def->body, (Ctx){env, c.inst});
+        return;
+    }
+    if (e->kind == K_INSTCALL && e->def->kind == D_OP && !e->def->native) {
+        collect_fairness(e->def->body, instance_ctx(e, c));
         return;
     }
     fail_at(e, "TLC cannot handle the fairness condition.");
@@ -6935,13 +6963,15 @@ int tpp_check(const TPPOptions *o) {
     if (!status) check_assumptions(root, &status);
     if (status) return status;
     if (!init_expr) {
-        if (nvars) config_error("The configuration file did not specify the initial state predicate.");
+        if (nvars) config_error("The configuration file did not specify the initial state predicate.\n"
+                               "Can also be caused by trying to run TLC on a specification from\n"
+                               "a module imported with a parameterized INSTANCE statement.");
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
         print_counts(0, 1);
         return TPP_OK;
     }
-    if (!next_expr) config_error("The configuration file did not specify the next state action.");
+    if (!next_expr) config_error("The configuration file did not specify the next state predicate.");
     arena = &perm_arena;
     sigjmp_buf here;
     handler = &here;
