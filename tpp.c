@@ -594,6 +594,7 @@ struct Env {
     Inst *ctx_inst;
     Env *next;
     unsigned char perm;   /* allocated in the permanent arena */
+    unsigned char stateful;   /* v was read from the current state */
 };
 
 /* An instance: the module instance definition and the context of the
@@ -3180,11 +3181,13 @@ static int expr_level(Expr *e) {
 /* ---------------------------------------------------------------- evaluator */
 
 static int nvars;
-static Def **vars;              /* the state variables, in declaration order */
+static Def **vars;              /* the state variables, in TLC's order */
 static Value **cur_state;       /* the state being read */
 static Value **next_state;      /* the next state an action assigns; NULL entries unassigned */
 static int primed;              /* reading the next state */
+static int gen_init;            /* assigning unprimed variables: an initial predicate */
 static long state_reads;        /* incremented by each read of a variable */
+static long moving_reads;       /* by each read of one that may change: primed, or in Init */
 static Value *at_value;         /* @ in an EXCEPT */
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
@@ -3272,12 +3275,18 @@ static Env *env_find(Env *env, Def *d) {
     return NULL;
 }
 
+/* The value of a binding, evaluated once where that is safe: a value read
+   from no state at all, or from the current state by a binding that lives
+   no longer than one state's expansion, as the scratch arena does. */
 static Value *force(Env *b) {
-    if (b->v) return b->v;
-    long reads = state_reads;
+    if (b->v && !(primed && b->stateful)) return b->v;
+    long reads = state_reads, moving = moving_reads;
     Ctx c = {b->ctx_env, b->ctx_inst};
     Value *v = eval(b->e, c);
-    if (reads == state_reads && b->perm == (arena == &perm_arena)) b->v = v;
+    if (b->perm == (arena == &perm_arena)) {
+        if (reads == state_reads) { b->v = v; b->stateful = 0; }
+        else if (!b->perm && moving == moving_reads && !primed) { b->v = v; b->stateful = 1; }
+    }
     return v;
 }
 
@@ -3323,6 +3332,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
         state_reads++;
+        if (primed || gen_init) moving_reads++;
         if (primed) {
             if (!next_state || !next_state[d->var_index])
                 fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
@@ -4284,7 +4294,6 @@ static void bind_natives(void) {
 typedef struct Cont { Expr *e; Ctx c; struct Cont *next; } Cont;
 
 static Value **gen_target;      /* the state being assigned */
-static int gen_init;            /* assigning unprimed variables: an initial predicate */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 
 static int gen(Expr *e, Ctx c, Cont *k);
