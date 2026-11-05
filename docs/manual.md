@@ -135,6 +135,8 @@ make test              # tests/spec with 1 and with 4 workers
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.7.4)
 make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
+make fuzz              # mutated tests/spec models under the sanitizer build
+make fuzz-oracle       # random expressions, printed by tpp and by TLC
 make bench             # times tpp against TLC; writes docs/benchmark.md
 ```
 
@@ -142,6 +144,16 @@ A test in `tests/spec` is `NAME.tla`: a module, then its configuration
 after the line that ends the module. `NAME.out` is TLC's normalized
 output and exit status. `tests/spec/tlc` holds models imported from TLC's
 own test suite.
+
+`make fuzz` swaps, drops or repeats one to three tokens of a random test's
+model (most mutants still parse) and runs the sanitizer build on it; it
+must end with one of tpp's exit statuses, without a signal or a sanitizer
+report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
+`make fuzz-oracle` writes random constant expressions as `ASSUME
+PrintT(e)` and checks that tpp prints what TLC prints, narrowing a
+difference to one expression. Both take `RUNS=` (1000) and `SEED=` (1);
+a run with a seed is repeatable. A case either finds becomes a test in
+`tests/spec`.
 
 ## Limitations
 
