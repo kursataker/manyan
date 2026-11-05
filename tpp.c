@@ -1463,6 +1463,8 @@ struct Module {
     char *path;
     Module *outer;        /* a nested module's enclosing module */
     int nouter_syms;      /* the enclosing module's symbols visible to it */
+    Buf warnings;         /* a file's module: SANY's warnings for it, nested modules' too */
+    int nwarnings;
     int *extends;
     int nextends;
     Sym *syms;
@@ -3200,6 +3202,44 @@ static Sym *module_lookup(Module *m, int name) {
     return NULL;
 }
 
+/* A nested module's own declaration or definition of a name its enclosing
+   modules already give it: SANY warns of a declaration repeated, of the
+   same kind and arity, and rejects any other. */
+static Module *file_module(Module *m) {
+    while (m->outer) m = m->outer;
+    return m;
+}
+
+/* A location as SANY gives it, in the module of its file. */
+static void file_loc_text(Buf *b, Expr *e) {
+    buf_printf(b, "line %d, col %d to line %d, col %d of module %s", e->l1, e->c1, e->l2, e->c2, S(file_module(e->mod)->name));
+}
+
+static void check_outer(Module *m, Def *d) {
+    Sym *s = m->outer ? module_lookup(m, d->name) : NULL;
+    if (!s || (m->nsyms && s >= m->syms && s < m->syms + m->nsyms)) return;   /* its own: add_sym's */
+    Def *o = s->def;
+    Buf here = {0}, there = {0};
+    file_loc_text(&here, d->where);
+    file_loc_text(&there, o->where);
+    if ((d->kind != D_CONST && d->kind != D_VAR) || o->kind != d->kind || o->arity != d->arity)
+        semantic_error(d->where, "Multiple declarations or definitions for symbol %s.\nThis duplicates the one at %s.", S(d->name), there.s);
+    Module *file = file_module(m);
+    buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+               here.s, S(d->name), there.s);
+    file->nwarnings++;
+}
+
+/* SANY's warnings so far, printed as each file's module is processed. */
+static Buf warnings;
+static int nwarnings;
+
+static void print_warnings(Module *m) {
+    buf_add(&warnings, m->warnings.s ? m->warnings.s : "", m->warnings.n);
+    nwarnings += m->nwarnings;
+    if (nwarnings) printf("Semantic errors:\n\n*** Warnings: %d\n\n%s\n", nwarnings, warnings.s);
+}
+
 static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
     for (int i = 0; i < m->nsyms; i++)
         if (m->syms[i].name == name) {
@@ -3749,10 +3789,12 @@ static void resolve_module(Module *m) {
             Def *d = u->def;
             if (d->kind == D_CONST || d->kind == D_VAR) {
                 d->mod = m;
+                check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
                 add_decl(m, d);
             } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
                 resolve_def(d, NULL);
+                check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, u->local, d->where);
             } else {
                 resolve_def(d, NULL);
@@ -3798,6 +3840,7 @@ static void resolve_module(Module *m) {
         else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
         else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
     }
+    if (!m->outer) print_warnings(m);
     m->resolved = 2;
     cur_module = saved;
 }

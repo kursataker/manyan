@@ -195,6 +195,14 @@ sees itself only when it defines a function or was declared `RECURSIVE`. So
 name already visible in its scope, except that names introduced by different
 definitions do not conflict. A name refers to the innermost binding.
 
+A nested module sees the names its enclosing modules declare or define
+before it, and may not define them again. It may declare again a constant
+or variable they declare, with the same arity; SANY warns of it,
+`Multiple declarations or definitions for symbol C.` and where the first
+is, each location in the module of its file. After processing each
+module of a file, dependencies first, SANY prints every warning so far,
+under `Semantic errors:` and `*** Warnings: N`.
+
 ### 5.7 Labels and subexpressions
 
 `lab :: e` or `lab(x, y) :: e`, at the start of an expression, labels `e`

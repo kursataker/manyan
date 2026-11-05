@@ -1,0 +1,24 @@
+Semantic errors:
+
+*** Warnings: 3
+
+line 8, col 11 to line 8, col 11 of module nested_redeclare
+
+Multiple declarations or definitions for symbol D.
+This duplicates the one at line 5, col 14 to line 5, col 14 of module nested_redeclare.
+
+line 8, col 14 to line 8, col 14 of module nested_redeclare
+
+Multiple declarations or definitions for symbol C.
+This duplicates the one at line 5, col 11 to line 5, col 11 of module nested_redeclare.
+
+line 9, col 10 to line 9, col 10 of module nested_redeclare
+
+Multiple declarations or definitions for symbol x.
+This duplicates the one at line 6, col 10 to line 6, col 10 of module nested_redeclare.
+
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0
