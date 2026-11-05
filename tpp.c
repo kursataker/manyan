@@ -240,6 +240,7 @@ static _Noreturn void fail_module(const char *fmt, ...) {
 enum {
     V_BOOL, V_INT, V_STR, V_MODEL, V_TUPLE, V_FCN, V_SET, V_INTERVAL,
     V_LAZY,     /* a set kept as its definition: see LazyKind */
+    V_LAMBDA,   /* a function over an infinite domain, kept as its definition */
     V_OPER      /* an operator passed as an argument; never a TLA+ value */
 };
 
@@ -258,6 +259,7 @@ struct Value {
         struct { Value **keys, **vals; } fcn;        /* V_TUPLE has no keys */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
         struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; void *pattern; } l;
+        /* V_LAMBDA: [x \in dom |-> expr] in env, then n EXCEPT pairs (key, value) */
         struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
     } u;
 };
@@ -349,6 +351,7 @@ static const char *kind_string(Value *v) {
     case V_SET: return "a set of the form {e1, ... ,eN}";
     case V_INTERVAL: return "a set of the form i..j";
     case V_OPER: return "an operator";
+    case V_LAMBDA: return "a function of the form  [x \\in S |-> expr]";
     default: break;
     }
     switch (v->lazy) {
@@ -829,16 +832,17 @@ static int all_members(Value *sub, Value *s) {
 static int set_member(Value *v, Value *s) {
     switch (s->kind) {
     case V_SET: {
-        int lo = 0, hi = s->n - 1;
+        int lo = 0, hi = s->n;
         if (v->kind == V_MODEL || (s->n && s->u.set.elems[0]->kind == V_MODEL)) {
             for (int i = 0; i < s->n; i++) if (veq(v, s->u.set.elems[i])) return 1;
             return 0;
         }
-        while (lo <= hi) {
-            int mid = (lo + hi) / 2;
+        /* TLC's search: its probes decide which element an error names. */
+        while (lo < hi) {
+            int mid = (lo + hi) >> 1;
             int c = vcmp(v, s->u.set.elems[mid]);
             if (!c) return 1;
-            if (c < 0) hi = mid - 1; else lo = mid + 1;
+            if (c < 0) hi = mid; else lo = mid + 1;
         }
         return 0;
     }
@@ -917,8 +921,11 @@ static Value *set_minus(Value *a, Value *b) {
 
 /* ---------------------------------------------------------------- functions */
 
+static Value *lambda_apply(Value *f, Value *a, Expr *where);
+
 /* Applies f to the argument a. */
 static Value *fcn_apply(Value *f, Value *a, Expr *where) {
+    if (f->kind == V_LAMBDA) return lambda_apply(f, a, where);
     if (f->kind == V_TUPLE) {
         if (a->kind == V_INT && a->u.i >= 1 && a->u.i <= f->n) return f->u.fcn.vals[a->u.i - 1];
     } else if (f->kind == V_FCN) {
@@ -941,6 +948,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
 }
 
 static Value *fcn_domain(Value *f) {
+    if (f->kind == V_LAMBDA) return f->u.l.a;
     if (f->kind == V_TUPLE) return mk_interval(1, f->n);
     Value *s = mk_set(f->n);
     for (int i = 0; i < f->n; i++) s->u.set.elems[i] = f->u.fcn.keys[i];
@@ -967,6 +975,14 @@ static Value *mk_fcn_from(List *keys, List *vals) {
 static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
     Value *g = NEW(Value);
     *g = *f;
+    if (f->kind == V_LAMBDA) {
+        g->n = f->n + 1;
+        g->u.l.names = NEWN(Value *, 2 * g->n);
+        if (f->n) memcpy(g->u.l.names, f->u.l.names, sizeof(Value *) * 2 * (size_t)f->n);
+        g->u.l.names[2 * f->n] = key;
+        g->u.l.names[2 * f->n + 1] = val;
+        return g;
+    }
     g->u.fcn.vals = NEWN(Value *, f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     if (f->kind == V_TUPLE) {
@@ -3110,6 +3126,26 @@ static Env *mk_binding(Def *d, Value *v, Env *next) {
     return b;
 }
 
+static Value *lambda_apply(Value *f, Value *a, Expr *where) {
+    for (int i = f->n - 1; i >= 0; i--)
+        if (veq(f->u.l.names[2 * i], a)) return f->u.l.names[2 * i + 1];
+    if (!set_member(a, f->u.l.a))
+        fail_at(where, "Attempted to apply function to argument %s, which is not in the domain of the function.", pretty(a));
+    Expr *e = f->u.l.expr;
+    Env *env = f->u.l.env;
+    int total = 0, k = 0;
+    for (int i = 0; i < e->nb; i++) total += e->bounds[i].tuple ? 1 : e->bounds[i].n;
+    for (int i = 0; i < e->nb; i++) {
+        Bound *b = &e->bounds[i];
+        for (int j = 0; j < (b->tuple ? 1 : b->n); j++, k++) {
+            Value *part = total == 1 ? a : fcn_apply(a, mk_int(k + 1), where);
+            if (!b->tuple) { env = mk_binding(b->defs[j], part, env); continue; }
+            for (int m = 0; m < b->n; m++) env = mk_binding(b->defs[m], fcn_apply(part, mk_int(m + 1), where), env);
+        }
+    }
+    return eval(e->args[0], (Ctx){env, f->u.l.inst});
+}
+
 static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {
     Env *b = NEW(Env);
     b->def = d; b->e = e; b->ctx_env = c.env; b->ctx_inst = c.inst; b->next = next;
@@ -3288,16 +3324,23 @@ static int map_fn(Ctx c, void *data) {
 }
 
 /* The value of a bound name: an element, or the tuple a binder names. */
+/* The element a binding stands for: the value of x in x \in S, the tuple
+   in <<x, y>> \in S; a tuple of them when there are several. */
 static Value *bound_key(Bound *bs, int nb, Ctx c) {
     int total = 0;
-    for (int i = 0; i < nb; i++) total += bs[i].n;
-    if (total == 1 && !bs[0].tuple) return env_find(c.env, bs[0].defs[0])->v;
-    Value *t = mk_tuple(total);
+    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    Value *key = mk_tuple(total);
     int k = 0;
-    for (int i = 0; i < nb; i++)
-        for (int j = 0; j < bs[i].n; j++) t->u.fcn.vals[k++] = env_find(c.env, bs[i].defs[j])->v;
-    if (total == 1) return t->u.fcn.vals[0];
-    return t;
+    for (int i = 0; i < nb; i++) {
+        if (bs[i].tuple) {
+            Value *t = mk_tuple(bs[i].n);
+            for (int j = 0; j < bs[i].n; j++) t->u.fcn.vals[j] = env_find(c.env, bs[i].defs[j])->v;
+            key->u.fcn.vals[k++] = t;
+        } else {
+            for (int j = 0; j < bs[i].n; j++) key->u.fcn.vals[k++] = env_find(c.env, bs[i].defs[j])->v;
+        }
+    }
+    return total == 1 ? key->u.fcn.vals[0] : key;
 }
 
 static int fcn_fn(Ctx c, void *data) {
@@ -3402,7 +3445,7 @@ static Value *fcndef_value(Def *d, Ctx c) {
 
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
-    if (!is_fcn(f)) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
+    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
     Value *old = fcn_apply(f, key, where);
     Value *nv;
     if (i + 1 < p->n) {
@@ -3572,7 +3615,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
     }
     case K_DOMAIN: {
         Value *f = eval(e->args[0], c);
-        if (!is_fcn(f)) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", pretty(f));
+        if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", kind_string(f));
         return fcn_domain(f);
     }
     case K_PRIME: {
@@ -3641,9 +3684,38 @@ static Value *eval_inner(Expr *e, Ctx c) {
         return s;
     }
     case X_FCN: {
+        /* The domain: the bound set, or the product of one per variable. */
+        int total = 0, k = 0, bounded = 1;
+        for (int i = 0; i < e->nb; i++) { total += e->bounds[i].tuple ? 1 : e->bounds[i].n; bounded &= e->bounds[i].set != NULL; }
+        Value *dom = mk_lazy(L_TIMES);
+        dom->n = total;
+        dom->u.l.names = NEWN(Value *, 2 * total);
+        for (int i = 0; i < e->nb && bounded; i++) {
+            Value *set = eval(e->bounds[i].set, c);
+            if (!is_set(set)) { bounded = 0; break; }
+            for (int j = 0; j < (e->bounds[i].tuple ? 1 : e->bounds[i].n); j++) dom->u.l.names[total + k++] = set;
+        }
+        if (bounded && total == 1) dom = dom->u.l.names[1];
+        if (bounded && set_is_infinite(dom)) {
+            Value *f = NEW(Value);
+            f->kind = V_LAMBDA;
+            f->u.l.a = dom;
+            f->u.l.expr = e;
+            f->u.l.env = c.env;
+            f->u.l.inst = c.inst;
+            return f;
+        }
         MapData d;
         memset(&d, 0, sizeof d);
         d.body = e;
+        if (bounded && e->nb == 1 && e->bounds[0].n == 1 && !e->bounds[0].tuple) {
+            dom = enumerate(dom);
+            for (int i = 0; i < dom->n; i++) {
+                list_add(&d.keys, dom->u.set.elems[i]);
+                list_add(&d.out, eval(e->args[0], (Ctx){mk_binding(e->bounds[0].defs[0], dom->u.set.elems[i], c.env), c.inst}));
+            }
+            return mk_fcn_from(&d.keys, &d.out);
+        }
         for_bindings(e->bounds, e->nb, c, fcn_fn, &d);
         return mk_fcn_from(&d.keys, &d.out);
     }
@@ -3657,7 +3729,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
         }
         if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
         Value *f = eval(fe, c);
-        if (!is_fcn(f)) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
+        if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
         return fcn_apply(f, key, e);
     }
     case X_DOT: {
