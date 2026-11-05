@@ -1,0 +1,36 @@
+Finished computing initial states: 3 distinct states generated.
+Model checking completed. No error has been found.
+17 states generated, 7 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 0
+--- graph.dot
+strict digraph DiskGraph {
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";
+s0 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 0",style = filled]
+s1 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 1",style = filled]
+s2 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 7",style = filled]
+s0 -> s1 [label="Inc",color="black",fontcolor="black"];
+s0 -> s0 [label="Stay",color="black",fontcolor="black"];
+s1 -> s3 [label="Inc",color="black",fontcolor="black"];
+s3 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 2"];
+s1 -> s1 [label="Stay",color="black",fontcolor="black"];
+s3 -> s4 [label="Reset",color="black",fontcolor="black"];
+s4 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 0"];
+s3 -> s3 [label="Stay",color="black",fontcolor="black"];
+s4 -> s5 [label="Inc",color="black",fontcolor="black"];
+s5 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 1"];
+s4 -> s4 [label="Stay",color="black",fontcolor="black"];
+s5 -> s6 [label="Inc",color="black",fontcolor="black"];
+s6 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 2"];
+s5 -> s5 [label="Stay",color="black",fontcolor="black"];
+s6 -> s4 [label="Reset",color="black",fontcolor="black"];
+s6 -> s6 [label="Stay",color="black",fontcolor="black"];
+{rank = same; s0;s1;s2;}
+{rank = same; s3;}
+{rank = same; s4;}
+{rank = same; s5;}
+{rank = same; s6;}
+}
+}

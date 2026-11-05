@@ -38,7 +38,7 @@ built in.
 | `-config FILE` | the model configuration; `SPEC.cfg` by default |
 | `-deadlock` | do not report deadlock, as TLC's `-deadlock` |
 | `-workers N` | expand states with N processes; `auto` uses one per core |
-| `-dump dot FILE` | write the state graph to FILE in Graphviz dot format |
+| `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
 | `-depth D` | the length of each random behavior, in states (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |

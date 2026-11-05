@@ -8,6 +8,8 @@ normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
 NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it.
+A state graph it dumps (`-dump dot FILE`) follows its output, its states
+numbered in order of appearance, as fingerprints differ.
 
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
@@ -58,6 +60,19 @@ def normalize(output, directory):
     return "\n".join(lines) + "\n"
 
 
+def dumped(directory):
+    """The dot files in directory, each state's fingerprint replaced by its number."""
+    text = ""
+    for dot in sorted(directory.glob("*.dot")):
+        ids = {}
+        number = lambda m: m.group(1) + "s%d" % ids.setdefault(m.group(2), len(ids))
+        text += f"--- {dot.name}\n"
+        for line in dot.read_text().splitlines():
+            pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
+            text += re.sub(pattern, number, line) + "\n"
+    return text
+
+
 def stage(path, directory):
     text = path.read_text()
     ends = list(re.finditer(r"^====+[ \t]*$", text, flags=re.M))
@@ -87,7 +102,7 @@ def run(command, path):
             output, code = "timeout\n", "timeout"
         except OSError as error:
             output, code = f"{error}\n", "error"
-        return normalize(output, directory) + f"exit {code}\n"
+        return normalize(output, directory) + f"exit {code}\n" + dumped(directory)
 
 
 def oracle_command(tlc):

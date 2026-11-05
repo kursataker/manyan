@@ -6475,6 +6475,56 @@ static void add_edge(int from, int to, int action) {
     r->nedges++;
 }
 
+/* The state graph in dot, as TLC's -dump dot writes it: each state as
+   it is found, an initial one filled, and each step as it is taken; then
+   by depth the initial states and those a step was taken from. */
+static FILE *dump_file;
+static int dump_actions;
+static int *dump_ranked, dump_nranked;
+
+static void dump_rank(int idx) {
+    if (dump_nranked && dump_ranked[dump_nranked - 1] == idx) return;
+    dump_ranked = xrealloc(dump_ranked, sizeof(int) * (size_t)(dump_nranked + 1));
+    dump_ranked[dump_nranked++] = idx;
+}
+
+static void dump_node(int idx, Value **st) {
+    Buf b = {0};
+    for (int i = 0; i < nvars; i++) {
+        if (i) buf_puts(&b, "\\n");
+        if (nvars > 1) buf_puts(&b, "/\\\\ ");
+        buf_printf(&b, "%s = ", S(vars[i]->name));
+        for (const char *c = st[i] ? pretty(st[i]) : "null"; *c; c++) {
+            if (*c == '\n') { buf_puts(&b, "\\n"); continue; }
+            if (*c == '\\' || *c == '"') buf_add(&b, "\\", 1);
+            buf_add(&b, c, 1);
+        }
+    }
+    fprintf(dump_file, "%lld [label=\"%s\"%s\n", (long long)states[idx].fp, b.s, states[idx].parent < 0 ? ",style = filled]" : "];");
+    free(b.s);
+    if (states[idx].parent < 0) dump_rank(idx);
+}
+
+static void dump_edge(int from, int to, int action) {
+    if (states[from].parent >= 0) dump_rank(from);
+    fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)states[from].fp,
+            (long long)states[to].fp, dump_actions ? S(actions[action].name) : "");
+}
+
+static void dump_close(void) {
+    for (int i = 0; i < dump_nranked; i++) {
+        int s = dump_ranked[i];
+        if (!i || states[s].depth != states[dump_ranked[i - 1]].depth) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
+        fprintf(dump_file, "%lld;", (long long)states[s].fp);
+    }
+    fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
+    fclose(dump_file);
+    dump_file = NULL;
+    free(dump_ranked);
+    dump_ranked = NULL;
+    dump_nranked = 0;
+}
+
 static int init_emit(void) {
     for (int i = 0; i < nvars; i++)
         if (!succ[i]) fail("The variable %s was not assigned a value by the initial predicate.", S(vars[i]->name));
@@ -6486,7 +6536,8 @@ static int init_emit(void) {
     uint64_t fp = fingerprint(st);
     error_state = NULL;
     if (fp_find(fp) >= 0) return 0;
-    add_state(st, fp, -1, -1, 1);
+    int idx = add_state(st, fp, -1, -1, 1);
+    if (dump_file) dump_node(idx, st);
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
@@ -6517,9 +6568,11 @@ static int next_emit(void) {
     uint64_t fp = fingerprint(st);
     int found = fp_find(fp);
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
+    if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
     if (found < 0) {
         int depth = states[expanding].depth + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
+        if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st);
         if (depth > max_depth) max_depth = depth;
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
@@ -6542,7 +6595,6 @@ static int next_emit(void) {
 
 static void collect_fairnesses(void);
 static int live_violated(void);
-static FILE *dump_file;
 
 /* Expands state idx: its successors join the search. Returns the exit
    status of a violation it reports, 0 if none. */
@@ -8827,11 +8879,16 @@ int tpp_check(const TPPOptions *o) {
     }
     split_action(next_expr, root_ctx, next_expr->kind == K_CALL ? next_expr->def->name : intern("Next"));
     handler = NULL;
-    if (o->dump) dump_file = fopen(o->dump, "w");
+    if (o->dump && !o->simulate) {
+        if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
+        fputs("strict digraph DiskGraph {\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
+        dump_actions = o->dump_actions;
+    }
     nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
     status = check_temporal_forms();
     if (!status) status = o->simulate ? simulate(o) : search();
     handler = NULL;
+    if (dump_file) dump_close();
     stop_workers();
     return status;
 }
@@ -8858,9 +8915,18 @@ int main(int argc, char **argv) {
             i++;
             o.workers = strcmp(argv[i], "auto") == 0 ? (int)sysconf(_SC_NPROCESSORS_ONLN) : atoi(argv[i]);
         }
-        else if (strcmp(argv[i], "-dump") == 0 && i + 1 < argc) {
-            if (strcmp(argv[i + 1], "dot") == 0 && i + 2 < argc) i++;
-            o.dump = argv[++i];
+        else if (strcmp(argv[i], "-dump") == 0 && i + 2 < argc) {
+            /* -dump dot[,actionlabels,...] FILE writes FILE.dot, as TLC. */
+            const char *format = argv[++i], *file = argv[++i];
+            if (strncmp(format, "dot", 3) != 0 || (format[3] && format[3] != ',')) {
+                fprintf(stderr, "tpp: -dump writes only dot: -dump dot FILE\n");
+                return TPP_ERROR;
+            }
+            o.dump_actions = strstr(format, "actionlabels") != NULL;
+            size_t n = strlen(file);
+            char *path = xmalloc(n + 5);
+            sprintf(path, "%s%s", file, n >= 4 && strcmp(file + n - 4, ".dot") == 0 ? "" : ".dot");
+            o.dump = path;
         } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];
