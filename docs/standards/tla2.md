@@ -331,8 +331,10 @@ is an error.
 As in TLC, `[x \in S |-> e]` is computed in full where it is evaluated,
 except where it stays lazy: in the function position of an application
 `f[a]` (directly, or as the value of the operator, LET definition or arm
-`f` names), within the body of a lazy function, in a function definition
-(§5.3), and over an infinite domain. Applying a lazy function evaluates `e`
+`f` names), within the body of a lazy function, in a recursive function
+definition (§5.3), and over an infinite domain. A function definition that
+is not recursive and names no variable is computed in full once, before
+checking, if it can be. Applying a lazy function evaluates `e`
 at that argument only, so an error elsewhere in its domain is not raised,
 and `f[i \in S] == [j \in T |-> ... f[i][k] ...]` may use other values of
 `f[i]` within `f[i]`. A lazy function is computed in full when it is
@@ -657,7 +659,7 @@ or as the first line of an action error:
 | `t[i]` for a tuple `t` | `Attempted to apply tuple` / `t` / `to integer i which is out of domain.` |
 | `r["f"]` for a record `r` | `Attempted to apply the record` / `r` / `to nonexistent record field f.` |
 | `r.f` for a record `r` | `Attempted to select nonexistent field "f" from the record` / `r` / location |
-| `f[a]` for `f` made by `[x \in S \|-> e]`, not yet in a state or a constant | `In applying the function` / `f,` / `the first argument is:` / `a` / `which is not in its domain.` |
+| `f[a]` for a lazy `f` (§6.6) | `In applying the function` / `f,` / `the first argument is:` / `a` / `which is not in its domain.`; with several bounds, `the argument number k is:`, or `the argument list is:` and `which does not match its formal parameter.` when `a` is not a tuple |
 | `CHOOSE` with no witness | `Attempted to compute the value of an expression of form` / `CHOOSE x \in S: P, but no element of S satisfied P.` |
 | `CASE` with no true guard | `Attempted to evaluate a CASE with no conditions true.` |
 | `1 = "a"` | `Attempted to check equality of integer 1 with non-integer:` / `"a"` |

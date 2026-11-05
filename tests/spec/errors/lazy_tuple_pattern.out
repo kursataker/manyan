@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 56 of module lazy_tuple_pattern failed.
+In applying the function
+(<<1, 2>> :> 1),
+the first argument is:
+<<1, 3>>
+which is not in its domain.
+exit 10

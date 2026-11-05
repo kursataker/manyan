@@ -209,6 +209,10 @@ static int error_module;   /* raised by a standard module's operator: TLC's Eval
    TLC wraps any error inside one, but an EvalException, in a preamble. */
 static const char *java_frames[64];
 static int java_depth;
+/* The function constructors being computed in full, outermost first: an
+   error raised inside one is one TLC cannot fingerprint (§11.3). */
+static Expr *fp_trace[64];
+static int fp_depth;
 
 static void error_reset(void) {
     error_message.n = 0;
@@ -279,7 +283,9 @@ enum {
 
 /* How a function was made, which decides TLC's errors applying it: a
    record, or [x \in S |-> e] not yet stored in a state or a constant. */
-enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA };
+/* MADE_LAMBDA: computed by [x \in S |-> e], which TLC keeps until it normalizes it;
+   MADE_PARAMS: the same, of several bounds, which TLC keeps in its order (§6.6) */
+enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS };
 
 enum LazyKind {
     L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_CUP, L_CAP, L_DIFF
@@ -290,6 +296,7 @@ struct Value {
     union {
         unsigned char lazy;  /* LazyKind of a V_LAZY */
         unsigned char made;  /* Made of a V_FCN */
+        unsigned char keep;  /* V_LAMBDA: TLC's KeepLazy when it was made, which it is computed in full with */
     };
     unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
@@ -431,8 +438,13 @@ static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
 
 static void print_value(Buf *b, Value *v);
 static Value *realize_lambda(Value *f);
+static void realize_both(Value **a, Value **b);
 /* A lazy function over a finite domain as the function it is (§6.6). */
 static inline Value *realize(Value *v) { return v->kind == V_LAMBDA ? realize_lambda(v) : v; }
+static Value *try_realize(Value *f);
+static void print_lambda(Buf *b, Value *f);
+static Value *print_order(Value *f);
+static int print_normal;   /* printing as TLC does once it normalizes values: Print, PrintT */
 static Value *normalize_set(Value *v);
 static int set_is_infinite(Value *s);
 static int64_t set_size(Value *s);
@@ -476,7 +488,9 @@ static void print_string(Buf *b, int id) {
 }
 
 static void print_value(Buf *b, Value *v) {
-    v = realize(v);
+    if (v->kind == V_LAMBDA) v = try_realize(v);
+    if (v->kind == V_LAMBDA) { print_lambda(b, v); return; }
+    if (v->kind == V_FCN && v->made == MADE_PARAMS && !print_normal) v = print_order(v);
     switch (v->kind) {
     case V_BOOL: buf_puts(b, v->u.i ? "TRUE" : "FALSE"); return;
     case V_INT: buf_printf(b, "%lld", (long long)v->u.i); return;
@@ -634,6 +648,8 @@ static void pp_pairs(Buf *b, Value *f, int record, int width, int trailer, const
 }
 
 static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad) {
+    if (v->kind == V_LAMBDA) v = try_realize(v);
+    if (v->kind == V_FCN && v->made == MADE_PARAMS && !print_normal) v = print_order(v);
     if (v->kind == V_LAZY && expandable(v)) v = normalize_set(v);
     char *flat = value_str(v);
     if ((int)strlen(flat) <= width - trailer || pp_plain(v) || v->n == 0) { buf_puts(b, flat); return; }
@@ -724,7 +740,7 @@ static _Noreturn void incomparable(Value *a, Value *b) {
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
-    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) { a = realize(a); b = realize(b); }
+    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_TUPLE && b->kind == V_TUPLE) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         for (int i = 0; i < a->n; i++) {
@@ -790,7 +806,7 @@ static _Noreturn void equality_error(Value *a, Value *b) {
 
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
-    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) { a = realize(a); b = realize(b); }
+    if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
     if (is_fcn(a) && is_fcn(b)) {
         if (a->n != b->n) return 0;
@@ -1025,6 +1041,15 @@ static _Noreturn void count_infinite(Value *s) {
     abort();
 }
 
+/* Lazy functions compared are computed, the left first; TLC cannot count
+   an infinite domain. */
+static void realize_both(Value **a, Value **b) {
+    *a = realize(*a);
+    if ((*a)->kind == V_LAMBDA) count_infinite((*a)->u.l.a);
+    *b = realize(*b);
+    if ((*b)->kind == V_LAMBDA) count_infinite((*b)->u.l.a);
+}
+
 /* The number of elements of a finite set, without enumerating a product of
    sets, or -1 when it is not a 32-bit int, TLC's count. */
 static int64_t set_size(Value *s) {
@@ -1195,7 +1220,7 @@ static Value *set_minus(Value *a, Value *b) {
 
 /* ---------------------------------------------------------------- functions */
 
-static Value *lambda_apply(Value *f, Value *a, Expr *where);
+static Value *lambda_apply(Value *f, Value *a);
 
 /* The index of a in the domain of the function or tuple f, or -1. */
 static int fcn_index(Value *f, Value *a) {
@@ -1224,7 +1249,7 @@ static int fcn_index(Value *f, Value *a) {
 
 /* Applies f to the argument a. */
 static Value *fcn_apply(Value *f, Value *a, Expr *where) {
-    if (f->kind == V_LAMBDA) return lambda_apply(f, a, where);
+    if (f->kind == V_LAMBDA) return lambda_apply(f, a);
     if (!is_fcn(f)) fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
     int i = fcn_index(f, a);
     if (i >= 0) return f->u.fcn.vals[i];
@@ -1236,7 +1261,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
         if (a->kind != V_STR) fail("Attempted to apply record to a non-string value %s.", pretty(a));
         fail("Attempted to apply the record\n%s\nto nonexistent record field %s.", pretty(f), S(a->u.i));
     }
-    if (f->made == MADE_LAMBDA)
+    if (f->made >= MADE_LAMBDA)
         fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.", pretty(f), pretty(a));
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(f), pretty(a));
@@ -1341,7 +1366,6 @@ typedef struct { int n; Expr **keys; int *fields; } Path;  /* an EXCEPT path: fi
 
 struct Expr {
     short kind;
-    unsigned char lazy;   /* X_FCN around a use of the function being defined: kept as its definition */
     int op;               /* operator or name; field of X_DOT */
     int n;
     Expr **args;
@@ -1388,6 +1412,7 @@ struct Def {
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
+    int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
     Module *target;       /* D_INST */
     int nsubst;
     Def **subst_decl;
@@ -2436,8 +2461,14 @@ static Expr *parse_unary(const OpInfo **prefix) {
     if (!info && named && !is_junction(t) && is_op(peek_at(1), "(")) {
         /* An infix or postfix operator applied to its arguments: +(a, b), ^+(a). */
         next();
-        int n;
+        Tok *open = peek();
+        int n, want = op_info(t, INFIX) ? 2 : 1;
         Expr **args = parse_args(&n);
+        if (n != want) {
+            Expr *where = mk_op(open, 0, 0, NULL);
+            finish(where);
+            semantic_error(where, "The operator %s requires %d arguments.", named->name, want);
+        }
         Expr *e = mk_op(t, intern(named->name), n, args);
         finish(e);
         return e;
@@ -3464,6 +3495,7 @@ static void resolve_name(Expr *e, Scope *sc) {
     e->n = s->n;
     Def *d = scope_lookup(sc, s->name);
     if (d) {
+        if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
         if (d->kind == D_BOUND || (d->kind == D_PARAM && d->arity == 0 && s->n == 0)) {
             if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
             e->kind = K_BOUND;
@@ -3481,6 +3513,7 @@ static void resolve_name(Expr *e, Scope *sc) {
     if (!sym) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
     d = sym->def;
     if (d->kind == D_RECURSIVE) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+    if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
     if (!(d->kind == D_OP && s->n == 0 && d->nparams > 0)) check_arity(e, d, s->n);
     e->def = d;
     if (d->kind == D_CONST || d->kind == D_VAR) {
@@ -3496,20 +3529,10 @@ static void resolve_name(Expr *e, Scope *sc) {
     }
 }
 
-/* The function constructors being resolved, and the function definitions
-   with how many constructors were open when each began. A use of such a
-   function makes the constructors around it lazy, as all are in TLC, so
-   that f[i] may use other values of f[i] (§6.6). */
-static Expr *open_fcns[256];
-static int nopen_fcns;
-static struct { Def *def; int open; } open_defs[64];
+/* The function definitions being resolved: one named in its own body is
+   recursive (§6.6). */
+static Def *open_defs[64];
 static int nopen_defs;
-
-static void mark_lazy(Def *d) {
-    for (int i = 0; i < nopen_defs; i++)
-        if (open_defs[i].def == d)
-            for (int j = open_defs[i].open; j < nopen_fcns; j++) open_fcns[j]->lazy = 1;
-}
 
 static void resolve_expr(Expr *e, Scope *sc) {
     if (e->label && !e->label->defs) {
@@ -3526,7 +3549,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         return;
     case X_NAME:
         resolve_name(e, sc);
-        if (e->def && e->def->kind == D_FCN) mark_lazy(e->def);
+        for (int i = 0; i < nopen_defs; i++) if (open_defs[i] == e->def) e->def->self = 1;
         return;
     case X_OPREF:
         e->def = operator_def(e, e->op, sc);
@@ -3563,10 +3586,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
     case X_TFORALL: case X_TEXISTS: {
         Scope *inner = sc;
         resolve_bounds(e, &inner);
-        int open = e->kind == X_FCN && nopen_fcns < 256;
-        if (open) open_fcns[nopen_fcns++] = e;
         resolve_args(e->args, e->n, inner);
-        nopen_fcns -= open;
         check_temporal(e);
         return;
     }
@@ -3643,7 +3663,7 @@ static void resolve_def(Def *d, Scope *sc) {
         return;
     }
     int open = d->kind == D_FCN && nopen_defs < 64;
-    if (open) { open_defs[nopen_defs].def = d; open_defs[nopen_defs++].open = nopen_fcns; }
+    if (open) open_defs[nopen_defs++] = d;
     if (d->body) resolve_expr(d->body, inner);
     nopen_defs -= open;
 }
@@ -3876,6 +3896,7 @@ static int gen_init;            /* assigning unprimed variables: an initial pred
 static long state_reads;        /* incremented by each read of a variable */
 static long moving_reads;       /* by each read of one that may change: primed, or in Init */
 static Value *at_value;         /* @ in an EXCEPT */
+static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to apply it (§6.6) */
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
 
@@ -3896,6 +3917,47 @@ static Env *mk_binding(Def *d, Value *v, Env *next) {
     return b;
 }
 
+/* The variables of bounds, a tuple pattern counting one. */
+static int bounds_total(Bound *bs, int nb) {
+    int total = 0;
+    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    return total;
+}
+
+/* The order in which TLC enumerates the domain of a function of several
+   bounds, sorted in keys: the first bound varies fastest, so the tuples
+   compare from their last part. */
+static Value **order_keys;
+static int params_cmp(const void *x, const void *y) {
+    Value *a = order_keys[*(const int *)x], *b = order_keys[*(const int *)y];
+    for (int i = a->n - 1; i >= 0; i--) {
+        int c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+        if (c) return c;
+    }
+    return 0;
+}
+
+static int *params_order(Value **keys, int n) {
+    int *at = NEWN(int, n);
+    for (int i = 0; i < n; i++) at[i] = i;
+    order_keys = keys;
+    qsort(at, (size_t)n, sizeof *at, params_cmp);
+    return at;
+}
+
+/* A function of several bounds as TLC prints it before normalizing it:
+   its pairs in the order TLC computed them. */
+static Value *print_order(Value *f) {
+    int *at = params_order(f->u.fcn.keys, f->n);
+    Value *g = mk_fcn(f->n);
+    for (int i = 0; i < f->n; i++) {
+        g->u.fcn.keys[i] = f->u.fcn.keys[at[i]];
+        g->u.fcn.vals[i] = f->u.fcn.vals[at[i]];
+    }
+    g->made = MADE_LAMBDA;
+    return g;
+}
+
 /* The domain of [x \in S, <<y, z>> \in T |-> e]: the bound set, or the
    product of one set per variable (a tuple pattern is one). */
 static Value *bounds_domain(Bound *bs, int nb, Ctx c) {
@@ -3912,14 +3974,12 @@ static Value *bounds_domain(Bound *bs, int nb, Ctx c) {
         if (!is_set(set)) fail_at(bs[i].set, "Attempted to enumerate a value that is not a set:\n%s", pretty(set));
         for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) dom->u.l.names[total + k++] = set;
     }
-    if (total == 1) return dom->u.l.names[1];
-    return set_is_infinite(dom) ? dom : enumerate(dom);
+    return total == 1 ? dom->u.l.names[1] : dom;
 }
 
 /* Binds the variables of the bounds to the parts of a domain element. */
 static Env *bind_key(Bound *bs, int nb, Value *key, Env *env, Expr *where) {
-    int total = 0, k = 0;
-    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    int total = bounds_total(bs, nb), k = 0;
     for (int i = 0; i < nb; i++) {
         Bound *b = &bs[i];
         for (int j = 0; j < (b->tuple ? 1 : b->n); j++, k++) {
@@ -3942,21 +4002,23 @@ static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     f->u.l.binder = d;
     f->u.l.env = c.env;
     f->u.l.inst = c.inst;
+    f->keep = keep_lazy || (d && d->self);
     f->perm = arena == &perm_arena;
     return f;
 }
 
-static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where);
+static Value *fcndef_apply(Def *d, Value *a, Ctx c);
+static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *argno);
+static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno);
 
-static Value *lambda_apply(Value *f, Value *a, Expr *where) {
+static Value *lambda_apply(Value *f, Value *a) {
     for (int i = f->n - 1; i >= 0; i--)
         if (veq(f->u.l.names[2 * i], a)) return f->u.l.names[2 * i + 1];
     Ctx c = {f->u.l.env, f->u.l.inst};
-    if (f->u.l.binder) return fcndef_apply(f->u.l.binder, a, c, where);
-    if (!set_member(a, f->u.l.a))
-        fail_at(where, "Attempted to apply function to argument %s, which is not in the domain of the function.", pretty(a));
+    if (f->u.l.binder) return fcndef_apply(f->u.l.binder, a, c);
     Expr *e = f->u.l.expr;
-    c.env = bind_key(e->bounds, e->nb, a, c.env, where);
+    int argno, why = bind_arg(e->bounds, e->nb, f->u.l.a, a, &c.env, &argno);
+    if (why) lambda_outside(f, a, why, argno);
     Value *saved = at_value;
     at_value = f->u.l.b;
     Value *v = eval(e->args[0], c);
@@ -3970,12 +4032,19 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
     if (set_is_infinite(f->u.l.a)) return f;
     Value *dom = enumerate(f->u.l.a);
     Value *g = mk_fcn(dom->n);
-    for (int i = 0; i < dom->n; i++) {
-        g->u.fcn.keys[i] = dom->u.set.elems[i];
-        g->u.fcn.vals[i] = lambda_apply(f, dom->u.set.elems[i], NULL);
+    memcpy(g->u.fcn.keys, dom->u.set.elems, sizeof(Value *) * (size_t)dom->n);
+    Def *d = f->u.l.binder;
+    int params = d ? bounds_total(d->bounds, d->nb) > 1 : bounds_total(f->u.l.expr->bounds, f->u.l.expr->nb) > 1;
+    int *at = params ? params_order(g->u.fcn.keys, dom->n) : NULL;
+    int keep = keep_lazy;
+    keep_lazy = f->keep;
+    for (int j = 0; j < dom->n; j++) {
+        int i = at ? at[j] : j;
+        g->u.fcn.vals[i] = lambda_apply(f, dom->u.set.elems[i]);
     }
+    keep_lazy = keep;
     if (!dom->n) g->empty_fcn = 1;
-    g->made = MADE_LAMBDA;
+    g->made = params ? MADE_PARAMS : MADE_LAMBDA;
     if (!f->perm || arena == &perm_arena) { *f = *g; return f; }
     return g;
 }
@@ -4132,8 +4201,7 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
             if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
         return 0;
     }
-    int total = 0;
-    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    int total = bounds_total(bs, nb);
     if (total == 0) return fn(c, data);
     BindLevel *lv = NEWN(BindLevel, total);
     Bound **owner = NEWN(Bound *, total);
@@ -4235,58 +4303,44 @@ static Value *filter_member_test(Value *s, Value *v) {
 }
 
 /* A recursive function definition f[x \in S] == e: its value at a. */
-static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where) {
-    Env *env = c.env;
+static Value *fcndef_apply(Def *d, Value *a, Ctx c) {
+    Env *env = NULL;
     if (d->local == 2) {
         Env *b = env_find(c.env, d);
-        if (b) env = b->ctx_env;
-    } else {
-        env = NULL;
+        env = b ? b->ctx_env : c.env;
     }
-    int total = 0;
-    for (int i = 0; i < d->nb; i++) total += d->bounds[i].tuple ? 1 : d->bounds[i].n;
-    Value **parts = &a;
-    if (total > 1) {
-        if (!is_fcn(a) || a->n != total) goto outside;
-        parts = a->u.fcn.vals;
+    Value *dom = bounds_domain(d->bounds, d->nb, (Ctx){env, c.inst});
+    int argno, why = bind_arg(d->bounds, d->nb, dom, a, &env, &argno);
+    if (why) lambda_outside(mk_lambda(dom, NULL, d, c), a, why, argno);
+    return eval_body(d->body, (Ctx){env, c.inst});
+}
+
+/* [x \in S |-> e], or the function definition d, computed in full over
+   dom; an error meanwhile is one TLC cannot fingerprint at `where`. */
+static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
+    if (fp_depth < 64) fp_trace[fp_depth] = where;
+    fp_depth++;
+    dom = enumerate(dom);
+    Value *f = mk_fcn(dom->n);
+    memcpy(f->u.fcn.keys, dom->u.set.elems, sizeof(Value *) * (size_t)dom->n);
+    int params = d ? bounds_total(d->bounds, d->nb) > 1 : bounds_total(e->bounds, e->nb) > 1;
+    int *at = params ? params_order(f->u.fcn.keys, dom->n) : NULL;
+    for (int j = 0; j < dom->n; j++) {
+        int i = at ? at[j] : j;
+        Value *k = dom->u.set.elems[i];
+        f->u.fcn.vals[i] = d ? fcndef_apply(d, k, c)
+                             : eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, k, c.env, e), c.inst});
     }
-    int k = 0;
-    for (int i = 0; i < d->nb; i++) {
-        Bound *b = &d->bounds[i];
-        Ctx sc = {env, c.inst};
-        Value *s = eval(b->set, sc);
-        for (int j = 0; j < b->n; j++) {
-            Value *part = parts[k++];
-            if (b->tuple) {
-                if (!is_fcn(part) || part->n != b->n) goto outside;
-                if (!set_member(part, s)) goto outside;
-                for (int t = 0; t < b->n; t++) env = mk_binding(b->defs[t], part->u.fcn.vals[t], env);
-                break;
-            }
-            if (!set_member(part, s)) goto outside;
-            env = mk_binding(b->defs[j], part, env);
-        }
-    }
-    {
-        Ctx inner = {env, c.inst};
-        return eval_body(d->body, inner);
-    }
-outside:
-    fail_at(where, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
-            S(d->name), pretty(a));
+    fp_depth--;
+    if (!dom->n) f->empty_fcn = 1;
+    if (!d) f->made = params ? MADE_PARAMS : MADE_LAMBDA;
+    return f;
 }
 
 static Value *fcndef_value(Def *d, Ctx c) {
     Value *dom = bounds_domain(d->bounds, d->nb, c);
-    if (set_is_infinite(dom)) return mk_lambda(dom, NULL, d, c);
-    dom = enumerate(dom);
-    Value *f = mk_fcn(dom->n);
-    for (int i = 0; i < dom->n; i++) {
-        f->u.fcn.keys[i] = dom->u.set.elems[i];
-        f->u.fcn.vals[i] = fcndef_apply(d, dom->u.set.elems[i], c, NULL);
-    }
-    if (!dom->n) f->empty_fcn = 1;
-    return f;
+    if (d->self || keep_lazy || set_is_infinite(dom)) return mk_lambda(dom, NULL, d, c);
+    return fcn_in_full(dom, NULL, d, c, d->where);
 }
 
 /* TLC's warning that an EXCEPT names a key outside the domain. Like TLC it
@@ -4585,28 +4639,25 @@ static __attribute__((noinline)) Value *ev_fcnset(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
     Value *dom = bounds_domain(e->bounds, e->nb, c);
-    if (e->lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
-    dom = enumerate(dom);
-    Value *f = mk_fcn(dom->n);
-    for (int i = 0; i < dom->n; i++) {
-        f->u.fcn.keys[i] = dom->u.set.elems[i];
-        f->u.fcn.vals[i] = eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, dom->u.set.elems[i], c.env, e), c.inst});
-    }
-    if (!dom->n) f->empty_fcn = 1;
-    f->made = MADE_LAMBDA;
-    return f;
+    if (keep_lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
+    return fcn_in_full(dom, e, NULL, c, e);
 }
 
 static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
     Expr *fe = e->args[0];
-    Value *key;
+    Value *f = NULL, *key;
+    if (!(fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
+        int keep = keep_lazy;
+        keep_lazy = 1;   /* a function to apply stays lazy (§6.6) */
+        f = eval(fe, c);
+        keep_lazy = keep;
+    }
     if (e->n == 2) key = eval(e->args[1], c);
     else {
         key = mk_tuple(e->n - 1);
         for (int i = 1; i < e->n; i++) key->u.fcn.vals[i - 1] = eval(e->args[i], c);
     }
-    if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
-    Value *f = eval(fe, c);
+    if (!f) return fcndef_apply(fe->def, key, c);
     if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
     return fcn_apply(f, key, e);
 }
@@ -4825,7 +4876,7 @@ static Value *eval_operator_arg(Expr *a, Ctx c) {
 static Value *call_values(Def *d, Value **vals, int n, Ctx c, Expr *where) {
     if (d->native) return call_native(d, where, vals, c);
     Env *env = c.env;
-    if (d->kind == D_FCN) return fcndef_apply(d, n == 1 ? vals[0] : NULL, c, where);
+    if (d->kind == D_FCN) return fcndef_apply(d, n == 1 ? vals[0] : NULL, c);
     for (int i = 0; i < n && i < d->nparams; i++) env = mk_binding(d->params[i], vals[i], env);
     Ctx inner = {env, c.inst};
     return eval_body(d->body, inner);
@@ -4848,7 +4899,7 @@ static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
 static void materialize(Value *v) {
     if (v->kind == V_SET) for (int i = 0; i < v->n; i++) materialize(v->u.set.elems[i]);
     if (!is_fcn(v)) return;
-    if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;
+    if (v->made >= MADE_LAMBDA) v->made = MADE_PLAIN;
     for (int i = 0; i < v->n; i++) materialize(v->u.fcn.vals[i]);
 }
 
@@ -4886,7 +4937,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     }
     if (n == 0 && !c.inst) {
         if (d->cache) return d->cache;
-        if (def_level(d) == 0) {
+        if (def_level(d) == 0 && !keep_lazy) {
             Arena *saved = arena;
             arena = &perm_arena;
             sigjmp_buf *outer = handler, here;
@@ -5094,7 +5145,9 @@ NATIVE(n_cardinality) {
 NATIVE(n_print) {
     UNUSED;
     if (in_worker) worker_cannot();   /* the search prints in order */
+    print_normal = 1;
     printf("%s  %s\n", pretty(a[0]), pretty(a[1]));
+    print_normal = 0;
     fflush(stdout);
     return a[1];
 }
@@ -5102,7 +5155,9 @@ NATIVE(n_print) {
 NATIVE(n_printt) {
     UNUSED;
     if (in_worker) worker_cannot();
+    print_normal = 1;
     printf("%s\n", pretty(a[0]));
+    print_normal = 0;
     fflush(stdout);
     return TRUEV;
 }
@@ -5336,6 +5391,109 @@ static int enabled_slot(Def *d) {
     if (nenabled_names == 16) return -1;
     enabled_names[nenabled_names] = d->name;
     return nvars + nenabled_names++;
+}
+
+/* The evaluation globals, which a caller that goes on after an error
+   restores. */
+typedef struct {
+    sigjmp_buf *handler;
+    Arena *arena;
+    Value **cur_state, **next_state, **gen_target, *at_value;
+    int (*gen_emit)(void);
+    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth;
+} EvalState;
+
+static EvalState eval_save(void) {
+    return (EvalState){handler, arena, cur_state, next_state, gen_target, at_value, gen_emit,
+                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth};
+}
+
+static void eval_restore(EvalState s) {
+    handler = s.handler; arena = s.arena;
+    cur_state = s.cur_state; next_state = s.next_state; gen_target = s.gen_target; at_value = s.at_value;
+    gen_emit = s.gen_emit;
+    primed = s.primed; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
+    java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
+}
+
+/* A lazy function as TLC prints it: computed in full if it can be, else
+   as its definition, the error forgotten (§6.6). A worker gives the state
+   back instead, as the error may be one only the search can avoid. */
+static Value *try_realize(Value *f) {
+    if (in_worker || set_is_infinite(f->u.l.a)) return realize(f);
+    EvalState s = eval_save();
+    Buf msg = {0};
+    buf_puts(&msg, error_message.s ? error_message.s : "");
+    Expr *expr = error_expr;
+    int status = error_status, module = error_module;
+    Value *volatile r = f;
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) r = realize(f);
+    eval_restore(s);
+    error_reset();
+    buf_puts(&error_message, msg.s);
+    error_expr = expr, error_status = status, error_module = module;
+    return r;
+}
+
+static void print_lambda(Buf *b, Value *f) {
+    Bound *bs = f->u.l.binder ? f->u.l.binder->bounds : f->u.l.expr->bounds;
+    int nb = f->u.l.binder ? f->u.l.binder->nb : f->u.l.expr->nb;
+    int total = bounds_total(bs, nb), k = 0;
+    buf_puts(b, "[");
+    for (int i = 0; i < nb; i++) {
+        if (i) buf_puts(b, ", ");
+        if (bs[i].tuple) {
+            buf_puts(b, "<<");
+            for (int j = 0; j < bs[i].n; j++) buf_printf(b, "%s%s", j ? ", " : "", S(bs[i].names[j]));
+            buf_puts(b, ">>");
+        } else {
+            buf_puts(b, S(bs[i].names[0]));
+        }
+        buf_puts(b, " \\in ");
+        print_value(b, total == 1 ? f->u.l.a : f->u.l.a->u.l.names[total + k]);
+        k += bs[i].tuple ? 1 : bs[i].n;
+    }
+    buf_puts(b, " |-> <expression ");
+    loc_text(b, f->u.l.binder ? f->u.l.binder->body : f->u.l.expr->args[0]);
+    buf_puts(b, ">]");
+}
+
+/* Binds the bounds bs over dom (as bounds_domain makes it) to the
+   argument a, with TLC's checks: 0, or 1 if a part is outside its set and
+   2 if it is not a tuple where one is needed, that part being *argno (0:
+   the only one, -1: the whole argument). */
+static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *argno) {
+    int total = bounds_total(bs, nb), k = 0;
+    *argno = total == 1 ? 0 : -1;
+    Value **parts = &a;
+    if (total > 1) {
+        if (!is_fcn(a) || !fcn_is_tuple(a) || a->n < total) return 2;
+        parts = a->u.fcn.vals;
+    }
+    for (int i = 0; i < nb; i++) {
+        Bound *b = &bs[i];
+        for (int j = 0; j < (b->tuple ? 1 : b->n); j++, k++) {
+            Value *part = parts[k], *set = total == 1 ? dom : dom->u.l.names[total + k];
+            if (total > 1) *argno = k + 1;
+            if (!set_member(part, set)) return 1;
+            if (!b->tuple) { *env = mk_binding(b->defs[j], part, *env); continue; }
+            if (!is_fcn(part) || !fcn_is_tuple(part) || part->n != b->n) return 2;
+            for (int m = 0; m < b->n; m++) *env = mk_binding(b->defs[m], part->u.fcn.vals[m], *env);
+        }
+    }
+    return 0;
+}
+
+static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno) {
+    char part[48];
+    if (argno == 0) snprintf(part, sizeof part, "the first argument");
+    else if (argno < 0) snprintf(part, sizeof part, "the argument list");
+    else snprintf(part, sizeof part, "the argument number %d", argno);
+    if (argno > 0) a = a->u.fcn.vals[argno - 1];
+    fail_module("In applying the function\n%s,\n%s is:\n%s\n%s", pretty(f), part, pretty(a),
+            why == 1 ? "which is not in its domain." : "which does not match its formal parameter.");
 }
 
 /* The variable an expression assigns: v (initial predicate) or v'
@@ -5692,7 +5850,7 @@ static inline uint64_t pair_hash(Value *f, int i, Value *val) {
 /* A lazy function hashes as the function it is; out of value_hash's way. */
 static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v) {
     Value *f = realize(v);
-    if (f->kind == V_LAMBDA) fail("Attempted to fingerprint the infinite set %s.", pretty(f->u.l.a));
+    if (f->kind == V_LAMBDA) count_infinite(f->u.l.a);
     return value_hash(f);
 }
 
@@ -5714,7 +5872,7 @@ static uint64_t value_hash(Value *v) {
     }
     case V_LAMBDA: return hash_lambda(v);
     case V_TUPLE: case V_FCN:
-        if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
+        if (v->made >= MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
         if (!(sum = v->u.fcn.hash)) {
             for (int i = 0; i < v->n; i++) sum += pair_hash(v, i, v->u.fcn.vals[i]);
             v->u.fcn.hash = sum;
@@ -6164,7 +6322,9 @@ static int init_emit(void) {
     Value **st = NEWN(Value *, nvars);
     memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
     if (check_list(constraints, nconstraints, st) >= 0) return 0;
+    error_state = st;
     uint64_t fp = fingerprint(st);
+    error_state = NULL;
     if (fp_find(fp) >= 0) return 0;
     add_state(st, fp, -1, -1, 1);
     int bad = check_list(invariants, ninvariants, st);
@@ -6398,7 +6558,8 @@ static void worker_expand(int idx) {
     w_n += 2 * sizeof(int);
     w_clean = 1;
     w_found = 0;
-    sigjmp_buf here, *saved = handler;
+    EvalState saved = eval_save();
+    sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) {
         w_clean = 0;
@@ -6415,7 +6576,7 @@ static void worker_expand(int idx) {
         }
         if (succ_count == 0 && check_deadlock) w_clean = 0;
     }
-    handler = saved;
+    eval_restore(saved);
     if (!w_clean) { w_n = head + 2 * sizeof(int); w_found = 0; }
     int header[2] = {w_clean, w_found};
     memcpy(results[w_id] + head, header, sizeof header);
@@ -6587,6 +6748,24 @@ static void print_error_text(void) {
     }
 }
 
+/* After an error, the function constructors that were being computed in
+   full, innermost first, which TLC reports it cannot fingerprint (§11.3);
+   else a blank line. */
+static void print_unfingerprinted(Expr **fps, int n) {
+    if (!n) { printf("\n"); return; }
+    printf("Error: TLC was unable to fingerprint.\n\nFingerprint Stack Trace:\n");
+    int m = 0;
+    for (int i = 0; i < n; i++) if (!m || fps[m - 1] != fps[i]) fps[m++] = fps[i];
+    for (int i = m - 1; i >= 0; i--) {
+        Buf b = {0};
+        loc_text(&b, fps[i]);
+        printf("%d) %s\n", i, b.s);
+        free(b.s);
+    }
+    printf("\nReason:\n");
+    print_error_text();
+}
+
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
     if (dump_file) nworkers = 1;
@@ -6597,15 +6776,19 @@ static int search(void) {
     if (sigsetjmp(here, 0)) {
         handler = NULL;
         int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
+        int nfp = fp_depth < 64 ? fp_depth : 64;
+        Expr *fps[64];
+        memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
+        fp_depth = 0;
         if (expanding < 0) {
             print_error_message();
-            if (error_state) {
+            if (error_state && !error_module) {
                 printf("While working on the initial state:\n");
                 print_state(error_state);
                 printf("\n");
             }
             replay_error(NULL);
-            printf("\n");
+            print_unfingerprinted(fps, nfp);
             print_counts(nstates, 0);
             return status;
         }
@@ -6630,7 +6813,7 @@ static int search(void) {
         Value **from = decode_state(expanding);
         print_trace(expanding, NULL, 0);
         replay_error(from);
-        printf("\n");
+        print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded, 0);
         if (status == TPP_FAILURE_EVAL && error_module) status = TPP_ERROR;
         return status;
@@ -7040,11 +7223,18 @@ static void evaluate_constants(Module *m) {
         Unit *u = &m->units[i];
         if (u->kind != 0) continue;
         Def *d = u->def;
-        if (d->kind != D_OP || d->nparams || d->native || d->cache || def_level(d) != 0) continue;
+        EvalState s = eval_save();
         sigjmp_buf here;
         handler = &here;
-        if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
-        handler = NULL;
+        if (d->kind == D_FCN && !d->self && d->local != 2 && d->level == 0 && !sigsetjmp(here, 0)) {
+            /* TLC keeps a function definition computed in full, if it can be */
+            Value *v = fcndef_value(d, (Ctx){NULL, NULL});
+            materialize(v);
+            d->cache = v;
+        }
+        if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0 && !sigsetjmp(here, 0))
+            call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        eval_restore(s);
     }
     arena = saved;
     for (int i = 0; i < m->nnested; i++) evaluate_constants(m->nested[i]);

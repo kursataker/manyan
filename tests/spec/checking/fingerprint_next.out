@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 7, col 55 to line 7, col 78 of module fingerprint_next
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+v = 0
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+1) line 7, col 39 to line 7, col 79 of module fingerprint_next
+0) line 7, col 23 to line 7, col 80 of module fingerprint_next
+
+Reason:
+Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 7, col 55 to line 7, col 78 of module fingerprint_next
+1 states generated, 1 distinct states found, 0 states left on queue.
+exit 75

@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 6, col 8 to line 6, col 19 of module fcndef_constant_outside failed.
+Attempted to apply function:
+<<10, 20>>
+to argument 3, which is not in the domain of the function.
+exit 10

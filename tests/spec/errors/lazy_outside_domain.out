@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 58 of module lazy_outside_domain failed.
+In applying the function
+[x0 \in 1..2 |-> <expression line 5, col 32 to line 5, col 53 of module lazy_outside_domain>],
+the first argument is:
+3
+which is not in its domain.
+exit 10

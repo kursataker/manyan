@@ -1,0 +1,3 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 52 of module infinite_function_equality failed.
+Attempted to compute the number of elements in the overridden value Nat.
+exit 10

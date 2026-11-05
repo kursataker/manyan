@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 6, col 8 to line 6, col 19 of module recursive_outside_domain failed.
+In applying the function
+[x \in 0..2 |-> <expression line 5, col 18 to line 5, col 25 of module recursive_outside_domain>],
+the first argument is:
+3
+which is not in its domain.
+exit 10

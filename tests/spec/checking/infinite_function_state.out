@@ -1,0 +1,6 @@
+Error: Attempted to compute the number of elements in the overridden value Nat.
+While working on the initial state:
+v = [x \in Nat |-> <expression line 5, col 28 to line 5, col 28 of module infinite_function_state>]
+
+1 states generated, 0 distinct states found, 0 states left on queue.
+exit 75

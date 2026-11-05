@@ -1,0 +1,10 @@
+6
+3
+3
+6
+3
+3
+3
+Error: Evaluating assumption line 16, col 8 to line 16, col 16 of module lazy_functions failed.
+The second argument of \div is 0.
+exit 10
