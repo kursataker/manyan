@@ -810,6 +810,7 @@ static _Noreturn void equality_error(Value *a, Value *b) {
 
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
+    if (a->kind == V_TUPLE && b->kind == V_STR) return veq(a, str_chars(b));   /* TLC's tuple takes a string as its characters */
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
     if (is_fcn(a) && is_fcn(b)) {
@@ -1112,7 +1113,7 @@ static int set_member(Value *v, Value *s) {
     }
     case V_INTERVAL:
         if (v->kind != V_INT) {
-            if (v->kind == V_MODEL) return 0;
+            if (v->kind == V_MODEL || !s->n) return 0;   /* TLC finds nothing in an empty interval */
             fail("Attempted to check if the value:\n%s\nis in the integer interval %s", pretty(v), pretty(s));
         }
         return v->u.i >= s->u.range.lo && v->u.i <= s->u.range.hi;

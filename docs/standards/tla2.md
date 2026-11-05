@@ -433,7 +433,11 @@ remainder; a zero divisor is an error.
 Values of different kinds are unequal only when one is a model value or
 when both are sets or both are functions; otherwise comparing them (for
 example `1 = "a"`) is an error. Two sets are equal when they have the same
-elements; two functions when they have the same domain and values.
+elements; two functions when they have the same domain and values. A tuple
+TLC keeps as one (not computed by `[x \in S |-> e]`) compared with a
+string, on its left, is compared with the tuple of the string's
+characters: `<<"a", "b">> = "ab"`. No value is an element of an empty
+interval, such as `1..0`, even one that is not an integer.
 
 ### 7.4 Order
 
