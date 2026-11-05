@@ -19,12 +19,35 @@ TLA_SHA256 = 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 
-.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle bench install clean
+.PHONY: all release test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle bench install clean
 
 all: tpp
 
 tpp: tpp.c tpp.h
 	$(CC) $(CFLAGS) $(LDFLAGS) tpp.c $(LDLIBS) -o $@
+
+# tpp with profile-guided optimization: the conformance suite is the
+# training run. Clang merges its raw profiles with llvm-profdata.
+PGO = $(abspath $(OBJDIR))/pgo
+ifneq ($(findstring clang,$(shell $(CC) --version 2>/dev/null)),)
+PROFDATA ?= $(shell xcrun -f llvm-profdata 2>/dev/null || command -v llvm-profdata)
+PGO_GEN = -fprofile-instr-generate
+PGO_USE = -fprofile-instr-use=$(PGO)/tpp.profdata
+PGO_MERGE = $(PROFDATA) merge -o $(PGO)/tpp.profdata $(PGO)/*.profraw
+else
+PGO_GEN = -fprofile-generate=$(PGO)
+PGO_USE = -fprofile-use=$(PGO) -fprofile-partial-training
+PGO_MERGE = true
+endif
+
+release: tpp.c tpp.h
+	rm -rf $(PGO) && mkdir -p $(PGO)
+	$(CC) $(CFLAGS) $(PGO_GEN) -c tpp.c -o $(PGO)/tpp.o
+	$(CC) $(PGO_GEN) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o $(PGO)/tpp
+	LLVM_PROFILE_FILE=$(PGO)/%p.profraw python3 tests/spec_runner.py $(PGO)/tpp > /dev/null
+	$(PGO_MERGE)
+	$(CC) $(CFLAGS) $(PGO_USE) -c tpp.c -o $(PGO)/tpp.o
+	$(CC) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o tpp
 
 test: test-spec
 
@@ -67,7 +90,7 @@ fuzz: $(OBJDIR)/tpp-sanitize
 fuzz-oracle: tpp $(TLA_JAR)
 	python3 tests/fuzz.py diff ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-bench: tpp $(TLA_JAR)
+bench: release $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"
 
 install: tpp
