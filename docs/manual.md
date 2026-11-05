@@ -157,7 +157,8 @@ a run with a seed is repeatable. A case either finds becomes a test in
 
 ## Limitations
 
-Not supported: real numbers, the proof language (parsed and skipped),
-`\AA` and `\EE`, TLC's simulation and generation modes, checkpoints and
-distributed checking. `TLCSet` is accepted and does nothing; `TLCGet`
+Not supported: the proof language (parsed and skipped), TLC's simulation
+and generation modes, checkpoints and distributed checking. Real numbers
+(`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
+check them either. `TLCSet` is accepted and does nothing; `TLCGet`
 supports only `"level"`.
