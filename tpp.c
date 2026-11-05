@@ -57,7 +57,8 @@ static void *xrealloc(void *p, size_t n) {
     return p;
 }
 
-static void *alloc(size_t n) {
+/* Memory the caller fills; alloc's is zeroed. */
+static void *alloc_raw(size_t n) {
     n = (n + 15) & ~(size_t)15;
     Chunk *c = arena->head;
     if (!c || c->used + n > c->size) {
@@ -69,9 +70,10 @@ static void *alloc(size_t n) {
     }
     void *p = c->data + c->used;
     c->used += n;
-    memset(p, 0, n);
     return p;
 }
+
+static void *alloc(size_t n) { return memset(alloc_raw(n), 0, n); }
 
 #define NEW(T) ((T *)alloc(sizeof(T)))
 #define NEWN(T, n) ((T *)alloc(sizeof(T) * (size_t)(n)))
@@ -312,7 +314,7 @@ static Value *mk_tuple(int n) {
     Value *v = NEW(Value);
     v->kind = V_TUPLE;
     v->n = n;
-    v->u.fcn.vals = NEWN(Value *, n);
+    v->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)n);
     return v;
 }
 
@@ -320,8 +322,8 @@ static Value *mk_fcn(int n) {
     Value *v = NEW(Value);
     v->kind = V_FCN;
     v->n = n;
-    v->u.fcn.keys = NEWN(Value *, n);
-    v->u.fcn.vals = NEWN(Value *, n);
+    v->u.fcn.keys = alloc_raw(sizeof(Value *) * (size_t)n);
+    v->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)n);
     return v;
 }
 
@@ -702,19 +704,34 @@ static Value *mk_set(int n) {
     Value *v = NEW(Value);
     v->kind = V_SET;
     v->n = n;
-    v->u.set.elems = NEWN(Value *, n);
+    v->u.set.elems = alloc_raw(sizeof(Value *) * (size_t)n);
     return v;
 }
 
 static int cmp_for_sort(const void *x, const void *y) { return vcmp(*(Value **)x, *(Value **)y); }
 
-/* Sorts the elements and removes duplicates. */
+/* Sorts the elements and removes duplicates. Small sets, often built in
+   order, are sorted by insertion, which finds any duplicate next to where
+   it stops. */
 static Value *set_normalize(Value *s) {
-    if (s->n > 1) {
-        qsort(s->u.set.elems, (size_t)s->n, sizeof(Value *), cmp_for_sort);
+    Value **e = s->u.set.elems;
+    int n = s->n, dup = 0;
+    if (n < 2) return s;
+    if (n <= 32) {
+        for (int i = 1; i < n; i++) {
+            Value *x = e[i];
+            int j = i, c = 1;
+            while (j > 0 && (c = vcmp(e[j - 1], x)) > 0) { e[j] = e[j - 1]; j--; }
+            e[j] = x;
+            dup |= c == 0;
+        }
+    } else {
+        qsort(e, (size_t)n, sizeof(Value *), cmp_for_sort);
+        dup = 1;
+    }
+    if (dup) {
         int k = 1;
-        for (int i = 1; i < s->n; i++)
-            if (vcmp(s->u.set.elems[k - 1], s->u.set.elems[i]) != 0) s->u.set.elems[k++] = s->u.set.elems[i];
+        for (int i = 1; i < n; i++) if (vcmp(e[k - 1], e[i]) != 0) e[k++] = e[i];
         s->n = k;
     }
     return s;
@@ -726,7 +743,7 @@ typedef struct { Value **v; int n, cap; } List;
 static void list_add(List *l, Value *v) {
     if (l->n == l->cap) {
         int cap = l->cap ? l->cap * 2 : 8;
-        Value **grown = NEWN(Value *, cap);
+        Value **grown = alloc_raw(sizeof(Value *) * (size_t)cap);
         if (l->n) memcpy(grown, l->v, sizeof(Value *) * (size_t)l->n);
         l->v = grown;
         l->cap = cap;
@@ -943,10 +960,22 @@ static Value *lazy_op(int kind, Value *a, Value *b) {
 static Value *set_union(Value *a, Value *b) {
     if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
     a = enumerate(a); b = enumerate(b);
-    List l = {0};
-    for (int i = 0; i < a->n; i++) list_add(&l, a->u.set.elems[i]);
-    for (int i = 0; i < b->n; i++) list_add(&l, b->u.set.elems[i]);
-    return list_set(&l);
+    if (!b->n) return a;
+    if (!a->n) return b;
+    /* Both are sorted: merge them. */
+    Value *r = mk_set(a->n + b->n);
+    Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
+    int i = 0, j = 0, k = 0;
+    while (i < a->n && j < b->n) {
+        int c = vcmp(x[i], y[j]);
+        out[k++] = c <= 0 ? x[i] : y[j];
+        i += c <= 0;
+        j += c >= 0;
+    }
+    while (i < a->n) out[k++] = x[i++];
+    while (j < b->n) out[k++] = y[j++];
+    r->n = k;
+    return r;
 }
 
 static Value *set_inter(Value *a, Value *b) {
@@ -1041,7 +1070,7 @@ static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
     int i = fcn_index(f, key);
     (void)where;
     if (i < 0) return f;
-    g->u.fcn.vals = NEWN(Value *, f->n);
+    g->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     g->u.fcn.vals[i] = val;
     return g;
@@ -4660,27 +4689,28 @@ static uint64_t mix(uint64_t h, uint64_t x) {
 }
 
 static uint64_t hash_value(Value *v, uint64_t h) {
+    /* An atom's tag is its low byte. */
     switch (v->kind) {
-    case V_BOOL: return mix(h, 0x100 | (uint64_t)v->u.i);
-    case V_INT: return mix(mix(h, 0x200), (uint64_t)v->u.i);
-    case V_STR: return mix(mix(h, 0x300), (uint64_t)v->u.i);
-    case V_MODEL: return mix(mix(h, 0x400), (uint64_t)v->u.i);
+    case V_BOOL: return mix(h, 0x01 | (uint64_t)v->u.i << 8);
+    case V_INT: return mix(h, 0x02 | (uint64_t)v->u.i << 8);
+    case V_STR: return mix(h, 0x03 | (uint64_t)v->u.i << 8);
+    case V_MODEL: return mix(h, 0x04 | (uint64_t)v->u.i << 8);
     case V_INTERVAL: {
         int64_t lo = v->u.range.lo, hi = v->u.range.hi;
-        h = mix(h, 0x500 | (uint64_t)(hi >= lo ? hi - lo + 1 : 0) << 16);
-        for (int64_t i = lo; i <= hi; i++) h = mix(mix(h, 0x200), (uint64_t)i);
+        h = mix(h, 0x05 | (uint64_t)(hi >= lo ? hi - lo + 1 : 0) << 8);
+        for (int64_t i = lo; i <= hi; i++) h = mix(h, 0x02 | (uint64_t)i << 8);
         return h;
     }
     case V_SET: case V_LAZY: {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
         Value *set = enumerate(v);
-        h = mix(h, 0x500 | (uint64_t)set->n << 16);
+        h = mix(h, 0x05 | (uint64_t)set->n << 8);
         for (int i = 0; i < set->n; i++) h = hash_value(set->u.set.elems[i], h);
         return h;
     }
     case V_TUPLE: case V_FCN: {
         int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
-        h = mix(h, (tuple ? 0x600 : 0x700) | (uint64_t)v->n << 16);
+        h = mix(h, (tuple ? 0x06 : 0x07) | (uint64_t)v->n << 8);
         for (int i = 0; i < v->n; i++) {
             if (!tuple) h = hash_value(v->u.fcn.keys[i], h);
             h = hash_value(v->u.fcn.vals[i], h);
