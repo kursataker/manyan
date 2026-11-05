@@ -2912,11 +2912,14 @@ static Def *operator_def(Expr *at, int op, Scope *sc) {
     if (d) return d;
     Sym *s = module_lookup(cur_module, op);
     if (s && !s->npath) return s->def;
+    /* A built-in operator: an infix one takes two arguments, others one. */
+    int n = 1;
+    for (int i = 0; op_table[i].name; i++) if (op_table[i].fix == INFIX && strcmp(op_table[i].name, S(op)) == 0) n = 2;
     Def *w = NEW(Def);
     w->kind = D_OP;
     w->name = op;
-    w->nparams = 2;
-    w->params = NEWN(Def *, 2);
+    w->nparams = n;
+    w->params = NEWN(Def *, n);
     w->level = -1;
     w->var_index = -1;
     w->mod = cur_module;
@@ -2924,10 +2927,10 @@ static Def *operator_def(Expr *at, int op, Scope *sc) {
     *body = *at;
     body->kind = X_OP;
     body->op = op;
-    body->n = 2;
-    body->args = NEWN(Expr *, 2);
+    body->n = n;
+    body->args = NEWN(Expr *, n);
     Scope *inner = sc;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < n; i++) {
         w->params[i] = NEW(Def);
         w->params[i]->kind = D_PARAM;
         w->params[i]->name = intern(i ? "#b" : "#a");
@@ -2944,6 +2947,32 @@ static Def *operator_def(Expr *at, int op, Scope *sc) {
     resolve_expr(body, inner);
     w->body = body;
     return w;
+}
+
+static int expr_level(Expr *e);
+
+/* TLA+ has no raw actions in temporal formulas (§6.10). */
+static void check_temporal(Expr *e) {
+    switch (e->kind) {
+    case K_ALWAYS:
+        if (expr_level(e->args[0]) == 2 && e->args[0]->kind != X_SQACT)
+            semantic_error(e, "[] followed by action not of form [A]_v.");
+        return;
+    case K_EVENTUALLY:
+        if (expr_level(e->args[0]) == 2 && e->args[0]->kind != X_ANGLEACT)
+            semantic_error(e, "<> followed by action not of form <<A>>_v.");
+        return;
+    case K_LEADSTO: case K_WHILE:
+        if (expr_level(e->args[0]) == 2 || expr_level(e->args[1]) == 2)
+            semantic_error(e, "Action used where only temporal formula or state predicate allowed.");
+        return;
+    case X_FORALL: case X_EXISTS:
+        if (expr_level(e->args[0]) == 3)
+            for (int i = 0; i < e->nb; i++)
+                if (e->bounds[i].set && expr_level(e->bounds[i].set) == 2)
+                    semantic_error(e->bounds[i].set, "Action-level bound of quantified temporal formula.");
+        return;
+    }
 }
 
 static void resolve_bounds(Expr *e, Scope **sc) {
@@ -3082,7 +3111,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
     case X_OP: {
         resolve_args(e->args, e->n, sc);
         for (int i = 0; core_ops[i].name; i++)
-            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; return; }
+            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; check_temporal(e); return; }
         Def *d = scope_lookup(sc, e->op);
         Sym *sym = d ? NULL : module_lookup(cur_module, e->op);
         if (sym) d = sym->def;
@@ -3105,6 +3134,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         Scope *inner = sc;
         resolve_bounds(e, &inner);
         resolve_args(e->args, e->n, inner);
+        check_temporal(e);
         return;
     }
     case X_LET: {
@@ -3249,7 +3279,6 @@ static void resolve_module(Module *m) {
 }
 
 /* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
-static int expr_level(Expr *e);
 
 static int def_level(Def *d) {
     if (d->level >= 0) return d->level;

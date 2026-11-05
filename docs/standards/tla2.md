@@ -307,6 +307,11 @@ operator argument from outside the instance keeps its substitutions.
 `F -+-> G`. Temporal formulas appear only in `SPECIFICATION` and `PROPERTY`
 formulas (§10.5), and in definitions they use.
 
+A temporal formula contains no raw action, a semantic error otherwise:
+`[]A` and `<>A` of an action `A` must be `[][A]_e` and `<><<A>>_e`; the
+operands of `~>` and `-+->` are not actions; and a quantifier over a
+temporal formula has no action-level bound.
+
 ## 7 Values
 
 ### 7.1 Kinds
