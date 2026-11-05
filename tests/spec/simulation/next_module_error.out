@@ -1,0 +1,24 @@
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 27 of module next_module_error>
+x = 2
+
+State 3: <Next line 7, col 9 to line 7, col 27 of module next_module_error>
+x = 6
+
+State 4: <Next line 7, col 9 to line 7, col 27 of module next_module_error>
+x = -2
+
+State 5: <Next line 7, col 9 to line 7, col 27 of module next_module_error>
+x = 1
+
+State 6: <Next line 7, col 9 to line 7, col 27 of module next_module_error>
+x = 3
+exit 255

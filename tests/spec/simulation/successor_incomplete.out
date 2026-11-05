@@ -1,0 +1,13 @@
+Error: Successor state is not completely specified by the next-state action.
+
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ a = 3
+/\ b = "x"
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.NullPointerException
+: Cannot invoke "tlc2.value.IValue.fingerPrint(long)" because "minVals[i]" is null
+exit 255

@@ -5676,6 +5676,16 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         if (v->kind != V_BOOL) not_boolean(e->args[0], v);
         return gen(e->args[v->u.i ? 1 : 2], c, k);
     }
+    case K_IMPLIES: {
+        Value *v = eval(e->args[0], c);
+        if (v->kind != V_BOOL && gen_init) {
+            Buf b = {0};
+            loc_text(&b, e);
+            fail("In computing initial states of a predicate of form P => Q, P was %s\n.%s", article_kind(v), b.s);
+        }
+        if (v->kind != V_BOOL) fail_at(e, "In computing next states of a predicate of the form P => Q, P was\n%s.", article_kind(v));
+        return v->u.i ? gen(e->args[1], c, k) : gen_cont(k);
+    }
     case X_CASE:
         for (int i = 0; i + 1 < e->n; i += 2)
             if (!e->args[i] || eval_bool(e->args[i], c)) return gen(e->args[i + 1], c, k);
@@ -6217,7 +6227,7 @@ static int replay_emit(void) {
     return 0;
 }
 
-static void replay(Value **from, Value **to) {
+static int replay(Value **from, Value **to) {
     Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
     int (*saved_emit)(void) = gen_emit;
     int saved_init = gen_init;
@@ -6234,17 +6244,19 @@ static void replay(Value **from, Value **to) {
         cur_state = st;
         next_state = NULL;
         gen(init_expr, root_ctx, NULL);
-    } else {
+    }
+    int action = -1;
+    for (int a = 0; from && a < nactions && !replay_found; a++) {
         gen_init = 0;
         cur_state = from;
-        for (int a = 0; a < nactions && !replay_found; a++) {
-            memset(st, 0, sizeof(Value *) * (size_t)nvars);
-            next_state = st;
-            gen(actions[a].e, actions[a].c, NULL);
-        }
+        memset(st, 0, sizeof(Value *) * (size_t)nvars);
+        next_state = st;
+        gen(actions[a].e, actions[a].c, NULL);
+        action = a;
     }
     cur_state = saved_cur; next_state = saved_next; gen_target = saved_target;
     gen_emit = saved_emit; gen_init = saved_init;
+    return action;   /* the action that yields `to`, the last tried if none */
 }
 
 /* After an evaluation error TLC evaluates Init, or the next-state action
@@ -6356,6 +6368,8 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
     return -1;
 }
 
+#define STUTTER (-2)
+
 /* An edge of the state graph, kept for liveness checking: target and action. */
 static void add_edge(int from, int to, int action) {
     StateRec *r = &states[from];
@@ -6434,7 +6448,8 @@ static int next_emit(void) {
     return 0;
 }
 
-static int check_liveness(void);
+static void collect_fairnesses(void);
+static int live_violated(void);
 static FILE *dump_file;
 
 /* Expands state idx: its successors join the search. Returns the exit
@@ -6898,12 +6913,299 @@ static int search(void) {
     }
     expanding = -1;
     if (ntemporal_props) {
-        int status = check_liveness();
-        if (status) return status;
+        arena = &perm_arena;
+        collect_fairnesses();
+        if (live_violated()) {
+            print_counts(0, 0);
+            return TPP_VIOLATION_LIVENESS;
+        }
     }
     handler = NULL;
     printf("Model checking completed. No error has been found.\n");
     print_counts(0, 1);
+    return TPP_OK;
+}
+
+/* ---------------------------------------------------------------- simulation */
+
+/* TLC's random generator: java.util.Random, counting its doubles (aril). */
+static uint64_t rng_state;
+static int64_t rng_aril;
+
+static void rng_seed(int64_t seed) {
+    rng_state = ((uint64_t)seed ^ 0x5DEECE66DULL) & ((1ULL << 48) - 1);
+    rng_aril = 0;
+}
+
+static int32_t rng_next(int bits) {
+    rng_state = (rng_state * 0x5DEECE66DULL + 0xB) & ((1ULL << 48) - 1);
+    return (int32_t)(uint32_t)(rng_state >> (48 - bits));
+}
+
+static int64_t rng_long(void) {
+    int64_t hi = rng_next(32);
+    return (int64_t)((uint64_t)hi << 32) + rng_next(32);
+}
+
+/* An index below n, as TLC draws one: floor(nextDouble() * n). */
+static int rng_index(int n) {
+    rng_aril++;
+    double d = (double)(((int64_t)rng_next(26) << 27) + rng_next(27)) * 0x1.0p-53;
+    return (int)(d * n);   /* d * n >= 0: truncation is floor */
+}
+
+/* One of the 1341 primes from 1277011 on, TLC's steps through the actions. */
+static int rng_prime(void) {
+    static int primes[1341];
+    if (!primes[0])
+        for (int p = 1277011, k = 0; k < 1341; p += 2) {
+            int prime = 1;
+            for (int d = 3; d * d <= p && prime; d += 2) prime = p % d != 0;
+            if (prime) primes[k++] = p;
+        }
+    int i = 1341;
+    while (i == 1341) i = rng_index(1341);
+    return primes[i];
+}
+
+/* The states an evaluation yields, encoded in order, complete or not. */
+typedef struct { Buf *a; int n, cap; } States;
+static States sim_found;
+
+static int sim_emit(void) {
+    if (sim_found.n == sim_found.cap) {
+        sim_found.cap = sim_found.cap ? 2 * sim_found.cap : 16;
+        sim_found.a = xrealloc(sim_found.a, sizeof(Buf) * (size_t)sim_found.cap);
+    }
+    Buf *b = &sim_found.a[sim_found.n++];
+    *b = (Buf){0};
+    for (int i = 0; i < nvars; i++) {
+        buf_add(b, (const char *)&(char){gen_target[i] != NULL}, 1);
+        if (gen_target[i]) encode(b, gen_target[i]);
+    }
+    return 0;
+}
+
+static Value **sim_decode(Buf *b) {
+    Value **st = NEWN(Value *, nvars);
+    const char *p = b->s;
+    for (int i = 0; i < nvars; i++) st[i] = *p++ ? decode(&p) : NULL;
+    return st;
+}
+
+static void sim_clear(States *s) {
+    for (int i = 0; i < s->n; i++) free(s->a[i].s);
+    s->n = 0;
+}
+
+/* The successors of st by one action: TLC picks the first action at
+   random, then steps through them by a random prime until one has. */
+static int sim_next(Value **st) {
+    sim_clear(&sim_found);
+    int a = rng_index(nactions), p = rng_prime();
+    for (int i = 0; i < nactions; i++) {
+        cur_state = st;
+        cur_action = a;
+        memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+        next_state = succ;
+        gen_target = succ;
+        gen(actions[a].e, actions[a].c, NULL);
+        if (sim_found.n) return 1;
+        a = (a + p) % nactions;
+    }
+    return 0;
+}
+
+/* A random behavior up to its error, as TLC prints it: each state labeled
+   with the first action that yields it, a step that changes nothing left out. */
+static void sim_print(States *trace) {
+    printf("Error: The behavior up to this point is:\n");
+    Value **last = NULL;
+    uint64_t last_fp = 0;
+    for (int i = 0, k = 1; i < trace->n; i++) {
+        Value **st = sim_decode(&trace->a[i]);
+        uint64_t fp = fingerprint(st);
+        int action = last ? replay(last, st) : -1;
+        if (!last || fp != last_fp) print_numbered(k++, action, st);
+        last = st;
+        last_fp = fp;
+    }
+}
+
+static Buf buf_copy(Buf *b) { return (Buf){.s = memcpy(xmalloc(b->n), b->s, b->n), .n = b->n}; }
+
+static void sim_push(States *trace, Buf *b) {
+    if (trace->n == trace->cap) {
+        trace->cap = trace->cap ? 2 * trace->cap : 64;
+        trace->a = xrealloc(trace->a, sizeof(Buf) * (size_t)trace->cap);
+    }
+    trace->a[trace->n++] = buf_copy(b);
+}
+
+/* Whether a temporal property fails on the behavior, as TLC checks one:
+   each state may stutter or take its step. */
+static int sim_violates(States *trace) {
+    for (int i = 0; i < nstates; i++) free(states[i].edges);
+    nstates = 0;
+    store.n = 0;
+    if (fp_size) memset(fp_table, 0, sizeof(FpSlot) * (size_t)fp_size);
+    int prev = -1;
+    Value **last = NULL;
+    for (int i = 0; i < trace->n; i++) {
+        Value **st = sim_decode(&trace->a[i]);
+        uint64_t fp = fingerprint(st);
+        int s = fp_find(fp);
+        if (s < 0) s = add_state(st, fp, prev, -1, i + 1);
+        if (prev >= 0) add_edge(prev, s, s == prev ? STUTTER : replay(last, st));
+        prev = s;
+        last = st;
+    }
+    return live_violated();
+}
+
+static void sim_summary(int64_t seed, int64_t aril) {
+    printf("The number of states generated: %ld\n", generated);
+    printf("Simulation using seed %lld and aril %lld\n", (long long)seed, (long long)aril);
+}
+
+/* Random simulation (§10.6): TLC's behaviors for the seed, from one worker. */
+static int simulate(const TPPOptions *o) {
+    int64_t seed = o->seed_given ? o->seed : (int64_t)time(NULL) * 1000003 ^ getpid();
+    rng_seed(seed);
+    for (int64_t i = 0; i < o->aril; i++) rng_index(1);
+    int64_t aril = rng_aril;
+    rng_seed(rng_long());
+    long depth = o->depth ? o->depth : 100;
+    succ = NEWN(Value *, nvars);
+    arena = &scratch_arena;
+    sigjmp_buf here;
+    handler = &here;
+    static States init, trace;   /* static: read after an error jumps back */
+    static Buf *checked;         /* the successor being checked */
+    if (sigsetjmp(here, 0)) {
+        handler = NULL;
+        int invariant = error_check && error_check >= invariants && error_check < invariants + ninvariants;
+        if (!trace.n && invariant) {
+            printf("Error: ");
+            print_error_text();
+            printf("While working on the initial state:\n");
+            print_state(error_state);
+            printf("\n");
+            sim_summary(seed, aril);
+            return TPP_ERROR;
+        }
+        if (invariant) {
+            printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
+            print_error_text();
+            sim_push(&trace, checked);
+            sim_print(&trace);
+            sim_summary(seed, aril);
+            return TPP_FAILURE_SAFETY_EVAL;
+        }
+        printf("Error: TLC threw an unexpected exception.\n"
+               "This was probably caused by an error in the spec or model.\n"
+               "See the User Output or TLC Console for clues to what happened.\n"
+               "The exception was a %s\n: ", error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException");
+        print_error_text();
+        if (trace.n) sim_print(&trace);
+        return TPP_ERROR;
+    }
+    gen_target = succ;
+    next_state = NULL;
+    cur_state = succ;
+    gen_init = 1;
+    gen_emit = sim_emit;
+    memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+    gen(init_expr, root_ctx, NULL);
+    gen_init = 0;
+    init = sim_found;
+    sim_found = (States){0};
+    generated = init.n;
+    printf("Computed %d initial states...\n", init.n);
+    for (int i = 0; i < init.n; i++) {
+        Value **st = sim_decode(&init.a[i]);
+        for (int v = 0; v < nvars; v++)
+            if (!st[v]) {
+                printf("Error: State is not completely specified by the initial predicate:\n");
+                print_state(st);
+                return TPP_ERROR;
+            }
+        int bad = check_list(invariants, ninvariants, st);
+        if (bad >= 0) {
+            printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+            print_state(st);
+            return TPP_VIOLATION_SAFETY;
+        }
+    }
+    if (!init.n) {
+        printf("Error: There is no state satisfying the initial state predicate.\n");
+        return TPP_ERROR;
+    }
+    arena = &perm_arena;
+    collect_fairnesses();
+    arena = &scratch_arena;
+    arena_reset(&scratch_arena);
+    Buf cur = {0};
+    for (long t = 0; !o->traces || t < o->traces; t++) {
+        sim_clear(&trace);
+        free(cur.s);
+        cur = buf_copy(&init.a[rng_index(init.n)]);
+        Value **st = sim_decode(&cur);
+        int in_model = check_list(constraints, nconstraints, st) < 0;
+        for (long d = 0; d < depth; d++) {
+            sim_push(&trace, &cur);
+            if (!in_model) break;
+            if (!sim_next(st)) {
+                if (!check_deadlock) break;
+                printf("Error: Deadlock reached.\n");
+                sim_print(&trace);
+                sim_summary(seed, aril);
+                return TPP_VIOLATION_DEADLOCK;
+            }
+            for (int i = 0; i < sim_found.n; i++) {
+                generated++;
+                checked = &sim_found.a[i];
+                Value **s1 = sim_decode(checked);
+                for (int v = 0; v < nvars; v++)
+                    if (!s1[v]) {
+                        /* TLC prints the behavior, then fails to fingerprint the successor. */
+                        printf("Error: Successor state is not completely specified by the next-state action.\n\n");
+                        sim_print(&trace);
+                        printf("\nError: TLC threw an unexpected exception.\n"
+                               "This was probably caused by an error in the spec or model.\n"
+                               "See the User Output or TLC Console for clues to what happened.\n"
+                               "The exception was a java.lang.NullPointerException\n"
+                               ": Cannot invoke \"tlc2.value.IValue.fingerPrint(long)\" because \"minVals[i]\" is null\n");
+                        return TPP_ERROR;
+                    }
+                const char *what = "Invariant";
+                Check *list = invariants;
+                int status = TPP_VIOLATION_SAFETY;
+                int bad = check_list(invariants, ninvariants, s1);
+                if (bad < 0) what = "Action property", list = action_props, status = TPP_VIOLATION_LIVENESS, bad = check_actions(action_props, naction_props, st, s1);
+                if (bad < 0) continue;
+                printf("Error: %s %s is violated.\n", what, S(list[bad].name));
+                sim_push(&trace, &sim_found.a[i]);
+                sim_print(&trace);
+                sim_summary(seed, aril);
+                return status;
+            }
+            Buf *next = &sim_found.a[rng_index(sim_found.n)];
+            Value **s1 = sim_decode(next);
+            in_model = check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, st, s1) < 0;
+            free(cur.s);
+            cur = buf_copy(next);
+            arena_reset(&scratch_arena);
+            st = sim_decode(&cur);
+        }
+        if (ntemporal_props && sim_violates(&trace)) {
+            sim_summary(seed, aril);
+            return TPP_VIOLATION_LIVENESS;
+        }
+        arena_reset(&scratch_arena);
+    }
+    handler = NULL;
+    printf("Progress: %ld states checked.\n", generated);
     return TPP_OK;
 }
 
@@ -7742,12 +8044,7 @@ static signed char *state_atom_cache;   /* nstates * natoms: 0 unknown, 1 false,
 static Value ***decoded;
 
 static Value **state_values(int s) {
-    if (!decoded[s]) {
-        Arena *saved = arena;
-        arena = &perm_arena;
-        decoded[s] = decode_state(s);
-        arena = saved;
-    }
+    if (!decoded[s]) decoded[s] = decode_state(s);
     return decoded[s];
 }
 
@@ -7829,7 +8126,6 @@ static int pnode_find(int s, int t, int create) {
     return npnodes++;
 }
 
-#define STUTTER (-2)
 
 /* The successors of a product node: each edge of the state graph and the
    stuttering step, with each successor of the tableau node. */
@@ -8216,10 +8512,15 @@ static int check_property(TF *negated) {
     return 0;
 }
 
-static int check_liveness(void) {
-    arena = &perm_arena;
-    decoded = calloc((size_t)nstates, sizeof(Value **));
+static void collect_fairnesses(void) {
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
+}
+
+/* Whether a temporal property fails on the state graph; if so, its
+   counterexample is printed. */
+static int live_violated(void) {
+    free(decoded);
+    decoded = calloc((size_t)nstates, sizeof(Value **));
     for (int p = 0; p < ntemporal_props; p++) {
         neventualities = 0;
         natoms = 0;
@@ -8231,10 +8532,7 @@ static int check_liveness(void) {
         TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
         free(state_atom_cache);
         state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
-        if (check_property(neg)) {
-            print_counts(0, 0);
-            return TPP_VIOLATION_LIVENESS;
-        }
+        if (check_property(neg)) return 1;
     }
     return 0;
 }
@@ -8367,9 +8665,9 @@ int tpp_check(const TPPOptions *o) {
     split_action(next_expr, root_ctx, next_expr->kind == K_CALL ? next_expr->def->name : intern("Next"));
     handler = NULL;
     if (o->dump) dump_file = fopen(o->dump, "w");
-    nworkers = o->workers > 1 ? o->workers : 1;
+    nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
     status = check_temporal_forms();
-    if (!status) status = search();
+    if (!status) status = o->simulate ? simulate(o) : search();
     stop_workers();
     return status;
 }
@@ -8381,6 +8679,17 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
         else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
+        else if (strcmp(argv[i], "-simulate") == 0) {
+            o.simulate = 1;
+            if (i + 1 < argc && (strstr(argv[i + 1], "num=") || strstr(argv[i + 1], "file="))) {
+                for (char *arg = strtok(argv[++i], ","); arg; arg = strtok(NULL, ","))
+                    if (strncmp(arg, "num=", 4) == 0) o.traces = atol(arg + 4);
+                    else { fprintf(stderr, "tpp: -simulate %s is not supported\n", arg); return TPP_ERROR; }
+            }
+        }
+        else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
+        else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
+        else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);
         else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) {
             i++;
             o.workers = strcmp(argv[i], "auto") == 0 ? (int)sysconf(_SC_NPROCESSORS_ONLN) : atoi(argv[i]);

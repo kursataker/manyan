@@ -25,6 +25,7 @@ tpp is one C file with no dependencies beyond the C library and POSIX
 
 ```sh
 tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
+tpp -simulate [num=N] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
 ```
 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
@@ -38,6 +39,9 @@ built in.
 | `-deadlock` | do not report deadlock, as TLC's `-deadlock` |
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to FILE in Graphviz dot format |
+| `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
+| `-depth D` | the length of each random behavior, in states (100) |
+| `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
 
 A run prints TLC's report on standard output: the initial states, then
@@ -86,6 +90,17 @@ under.
 
 `Print`, `PrintT` and `Assert` behave as in TLC, including the extra
 output TLC produces when it reconstructs a trace.
+
+## Simulation
+
+`-simulate` checks random behaviors instead of the whole state graph: from
+an initial state drawn at random, it takes a random action's successors,
+checks every one of them against the invariants and action properties,
+and moves to one at random, until the behavior is `-depth` states long or
+stops (Standard §10.8). Temporal properties are checked on each behavior.
+With the same `-seed` and `-aril`, tpp draws the same behaviors as TLC
+with one worker and prints the same report; `-workers` is ignored. A
+seed is drawn at random unless one is given.
 
 ## Exit statuses
 
@@ -137,6 +152,7 @@ make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
 make fuzz              # mutated tests/spec models under the sanitizer build
 make fuzz-oracle       # random expressions, printed by tpp and by TLC
+make fuzz-sim          # random simulations of tests/spec models, by tpp and by TLC
 make bench             # times tpp against TLC; writes docs/benchmark.md
 ```
 
@@ -146,19 +162,25 @@ output and exit status. `tests/spec/tlc` holds models imported from TLC's
 own test suite.
 
 `make fuzz` swaps, drops or repeats one to three tokens of a random test's
-model (most mutants still parse) and runs the sanitizer build on it; it
+model (most mutants still parse) and runs the sanitizer build on it, half
+the time as a random simulation; it
 must end with one of tpp's exit statuses, without a signal or a sanitizer
 report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
 `make fuzz-oracle` writes random constant expressions as `ASSUME
 PrintT(e)` and checks that tpp prints what TLC prints, narrowing a
-difference to one expression. Both take `RUNS=` (1000) and `SEED=` (1);
-a run with a seed is repeatable. A case either finds becomes a test in
+difference to one expression. `make fuzz-sim` simulates random tests'
+models with random seeds and depths, with tpp and with TLC. All three take `RUNS=` (1000) and `SEED=` (1);
+a run with a seed is repeatable. A case any of them finds becomes a test in
 `tests/spec`.
 
 ## Limitations
 
-Not supported: the proof language (parsed and skipped), TLC's simulation
-and generation modes, checkpoints and distributed checking. Real numbers
+Not supported: the proof language (parsed and skipped), TLC's generation
+mode (`-generate`), writing simulated behaviors to files (`-simulate
+file=`), checkpoints and distributed checking. In a simulation, output
+from `Print` comes in a different order than TLC's, and a temporal
+property is checked on the whole graph of each behavior, where TLC may
+miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
 check them either. `TLCSet` is accepted and does nothing; `TLCGet`
 supports only `"level"`.

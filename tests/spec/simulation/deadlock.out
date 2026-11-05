@@ -1,0 +1,14 @@
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 43 of module deadlock>
+x = 2
+
+State 3: <Next line 7, col 9 to line 7, col 43 of module deadlock>
+x = 3
+
+State 4: <Next line 7, col 9 to line 7, col 43 of module deadlock>
+x = 4
+exit 11

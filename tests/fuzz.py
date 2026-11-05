@@ -2,10 +2,14 @@
 
 usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py diff ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
+       fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
-build) on each; it must exit with one of its statuses, without a signal
-or a sanitizer report.
+build) on each, half of them as random simulations; it must exit with one
+of its statuses, without a signal or a sanitizer report.
+
+sim: runs models of tests/spec as random simulations, with random seeds
+and depths, with the engine and with TLC; they must print the same.
 
 diff: makes random constant expressions and checks ASSUME PrintT(e) with
 the engine and with TLC; they must print the same. A batch of expressions
@@ -60,9 +64,9 @@ def mutate(text, rng):
     return "".join(tokens)
 
 
-def run(engine, name, directory, timeout):
+def run(engine, name, directory, timeout, options=()):
     try:
-        done = subprocess.run(engine + ["-config", name + ".cfg", name], cwd=directory, timeout=timeout,
+        done = subprocess.run(engine + list(options) + ["-config", name + ".cfg", name], cwd=directory, timeout=timeout,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     except subprocess.TimeoutExpired:
         return None, ""
@@ -81,13 +85,16 @@ def crash(engine, runs, seed):
             spec_runner.stage(path, directory)
             text = mutate(path.read_text(), rng)
             (directory / path.name).write_text(text)
-            code, out = run(engine, path.stem, directory, 10)
+            options = spec_runner.options(path)
+            if not options and rng.random() < 0.5:
+                options = ["-simulate", "num=5", "-depth", "20", "-seed", str(rng.randint(0, 999))]
+            code, out = run(engine, path.stem, directory, 10, options)
             if code is not None and (code not in STATUSES or "runtime error" in out or "Sanitizer" in out):
                 failed += 1
                 kept = ROOT / ".obj" / f"crash-{seed}-{i}.tla"
                 kept.parent.mkdir(exist_ok=True)
                 kept.write_text(text)
-                print(f"FAIL {path.relative_to(ROOT)} exit {code}, kept as {kept.relative_to(ROOT)}")
+                print(f"FAIL {path.relative_to(ROOT)} {' '.join(options)} exit {code}, kept as {kept.relative_to(ROOT)}")
                 print(out[-2000:])
     print(f"{runs - failed}/{runs} mutated models ran without crashing")
     return failed
@@ -126,6 +133,7 @@ class Gen:
             lambda: self.choose(d, "int"),
             lambda: f"{self.record(d + 1)}.a",
             lambda: f"{self.fcn(d + 1)}[{r.randint(1, 3)}]",
+            lambda: self.lazy_fcn(d),
             lambda: f"(LET y == {n()} IN y + {n()})",
         )
 
@@ -139,6 +147,8 @@ class Gen:
             lambda: f"({self.int(d + 1)} < {self.int(d + 1)})",
             lambda: f"({self.int(d + 1)} = {self.int(d + 1)})",
             lambda: f"({self.int(d + 1)} \\in {self.set(d + 1)})",
+            lambda: f"({self.int(d + 1)} \\in {self.lazy(d + 1)})",
+            lambda: f"({self.set(d + 1)} \\subseteq {self.lazy(d + 1)})",
             lambda: f"({self.set(d + 1)} \\subseteq {self.set(d + 1)})",
             lambda: f"(~{b()})",
             lambda: f"({b()} /\\ {b()})",
@@ -173,6 +183,22 @@ class Gen:
         x, p = self.bind(lambda: self.bool(d + 1))
         return f"(CHOOSE {x} \\in {s} : {p})"
 
+    def lazy(self, d):
+        """An infinite set of integers, which TLC keeps unevaluated."""
+        s = lambda: self.set(d + 1)
+        x, p = self.bind(lambda: self.bool(d + 1))
+        return self.pick(
+            lambda: self.rng.choice(["Nat", "Int"]),
+            lambda: f"{{{x} \\in Nat : {p}}}",
+            lambda: f"(Nat \\ {s()})",
+            lambda: f"({s()} \\cup Int)",
+            lambda: f"UNION {{{s()}, Nat}}",
+        )
+
+    def lazy_fcn(self, d):
+        x, e = self.bind(lambda: self.int(d + 1))
+        return f"[{x} \\in {self.rng.choice(['Nat', 'Int'])} |-> {e}][{self.rng.randint(0, 5)}]"
+
     def set(self, d=0):
         r = self.rng
         n = lambda: self.int(d + 1)
@@ -189,6 +215,8 @@ class Gen:
             lambda: self.image(d),
             lambda: f"DOMAIN {self.seq(d + 1)}",
             lambda: f"UNION {{{s()}, {s()}}}",
+            lambda: f"({s()} \\cap {self.lazy(d + 1)})",
+            lambda: f"({s()} \\ {self.lazy(d + 1)})",
         )
 
     def big(self, d=0):
@@ -278,9 +306,28 @@ def diff(engine, tlc, runs, seed):
     return failed
 
 
+def sim(engine, tlc, runs, seed):
+    rng = random.Random(seed)
+    models = sorted((ROOT / "tests/spec").rglob("*.tla"))
+    models = [p for p in models if ".files" not in str(p) and not spec_runner.options(p)
+              and re.search(r"^\s*(INIT|SPECIFICATION)\b", p.read_text(), flags=re.M)]
+    failed = 0
+    for _ in range(runs):
+        path = rng.choice(models)
+        options = ["-simulate", f"num={rng.randint(1, 5)}", "-depth", str(rng.randint(1, 30)),
+                   "-seed", str(rng.randint(0, 999))]
+        ours = spec_runner.run(engine + options, path)
+        theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path)
+        if ours != theirs:
+            failed += 1
+            print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
+    print(f"{runs - failed}/{runs} simulations printed what TLC prints")
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "diff"])
+    parser.add_argument("mode", choices=["crash", "diff", "sim"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--runs", type=int, default=200)
@@ -290,8 +337,8 @@ def main():
     if args.mode == "crash":
         return 1 if crash(engine, args.runs, args.seed) else 0
     if not args.tlc:
-        parser.error("diff needs --tlc")
-    return 1 if diff(engine, args.tlc, args.runs, args.seed) else 0
+        parser.error(args.mode + " needs --tlc")
+    return 1 if (sim if args.mode == "sim" else diff)(engine, args.tlc, args.runs, args.seed) else 0
 
 
 if __name__ == "__main__":

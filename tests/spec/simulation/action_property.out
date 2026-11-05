@@ -1,0 +1,14 @@
+Error: Action property Slow is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 18 of module action_property>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 18 of module action_property>
+x = 2
+
+State 4: <Next line 7, col 23 to line 7, col 32 of module action_property>
+x = 5
+exit 13

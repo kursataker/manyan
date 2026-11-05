@@ -1,0 +1,3 @@
+Error: Invariant Inv is violated by the initial state:
+x = 2
+exit 12

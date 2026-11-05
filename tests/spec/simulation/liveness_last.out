@@ -1,0 +1,18 @@
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 27 of module liveness_last>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 27 of module liveness_last>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 27 of module liveness_last>
+x = 3
+
+State 5: Stuttering
+exit 13

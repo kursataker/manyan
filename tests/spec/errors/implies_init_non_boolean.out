@@ -1,0 +1,5 @@
+Error: In computing initial states of a predicate of form P => Q, P was an integer
+.line 4, col 10 to line 4, col 19 of module implies_init_non_boolean
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+exit 75

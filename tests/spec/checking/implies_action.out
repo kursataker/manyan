@@ -1,0 +1,23 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: y.
+
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 1
+
+State 2: <Next line 5, col 9 to line 5, col 39 of module implies_action>
+/\ x = 1
+/\ y = 1
+
+State 3: <Next line 5, col 9 to line 5, col 39 of module implies_action>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 5, col 9 to line 5, col 39 of module implies_action>
+/\ x = 3
+/\ y = null
+
+7 states generated, 6 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+exit 75

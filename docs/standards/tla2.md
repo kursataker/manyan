@@ -524,7 +524,8 @@ assumptions are evaluated (§4.5).
 
 The initial predicate is evaluated as a generator: a conjunction is
 evaluated left to right; a disjunction, an `\E`, an `IF`, or a `CASE` tries
-each alternative; a conjunct `v = e` with `v` unassigned assigns `v`, and
+each alternative; `P => Q` evaluates `P`, then continues with `Q` if it is
+`TRUE` and without it if it is `FALSE`; a conjunct `v = e` with `v` unassigned assigns `v`, and
 `v \in S` with `v` unassigned assigns each element of `S` in turn; any
 other formula must be `TRUE` for the alternative to continue. A state in
 which some variable is unassigned is an error. Each state produced, once
@@ -579,6 +580,36 @@ property fails and the fairness conditions hold.
 When several lassos qualify, TLC's choice is not specified (it can differ
 between runs), so a conforming test admits exactly one.
 
+### 10.8 Simulation
+
+With `-simulate`, the checker explores random behaviors instead of the
+state graph, as TLC does with one worker. `-seed S` (random if not given)
+and `-aril A` choose the behaviors: the generator is Java's
+`java.util.Random`, seeded with `S` and advanced `A` doubles, whose first
+long seeds the generator that draws the behaviors. `num=N` bounds the
+number of behaviors (unbounded if not given) and `-depth D` their length
+in states (100).
+
+The initial states are computed and checked first. Each behavior starts at
+an initial state drawn at random. In each state, an action (§10.3) is drawn
+at random, then a prime from a fixed list of 1341, and the actions are
+tried in steps of that prime until one has successors. Every successor is
+checked, against the invariants then the action properties, and one is
+drawn as the next state. A behavior ends at its length, at a state outside
+the constraints, or at a state with no successor, a deadlock unless
+`CHECK_DEADLOCK` is `FALSE`. A temporal property is then checked on the
+behavior: on the graph of its states and steps, in which every state may
+also stutter. TLC builds this graph as the states arrive and, for a
+property it checks with a tableau (such as `P ~> Q`), can miss a lasso of
+the graph or report a different one; which lasso is reported, and for such
+a property whether one is, is not specified.
+
+A violation prints the behavior up to the bad state, each state labeled
+with the first action that yields it and steps that change nothing left
+out. An evaluation error, and a successor that leaves a variable
+unassigned, print TLC's unexpected-exception report. The state counts of
+a simulation are unspecified (§11.1).
+
 ## 11 Output
 
 ### 11.1 Normalized output
@@ -588,7 +619,8 @@ version and start-up banner, `Parsing file`, `Semantic processing`,
 `Starting...`, `Computing initial states...`, `Computed N initial
 states...`, `Progress(...)`, `Checking temporal properties for`,
 `Finished checking temporal properties`, `Implied-temporal checking`,
-`Finished in`, the average outdegree, the fingerprint-collision report,
+`Finished in`, a simulation's `Progress: N states checked.`, `The number
+of states generated:` and `Simulation using seed`, the average outdegree, the fingerprint-collision report,
 and the block that begins `Error: The error occurred when TLC was
 evaluating the nested expressions`. Timestamps are removed from `Finished
 computing initial states`, and runs of blank lines are one blank line.
@@ -718,6 +750,8 @@ col c to line l2, col c2 of module M`.
 Not covered: the proof language (`PROOF`, steps, `USE`, `BY`; skipped,
 except that a `HIDE` may name only theorems, assumptions, and steps, and a
 theorem's statement is kept for §5.7), computing with real numbers and
-with `\AA` and `\EE` (which TLC cannot either; §3.5, §11.3), `-simulate`, `-generate`,
+with `\AA` and `\EE` (which TLC cannot either; §3.5, §11.3), `-generate`,
+writing simulated behaviors to files (`-simulate file=`), simulation with
+several workers, the order of `Print` output in a simulation,
 checkpointing, multiple workers' scheduling, distributed TLC, and the
 TLA⁺ Toolbox outputs (`-tool`).

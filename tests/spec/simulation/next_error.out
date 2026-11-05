@@ -1,0 +1,17 @@
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 7, col 14 to line 7, col 61 of module next_error
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 61 of module next_error>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 61 of module next_error>
+x = 2
+exit 255

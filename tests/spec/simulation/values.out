@@ -1,0 +1,52 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ q = <<>>
+/\ r = [a |-> 2, b |-> "q"]
+/\ s = {}
+
+State 2: <Next line 8, col 12 to line 8, col 62 of module values>
+/\ q = <<>>
+/\ r = [a |-> 3, b |-> "q"]
+/\ s = {}
+
+State 3: <Next line 9, col 25 to line 9, col 75 of module values>
+/\ q = <<p2>>
+/\ r = [a |-> 3, b |-> "q"]
+/\ s = {p2}
+
+State 4: <Next line 8, col 12 to line 8, col 62 of module values>
+/\ q = <<p2>>
+/\ r = [a |-> 4, b |-> "q"]
+/\ s = {p2}
+
+State 5: <Next line 10, col 12 to line 10, col 58 of module values>
+/\ q = <<>>
+/\ r = [a |-> 4, b |-> "q"]
+/\ s = {p2}
+
+State 6: <Next line 9, col 25 to line 9, col 75 of module values>
+/\ q = <<p1>>
+/\ r = [a |-> 4, b |-> "q"]
+/\ s = {p1, p2}
+
+State 7: <Next line 9, col 25 to line 9, col 75 of module values>
+/\ q = <<p1, p3>>
+/\ r = [a |-> 4, b |-> "q"]
+/\ s = {p1, p2, p3}
+
+State 8: <Next line 8, col 12 to line 8, col 62 of module values>
+/\ q = <<p1, p3>>
+/\ r = [a |-> 5, b |-> "q"]
+/\ s = {p1, p2, p3}
+
+State 9: <Next line 9, col 25 to line 9, col 75 of module values>
+/\ q = <<p1, p3, p3>>
+/\ r = [a |-> 5, b |-> "q"]
+/\ s = {p1, p2, p3}
+
+State 10: <Next line 8, col 12 to line 8, col 62 of module values>
+/\ q = <<p1, p3, p3>>
+/\ r = [a |-> 6, b |-> "q"]
+/\ s = {p1, p2, p3}
+exit 12

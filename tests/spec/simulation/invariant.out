@@ -1,0 +1,38 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Flip line 8, col 9 to line 8, col 33 of module invariant>
+/\ x = 0
+/\ y = 1
+
+State 3: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 1
+/\ y = 1
+
+State 4: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 2
+/\ y = 1
+
+State 5: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 3
+/\ y = 1
+
+State 6: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 4
+/\ y = 1
+
+State 7: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 5
+/\ y = 1
+
+State 8: <Flip line 8, col 9 to line 8, col 33 of module invariant>
+/\ x = 5
+/\ y = 0
+
+State 9: <Up line 7, col 7 to line 7, col 31 of module invariant>
+/\ x = 6
+/\ y = 0
+exit 12

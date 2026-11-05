@@ -19,7 +19,7 @@ TLA_SHA256 = 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 
-.PHONY: all release test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle bench install clean
+.PHONY: all release test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench install clean
 
 all: tpp
 
@@ -81,7 +81,8 @@ sanitize: $(OBJDIR)/tpp-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
 
 # Mutated models must not crash the sanitized build; random expressions
-# must print as TLC prints them. RUNS and SEED choose how many and which.
+# must print as TLC prints them; so must random simulations of the models.
+# RUNS and SEED choose how many and which.
 RUNS ?= 1000
 SEED ?= 1
 fuzz: $(OBJDIR)/tpp-sanitize
@@ -89,6 +90,9 @@ fuzz: $(OBJDIR)/tpp-sanitize
 
 fuzz-oracle: tpp $(TLA_JAR)
 	python3 tests/fuzz.py diff ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
+
+fuzz-sim: tpp $(TLA_JAR)
+	python3 tests/fuzz.py sim ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
 bench: release $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"

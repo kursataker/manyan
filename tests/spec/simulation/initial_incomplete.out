@@ -1,0 +1,4 @@
+Error: State is not completely specified by the initial predicate:
+/\ x = 0
+/\ y = null
+exit 255

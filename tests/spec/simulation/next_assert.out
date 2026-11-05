@@ -1,0 +1,19 @@
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: The first argument of Assert evaluated to FALSE; the second argument was:
+"too big"
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 46 of module next_assert>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 46 of module next_assert>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 46 of module next_assert>
+x = 3
+exit 255

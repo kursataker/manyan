@@ -1,0 +1,15 @@
+Error: Evaluating invariant Inv failed.
+The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 18 of module invariant_eval>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 18 of module invariant_eval>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 18 of module invariant_eval>
+x = 3
+exit 76

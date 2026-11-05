@@ -1,0 +1,14 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Step line 8, col 9 to line 8, col 18 of module stuttering>
+x = 1
+
+State 3: <Step line 8, col 9 to line 8, col 18 of module stuttering>
+x = 2
+
+State 4: <Step line 8, col 9 to line 8, col 18 of module stuttering>
+x = 3
+exit 12

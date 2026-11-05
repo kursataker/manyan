@@ -25,6 +25,12 @@ typedef struct {
     int check_deadlock;  /* 0 turns deadlock checking off, as -deadlock does */
     const char *dump;    /* write the state graph in dot format to this file, or NULL */
     int workers;         /* processes expanding states; 0 or 1 for one */
+    int simulate;        /* random behaviors instead of the state graph, as -simulate */
+    long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */
+    long depth;          /* simulation: states in a behavior, 0 for 100 (-depth) */
+    long long seed;      /* simulation: the seed, when seed_given (-seed) */
+    int seed_given;
+    long long aril;      /* simulation: draws to skip after seeding (-aril) */
 } TPPOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an

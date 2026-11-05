@@ -1,0 +1,14 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: In computing next states of a predicate of the form P => Q, P was
+an integer.
+line 5, col 10 to line 5, col 24 of module implies_next_non_boolean
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+1 states generated, 1 distinct states found, 0 states left on queue.
+exit 75

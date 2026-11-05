@@ -6,7 +6,8 @@ A test is NAME.tla: a module, then, after the line that ends it, the model
 configuration (SANY ignores text after a module). NAME.out is the
 normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
-staged in a temporary directory and run as `ENGINE -config NAME.cfg NAME`.
+staged in a temporary directory and run as `ENGINE OPTIONS -config
+NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it.
 
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
@@ -31,7 +32,8 @@ NOISE = re.compile(
     r"Finished checking temporal properties|Implied-temporal checking|Finished in|"
     r"The average outdegree|  Estimates of the probability|  because two distinct states|"
     r"  calculated \(optimistic\)|  based on the actual fingerprints|Checking \d+ branches of temporal properties|"
-    r"Warning: Please run the Java VM|GuardMalloc\[)")
+    r"Warning: Please run the Java VM|GuardMalloc\[|"
+    r"Progress: \d+ states checked|The number of states generated: |Simulation using seed )")
 
 
 def normalize(output, directory):
@@ -67,12 +69,18 @@ def stage(path, directory):
         shutil.copytree(files, directory, dirs_exist_ok=True)
 
 
+def options(path):
+    """The engine options a test names on a line `\\* options: -simulate ...`."""
+    found = re.search(r"^\\\* options: (.*)$", path.read_text(), flags=re.M)
+    return shlex.split(found.group(1)) if found else []
+
+
 def run(command, path):
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
         try:
-            done = subprocess.run(command + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
+            done = subprocess.run(command + options(path) + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
             output, code = done.stdout, done.returncode
         except subprocess.TimeoutExpired:
