@@ -1269,7 +1269,8 @@ static Value *mk_fcn_from(List *keys, List *vals) {
 /* A copy of f whose value at key is val; key must be in the domain. */
 static inline uint64_t pair_hash(Value *f, int i, Value *val);
 
-static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
+/* f with the value val at key, which is its i-th argument unless f is a lambda. */
+static Value *fcn_update(Value *f, int i, Value *key, Value *val) {
     Value *g = NEW(Value);
     *g = *f;
     if (f->kind == V_LAMBDA) {
@@ -1280,9 +1281,6 @@ static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
         g->u.l.names[2 * f->n + 1] = val;
         return g;
     }
-    int i = fcn_index(f, key);
-    (void)where;
-    if (i < 0) return f;
     g->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     g->u.fcn.vals[i] = val;
@@ -4312,8 +4310,9 @@ static void warn_except(Expr *e) {
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
     if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
-    if (f->kind != V_LAMBDA && fcn_index(f, key) < 0) { warn_except(where->args[0]); return f; }
-    Value *old = fcn_apply(f, key, where);
+    int k = f->kind == V_LAMBDA ? -1 : fcn_index(f, key);
+    if (f->kind != V_LAMBDA && k < 0) { warn_except(where->args[0]); return f; }
+    Value *old = k >= 0 ? f->u.fcn.vals[k] : fcn_apply(f, key, where);
     Value *nv;
     if (i + 1 < p->n) {
         nv = except_update(old, p, i + 1, val, c, where);
@@ -4323,7 +4322,7 @@ static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *wh
         nv = eval(val, c);
         at_value = saved;
     }
-    return fcn_update(f, key, nv, where);
+    return fcn_update(f, k, key, nv);
 }
 
 static int eval_bool(Expr *e, Ctx c) {
