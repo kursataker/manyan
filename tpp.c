@@ -688,7 +688,8 @@ struct Inst {
     Inst *parent;
 };
 
-static Value *eval(Expr *e, Ctx c);
+typedef Value *(*EvalFn)(Expr *e, Ctx c);
+static inline Value *eval(Expr *e, Ctx c);
 static int eval_bool(Expr *e, Ctx c);
 static Value *filter_member_test(Value *s, Value *v);
 static Value *enumerate(Value *s);
@@ -4357,319 +4358,432 @@ static Inst *instance_chain(Expr *e, Ctx c) {
     return inst;
 }
 
-static Value *eval(Expr *e, Ctx c) {
-    switch (e->kind) {
-    case X_NUM:
-        if (e->num > 2147483647LL) fail_at(e, "Integer literal too large.");
-        return mk_int(e->num);
-    case X_STR: return mk_str((int)e->num);
-    case X_BOOL: return BOOLV(e->num);
-    case K_BOOLEAN: return boolean_set;
-    case K_STRINGSET: return mk_lazy(L_STRING);
-    case X_AT:
-        if (!at_value) fail_at(e, "@ used outside an EXCEPT.");
-        return at_value;
-    case K_BOUND: {
+
+
+static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
+    Env *b = env_find(c.env, e->def);
+    if (!b) fail_at(e, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
+    return force(b);
+}
+
+static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
+    Def *d = e->def;
+    if (d->native && !d->replacement && e->n <= 4 && e->n == d->nparams) {
+        /* The common operators of the standard modules: no arena for the arguments. */
+        Value *vals[4];
+        int plain = 1;
+        for (int i = 0; i < e->n && plain; i++) plain = !d->params[i]->arity;
+        if (plain) {
+            for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
+            return call_native(d, e, vals, c);
+        }
+    }
+    return call_def(d, e->args, e->n, c, e);
+}
+
+static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
+    Inst *inst = instance_chain(e, c);
+    Ctx ic = {c.env, inst};
+    /* The arguments are evaluated in the caller's context. */
+    Value **vals = NEWN(Value *, e->n);
+    Def *d = e->def;
+    if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
+    if (d->native || d->kind == D_FCN || e->n == 0) {
+        if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
+    }
+    Env *env = NULL;
+    for (int k = 0; k < e->n && k < d->nparams; k++) {
+        if (d->params[k]->arity) env = mk_binding(d->params[k], eval_operator_arg(e->args[k], c), env);
+        else env = mk_thunk(d->params[k], e->args[k], c, env);
+    }
+    if (d->native) {
+        for (int k = 0; k < e->n; k++) vals[k] = force(env_find(env, d->params[k]));
+        return call_native(d, e, vals, ic);
+    }
+    Ctx body = {env, inst};
+    return eval_body(d->body, body);
+}
+
+static __attribute__((noinline)) Value *ev_paramcall(Expr *e, Ctx c) {
+    Value *op;
+    if (e->def->kind == D_PARAM) {
         Env *b = env_find(c.env, e->def);
-        if (!b) fail_at(e, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
-        return force(b);
+        if (!b) fail_at(e, "Unbound operator parameter %s.", S(e->def->name));
+        op = force(b);
+    } else {
+        op = decl_value(e->def, c, e);
     }
-    case K_DECL: return decl_value(e->def, c, e);
-    case K_CALL: {
-        Def *d = e->def;
-        if (d->native && !d->replacement && e->n <= 4 && e->n == d->nparams) {
-            /* The common operators of the standard modules: no arena for the arguments. */
-            Value *vals[4];
-            int plain = 1;
-            for (int i = 0; i < e->n && plain; i++) plain = !d->params[i]->arity;
-            if (plain) {
-                for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
-                return call_native(d, e, vals, c);
-            }
-        }
-        return call_def(d, e->args, e->n, c, e);
+    if (op->kind != V_OPER) {
+        if (e->n == 0) return op;
+        fail_at(e, "%s is not an operator.", S(e->def->name));
     }
-    case K_INSTCALL: {
-        Inst *inst = instance_chain(e, c);
-        Ctx ic = {c.env, inst};
-        /* The arguments are evaluated in the caller's context. */
-        Value **vals = NEWN(Value *, e->n);
-        Def *d = e->def;
-        if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
-        if (d->native || d->kind == D_FCN || e->n == 0) {
-            if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
-        }
-        Env *env = NULL;
-        for (int k = 0; k < e->n && k < d->nparams; k++) {
-            if (d->params[k]->arity) env = mk_binding(d->params[k], eval_operator_arg(e->args[k], c), env);
-            else env = mk_thunk(d->params[k], e->args[k], c, env);
-        }
-        if (d->native) {
-            for (int k = 0; k < e->n; k++) vals[k] = force(env_find(env, d->params[k]));
-            return call_native(d, e, vals, ic);
-        }
-        Ctx body = {env, inst};
-        return eval_body(d->body, body);
+    Value **vals = NEWN(Value *, e->n);
+    for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
+    return apply_oper(op, vals, e->n, e);
+}
+
+static __attribute__((noinline)) Value *ev_not(Expr *e, Ctx c) {
+    Value *v = eval(e->args[0], c);
+    if (v->kind != V_BOOL) fail_at(e, "Attempted to apply the operator ~ to a non-boolean\n(%s).", pretty(v));
+    return BOOLV(!v->u.i);
+}
+
+static __attribute__((noinline)) Value *ev_implies(Expr *e, Ctx c) {
+    Value *a = eval(e->args[0], c);
+    if (a->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when P was\n%s.", article_kind(a));
+    if (!a->u.i) return TRUEV;
+    Value *b = eval(e->args[1], c);
+    if (b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when Q was\n%s.", article_kind(b));
+    return b;
+}
+
+static __attribute__((noinline)) Value *ev_equiv(Expr *e, Ctx c) {
+    Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+    if (a->kind != V_BOOL || b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P <=> Q when P or Q was not a boolean.");
+    return BOOLV(a->u.i == b->u.i);
+}
+
+static __attribute__((noinline)) Value *ev_eq(Expr *e, Ctx c) {
+    return BOOLV(veq(eval(e->args[0], c), eval(e->args[1], c)));
+}
+
+static __attribute__((noinline)) Value *ev_neq(Expr *e, Ctx c) {
+    return BOOLV(!veq(eval(e->args[0], c), eval(e->args[1], c)));
+}
+
+static __attribute__((noinline)) Value *ev_in(Expr *e, Ctx c) {
+    Value *v = eval(e->args[0], c), *s = eval(e->args[1], c);
+    int in = set_member(v, s);
+    return BOOLV(e->kind == K_IN ? in : !in);
+}
+
+static __attribute__((noinline)) Value *ev_cup(Expr *e, Ctx c) {
+    Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+    if (e->kind == K_SUBSETEQ) {
+        if (!is_set(a) || user_set(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
+        return BOOLV(all_members(a, b));
     }
-    case K_PARAMCALL: {
-        Value *op;
-        if (e->def->kind == D_PARAM) {
-            Env *b = env_find(c.env, e->def);
-            if (!b) fail_at(e, "Unbound operator parameter %s.", S(e->def->name));
-            op = force(b);
-        } else {
-            op = decl_value(e->def, c, e);
-        }
-        if (op->kind != V_OPER) {
-            if (e->n == 0) return op;
-            fail_at(e, "%s is not an operator.", S(e->def->name));
-        }
-        Value **vals = NEWN(Value *, e->n);
-        for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
-        return apply_oper(op, vals, e->n, e);
-    }
-    case K_AND: return junction(e, c, 1);
-    case K_OR: return junction(e, c, 0);
-    case K_NOT: {
-        Value *v = eval(e->args[0], c);
-        if (v->kind != V_BOOL) fail_at(e, "Attempted to apply the operator ~ to a non-boolean\n(%s).", pretty(v));
-        return BOOLV(!v->u.i);
-    }
-    case K_IMPLIES: {
-        Value *a = eval(e->args[0], c);
-        if (a->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when P was\n%s.", article_kind(a));
-        if (!a->u.i) return TRUEV;
-        Value *b = eval(e->args[1], c);
-        if (b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when Q was\n%s.", article_kind(b));
-        return b;
-    }
-    case K_EQUIV: {
-        Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
-        if (a->kind != V_BOOL || b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P <=> Q when P or Q was not a boolean.");
-        return BOOLV(a->u.i == b->u.i);
-    }
-    case K_EQ: return BOOLV(veq(eval(e->args[0], c), eval(e->args[1], c)));
-    case K_NEQ: return BOOLV(!veq(eval(e->args[0], c), eval(e->args[1], c)));
-    case K_IN: case K_NOTIN: {
-        Value *v = eval(e->args[0], c), *s = eval(e->args[1], c);
-        int in = set_member(v, s);
-        return BOOLV(e->kind == K_IN ? in : !in);
-    }
-    case K_CUP: case K_CAP: case K_SETMINUS: case K_SUBSETEQ: {
-        Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
-        if (e->kind == K_SUBSETEQ) {
-            if (!is_set(a) || user_set(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
-            return BOOLV(all_members(a, b));
-        }
-        if (!is_set(a) || !is_set(b))
-            fail_at(e, "Attempted to apply a set operator to the non-set:\n%s", pretty(is_set(a) ? b : a));
-        switch (e->kind) {
-        case K_CUP: return set_union(a, b);
-        case K_CAP: return set_inter(a, b);
-        default: return set_minus(a, b);
-        }
-    }
-    case K_SUBSET: {
-        Value *s = mk_lazy(L_SUBSET);
-        s->u.l.a = eval(e->args[0], c);
-        if (!is_set(s->u.l.a)) fail_at(e, "Attempted to compute SUBSET of the non-set:\n%s", pretty(s->u.l.a));
-        return s;
-    }
-    case K_UNION: {
-        Value *s = enumerate(eval(e->args[0], c));
-        List l = {0};
-        for (int i = 0; i < s->n; i++) {
-            if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i]))
-                fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
-            Value *t = enumerate(s->u.set.elems[i]);
-            for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
-        }
-        return list_set(&l);
-    }
-    case K_DOMAIN: {
-        Value *f = eval(e->args[0], c);
-        if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", kind_string(f));
-        return fcn_domain(f);
-    }
-    case K_PRIME: {
-        if (primed) return eval(e->args[0], c);
-        primed = 1;
-        Value *v = eval(e->args[0], c);
-        primed = 0;
-        return v;
-    }
-    case K_UNCHANGED: {
-        Value *now = eval(e->args[0], c);
-        int saved = primed;
-        primed = 1;
-        Value *then = eval(e->args[0], c);
-        primed = saved;
-        return BOOLV(veq(now, then));
-    }
-    case K_ENABLED: return BOOLV(enabled(e->args[0], c));
-    case K_TIMES: {
-        Value *s = mk_lazy(L_TIMES);
-        s->n = e->n;
-        s->u.l.names = NEWN(Value *, 2 * e->n);
-        for (int i = 0; i < e->n; i++) {
-            Value *a = eval(e->args[i], c);
-            if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
-            s->u.l.names[e->n + i] = a;
-        }
-        return expandable(s) ? enumerate(s) : s;
-    }
-    case X_SETENUM: {
-        List l = {0};
-        for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
-        return list_set(&l);
-    }
-    case X_TUPLE: {
-        Value *t = mk_tuple(e->n);
-        for (int i = 0; i < e->n; i++) t->u.fcn.vals[i] = eval(e->args[i], c);
-        return t;
-    }
-    case X_RECORD: {
-        List keys = {0}, vals = {0};
-        for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
-        Value *r = mk_fcn_from(&keys, &vals);
-        r->made = MADE_RECORD;
-        return r;
-    }
-    case X_RCDSET: {
-        List keys = {0}, vals = {0};
-        for (int i = 0; i < e->n; i++) {
-            Value *s = eval(e->args[i], c);
-            if (!is_set(s)) fail_at(e, "Attempted to construct a set of records with the non-set:\n%s", pretty(s));
-            list_add(&keys, mk_str(e->segs[i].name));
-            list_add(&vals, s);
-        }
-        Value *r = mk_fcn_from(&keys, &vals);
-        Value *s = mk_lazy(L_RCDSET);
-        s->n = e->n;
-        s->u.l.names = NEWN(Value *, 2 * e->n);
-        for (int i = 0; i < e->n; i++) { s->u.l.names[i] = r->u.fcn.keys[i]; s->u.l.names[e->n + i] = r->u.fcn.vals[i]; }
-        return s;
-    }
-    case X_FCNSET: {
-        Value *s = mk_lazy(L_FCNSET);
-        s->u.l.a = eval(e->args[0], c);
-        s->u.l.b = eval(e->args[1], c);
-        if (!is_set(s->u.l.a) || !is_set(s->u.l.b)) fail_at(e, "Attempted to construct a set of functions with a non-set.");
-        return s;
-    }
-    case X_FCN: {
-        Value *dom = bounds_domain(e->bounds, e->nb, c);
-        if (e->lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
-        dom = enumerate(dom);
-        Value *f = mk_fcn(dom->n);
-        for (int i = 0; i < dom->n; i++) {
-            f->u.fcn.keys[i] = dom->u.set.elems[i];
-            f->u.fcn.vals[i] = eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, dom->u.set.elems[i], c.env, e), c.inst});
-        }
-        if (!dom->n) f->empty_fcn = 1;
-        f->made = MADE_LAMBDA;
-        return f;
-    }
-    case X_APPLY: {
-        Expr *fe = e->args[0];
-        Value *key;
-        if (e->n == 2) key = eval(e->args[1], c);
-        else {
-            key = mk_tuple(e->n - 1);
-            for (int i = 1; i < e->n; i++) key->u.fcn.vals[i - 1] = eval(e->args[i], c);
-        }
-        if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
-        Value *f = eval(fe, c);
-        if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
-        return fcn_apply(f, key, e);
-    }
-    case X_DOT: {
-        Value *r = eval(e->args[0], c);
-        if (!is_fcn(r)) fail_at(e, "Attempted to access field %s of the non-record\n%s.", S(e->op), pretty(r));
-        Value *field = mk_str(e->op);
-        int i = fcn_index(r, field);
-        if (i >= 0) return r->u.fcn.vals[i];
-        if (r->made == MADE_RECORD)
-            fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
-        fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
-             pretty(r), pretty(field));
-    }
-    case X_EXCEPT: {
-        Value *f = eval(e->args[0], c);
-        for (int i = 0; i < e->n - 1; i++) f = except_update(f, &e->paths[i], 0, e->args[i + 1], c, e);
-        return f;
-    }
-    case X_FILTER: {
-        Bound *b = &e->bounds[0];
-        Value *s = eval(b->set, c);
-        if (!is_set(s)) fail_at(e, "Attempted to compute a subset of the non-set:\n%s", pretty(s));
-        /* Lazy, as in TLC: membership evaluates the predicate on that element only. */
-        Value *l = mk_lazy(L_FILTER);
-        l->u.l.a = s;
-        l->u.l.expr = e;
-        l->u.l.env = c.env;
-        l->u.l.inst = c.inst;
-        return l;
-    }
-    case X_MAP: {
-        MapData d;
-        memset(&d, 0, sizeof d);
-        d.body = e->args[0];
-        for_bindings(e->bounds, e->nb, c, map_fn, &d);
-        return list_set(&d.out);
-    }
-    case X_FORALL: case X_EXISTS: {
-        QuantData q = {e->args[0], e->kind == X_FORALL, e};
-        for (int i = 0; i < e->nb; i++)
-            if (!e->bounds[i].set) fail_at(e, "TLC cannot handle an unbounded quantifier.");
-        for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
-        return BOOLV(q.value);
-    }
-    case X_CHOOSE: {
-        if (!e->bounds[0].set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
-        ChooseData d = {e->args[0], &e->bounds[0], NULL};
-        for_bindings(e->bounds, e->nb, c, choose_fn, &d);
-        if (!d.found)
-            fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
-        return d.found;
-    }
-    case X_IF: {
-        Value *v = eval(e->args[0], c);
-        if (v->kind != V_BOOL) fail_at(e, "A non-boolean expression (%s) was used as the condition of an IF.", kind_string(v));
-        return eval(e->args[v->u.i ? 1 : 2], c);
-    }
-    case X_CASE: {
-        for (int i = 0; i + 1 < e->n; i += 2) {
-            if (!e->args[i]) return eval(e->args[i + 1], c);
-            if (eval_bool(e->args[i], c)) return eval(e->args[i + 1], c);
-        }
-        fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
-    }
-    case X_LET: {
-        Env *env = c.env;
-        for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
-        /* The definitions see each other: close them over the new environment. */
-        for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
-        Ctx inner = {env, c.inst};
-        return eval(e->args[0], inner);
-    }
-    case X_LAMBDA: return mk_oper(e->def, c);
-    case X_OPREF: return mk_oper(e->def, (Ctx){NULL, c.inst});
-    case X_SQACT: case X_ANGLEACT: {
-        /* [A]_v and <<A>>_v evaluated on a pair of states. */
-        int a = eval_bool(e->args[0], c);
-        Value *now = eval(e->args[1], c);
-        int saved = primed;
-        primed = 1;
-        Value *then = eval(e->args[1], c);
-        primed = saved;
-        int unchanged = veq(now, then);
-        return BOOLV(e->kind == X_SQACT ? a || unchanged : a && !unchanged);
-    }
-    default:
-        fail_at(e, "TLC cannot evaluate this temporal formula as a value.");
+    if (!is_set(a) || !is_set(b))
+        fail_at(e, "Attempted to apply a set operator to the non-set:\n%s", pretty(is_set(a) ? b : a));
+    switch (e->kind) {
+    case K_CUP: return set_union(a, b);
+    case K_CAP: return set_inter(a, b);
+    default: return set_minus(a, b);
     }
 }
+
+static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
+    Value *s = mk_lazy(L_SUBSET);
+    s->u.l.a = eval(e->args[0], c);
+    if (!is_set(s->u.l.a)) fail_at(e, "Attempted to compute SUBSET of the non-set:\n%s", pretty(s->u.l.a));
+    return s;
+}
+
+static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
+    Value *s = enumerate(eval(e->args[0], c));
+    List l = {0};
+    for (int i = 0; i < s->n; i++) {
+        if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i]))
+            fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
+        Value *t = enumerate(s->u.set.elems[i]);
+        for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
+    }
+    return list_set(&l);
+}
+
+static __attribute__((noinline)) Value *ev_domain(Expr *e, Ctx c) {
+    Value *f = eval(e->args[0], c);
+    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", kind_string(f));
+    return fcn_domain(f);
+}
+
+static __attribute__((noinline)) Value *ev_prime(Expr *e, Ctx c) {
+    if (primed) return eval(e->args[0], c);
+    primed = 1;
+    Value *v = eval(e->args[0], c);
+    primed = 0;
+    return v;
+}
+
+static __attribute__((noinline)) Value *ev_unchanged(Expr *e, Ctx c) {
+    Value *now = eval(e->args[0], c);
+    int saved = primed;
+    primed = 1;
+    Value *then = eval(e->args[0], c);
+    primed = saved;
+    return BOOLV(veq(now, then));
+}
+
+static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
+    Value *s = mk_lazy(L_TIMES);
+    s->n = e->n;
+    s->u.l.names = NEWN(Value *, 2 * e->n);
+    for (int i = 0; i < e->n; i++) {
+        Value *a = eval(e->args[i], c);
+        if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
+        s->u.l.names[e->n + i] = a;
+    }
+    return expandable(s) ? enumerate(s) : s;
+}
+
+static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
+    List l = {0};
+    for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
+    return list_set(&l);
+}
+
+static __attribute__((noinline)) Value *ev_tuple(Expr *e, Ctx c) {
+    Value *t = mk_tuple(e->n);
+    for (int i = 0; i < e->n; i++) t->u.fcn.vals[i] = eval(e->args[i], c);
+    return t;
+}
+
+static __attribute__((noinline)) Value *ev_record(Expr *e, Ctx c) {
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
+    Value *r = mk_fcn_from(&keys, &vals);
+    r->made = MADE_RECORD;
+    return r;
+}
+
+static __attribute__((noinline)) Value *ev_rcdset(Expr *e, Ctx c) {
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < e->n; i++) {
+        Value *s = eval(e->args[i], c);
+        if (!is_set(s)) fail_at(e, "Attempted to construct a set of records with the non-set:\n%s", pretty(s));
+        list_add(&keys, mk_str(e->segs[i].name));
+        list_add(&vals, s);
+    }
+    Value *r = mk_fcn_from(&keys, &vals);
+    Value *s = mk_lazy(L_RCDSET);
+    s->n = e->n;
+    s->u.l.names = NEWN(Value *, 2 * e->n);
+    for (int i = 0; i < e->n; i++) { s->u.l.names[i] = r->u.fcn.keys[i]; s->u.l.names[e->n + i] = r->u.fcn.vals[i]; }
+    return s;
+}
+
+static __attribute__((noinline)) Value *ev_fcnset(Expr *e, Ctx c) {
+    Value *s = mk_lazy(L_FCNSET);
+    s->u.l.a = eval(e->args[0], c);
+    s->u.l.b = eval(e->args[1], c);
+    if (!is_set(s->u.l.a) || !is_set(s->u.l.b)) fail_at(e, "Attempted to construct a set of functions with a non-set.");
+    return s;
+}
+
+static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
+    Value *dom = bounds_domain(e->bounds, e->nb, c);
+    if (e->lazy || set_is_infinite(dom)) return mk_lambda(dom, e, NULL, c);
+    dom = enumerate(dom);
+    Value *f = mk_fcn(dom->n);
+    for (int i = 0; i < dom->n; i++) {
+        f->u.fcn.keys[i] = dom->u.set.elems[i];
+        f->u.fcn.vals[i] = eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, dom->u.set.elems[i], c.env, e), c.inst});
+    }
+    if (!dom->n) f->empty_fcn = 1;
+    f->made = MADE_LAMBDA;
+    return f;
+}
+
+static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
+    Expr *fe = e->args[0];
+    Value *key;
+    if (e->n == 2) key = eval(e->args[1], c);
+    else {
+        key = mk_tuple(e->n - 1);
+        for (int i = 1; i < e->n; i++) key->u.fcn.vals[i - 1] = eval(e->args[i], c);
+    }
+    if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
+    Value *f = eval(fe, c);
+    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
+    return fcn_apply(f, key, e);
+}
+
+static __attribute__((noinline)) Value *ev_dot(Expr *e, Ctx c) {
+    Value *r = eval(e->args[0], c);
+    if (!is_fcn(r)) fail_at(e, "Attempted to access field %s of the non-record\n%s.", S(e->op), pretty(r));
+    Value *field = mk_str(e->op);
+    int i = fcn_index(r, field);
+    if (i >= 0) return r->u.fcn.vals[i];
+    if (r->made == MADE_RECORD)
+        fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
+    fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+         pretty(r), pretty(field));
+}
+
+static __attribute__((noinline)) Value *ev_except(Expr *e, Ctx c) {
+    Value *f = eval(e->args[0], c);
+    for (int i = 0; i < e->n - 1; i++) f = except_update(f, &e->paths[i], 0, e->args[i + 1], c, e);
+    return f;
+}
+
+static __attribute__((noinline)) Value *ev_filter(Expr *e, Ctx c) {
+    Bound *b = &e->bounds[0];
+    Value *s = eval(b->set, c);
+    if (!is_set(s)) fail_at(e, "Attempted to compute a subset of the non-set:\n%s", pretty(s));
+    /* Lazy, as in TLC: membership evaluates the predicate on that element only. */
+    Value *l = mk_lazy(L_FILTER);
+    l->u.l.a = s;
+    l->u.l.expr = e;
+    l->u.l.env = c.env;
+    l->u.l.inst = c.inst;
+    return l;
+}
+
+static __attribute__((noinline)) Value *ev_map(Expr *e, Ctx c) {
+    MapData d;
+    memset(&d, 0, sizeof d);
+    d.body = e->args[0];
+    for_bindings(e->bounds, e->nb, c, map_fn, &d);
+    return list_set(&d.out);
+}
+
+static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
+    QuantData q = {e->args[0], e->kind == X_FORALL, e};
+    for (int i = 0; i < e->nb; i++)
+        if (!e->bounds[i].set) fail_at(e, "TLC cannot handle an unbounded quantifier.");
+    for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
+    return BOOLV(q.value);
+}
+
+static __attribute__((noinline)) Value *ev_choose(Expr *e, Ctx c) {
+    if (!e->bounds[0].set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
+    ChooseData d = {e->args[0], &e->bounds[0], NULL};
+    for_bindings(e->bounds, e->nb, c, choose_fn, &d);
+    if (!d.found)
+        fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
+    return d.found;
+}
+
+static __attribute__((noinline)) Value *ev_if(Expr *e, Ctx c) {
+    Value *v = eval(e->args[0], c);
+    if (v->kind != V_BOOL) fail_at(e, "A non-boolean expression (%s) was used as the condition of an IF.", kind_string(v));
+    return eval(e->args[v->u.i ? 1 : 2], c);
+}
+
+static __attribute__((noinline)) Value *ev_case(Expr *e, Ctx c) {
+    for (int i = 0; i + 1 < e->n; i += 2) {
+        if (!e->args[i]) return eval(e->args[i + 1], c);
+        if (eval_bool(e->args[i], c)) return eval(e->args[i + 1], c);
+    }
+    fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
+}
+
+static __attribute__((noinline)) Value *ev_let(Expr *e, Ctx c) {
+    Env *env = c.env;
+    for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
+    /* The definitions see each other: close them over the new environment. */
+    for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
+    Ctx inner = {env, c.inst};
+    return eval(e->args[0], inner);
+}
+
+static __attribute__((noinline)) Value *ev_sqact(Expr *e, Ctx c) {
+    /* [A]_v and <<A>>_v evaluated on a pair of states. */
+    int a = eval_bool(e->args[0], c);
+    Value *now = eval(e->args[1], c);
+    int saved = primed;
+    primed = 1;
+    Value *then = eval(e->args[1], c);
+    primed = saved;
+    int unchanged = veq(now, then);
+    return BOOLV(e->kind == X_SQACT ? a || unchanged : a && !unchanged);
+}
+
+#define EVAL(name) static Value *name(Expr *e, Ctx c)
+#define UNUSED_C (void)c
+EVAL(ev_num) {
+    UNUSED_C;
+    if (e->num > 2147483647LL) fail_at(e, "Integer literal too large.");
+    return mk_int(e->num);
+}
+EVAL(ev_str) { UNUSED_C; return mk_str((int)e->num); }
+EVAL(ev_bool) { UNUSED_C; return BOOLV(e->num); }
+EVAL(ev_boolean) { UNUSED_C; (void)e; return boolean_set; }
+EVAL(ev_stringset) { UNUSED_C; (void)e; return mk_lazy(L_STRING); }
+EVAL(ev_at) {
+    UNUSED_C;
+    if (!at_value) fail_at(e, "@ used outside an EXCEPT.");
+    return at_value;
+}
+EVAL(ev_decl) { return decl_value(e->def, c, e); }
+EVAL(ev_and) { return junction(e, c, 1); }
+EVAL(ev_or) { return junction(e, c, 0); }
+EVAL(ev_enabled) { return BOOLV(enabled(e->args[0], c)); }
+EVAL(ev_lambda) { return mk_oper(e->def, c); }
+EVAL(ev_opref) { return mk_oper(e->def, (Ctx){NULL, c.inst}); }
+EVAL(ev_temporal) { UNUSED_C; fail_at(e, "TLC cannot evaluate this temporal formula as a value."); }
+#undef UNUSED_C
+#undef EVAL
+
+/* The evaluator of each kind of expression (eval). */
+static const EvalFn eval_kind[K_WHILE + 1] = {
+    [X_NUM] = ev_num,
+    [X_STR] = ev_str,
+    [X_BOOL] = ev_bool,
+    [X_NAME] = ev_temporal,
+    [X_OP] = ev_temporal,
+    [X_AT] = ev_at,
+    [X_LAMBDA] = ev_lambda,
+    [X_OPREF] = ev_opref,
+    [X_SETENUM] = ev_setenum,
+    [X_TUPLE] = ev_tuple,
+    [X_RECORD] = ev_record,
+    [X_RCDSET] = ev_rcdset,
+    [X_FCNSET] = ev_fcnset,
+    [X_FCN] = ev_fcn,
+    [X_APPLY] = ev_apply,
+    [X_DOT] = ev_dot,
+    [X_EXCEPT] = ev_except,
+    [X_FILTER] = ev_filter,
+    [X_MAP] = ev_map,
+    [X_FORALL] = ev_forall,
+    [X_EXISTS] = ev_forall,
+    [X_CHOOSE] = ev_choose,
+    [X_IF] = ev_if,
+    [X_CASE] = ev_case,
+    [X_LET] = ev_let,
+    [X_SQACT] = ev_sqact,
+    [X_ANGLEACT] = ev_sqact,
+    [X_WF] = ev_temporal,
+    [X_SF] = ev_temporal,
+    [X_TFORALL] = ev_temporal,
+    [X_TEXISTS] = ev_temporal,
+    [X_RESOLVED] = ev_temporal,
+    [K_BOUND] = ev_bound,
+    [K_DECL] = ev_decl,
+    [K_CALL] = ev_call,
+    [K_PARAMCALL] = ev_paramcall,
+    [K_INSTCALL] = ev_instcall,
+    [K_BOOLEAN] = ev_boolean,
+    [K_STRINGSET] = ev_stringset,
+    [K_AND] = ev_and,
+    [K_OR] = ev_or,
+    [K_NOT] = ev_not,
+    [K_IMPLIES] = ev_implies,
+    [K_EQUIV] = ev_equiv,
+    [K_EQ] = ev_eq,
+    [K_NEQ] = ev_neq,
+    [K_IN] = ev_in,
+    [K_NOTIN] = ev_in,
+    [K_CUP] = ev_cup,
+    [K_CAP] = ev_cup,
+    [K_SETMINUS] = ev_cup,
+    [K_SUBSETEQ] = ev_cup,
+    [K_SUBSET] = ev_subset,
+    [K_UNION] = ev_union,
+    [K_DOMAIN] = ev_domain,
+    [K_PRIME] = ev_prime,
+    [K_UNCHANGED] = ev_unchanged,
+    [K_ENABLED] = ev_enabled,
+    [K_ALWAYS] = ev_temporal,
+    [K_EVENTUALLY] = ev_temporal,
+    [K_LEADSTO] = ev_temporal,
+    [K_TIMES] = ev_times,
+    [K_CDOT] = ev_temporal,
+    [K_WHILE] = ev_temporal,
+};
+
+static inline Value *eval(Expr *e, Ctx c) { return eval_kind[e->kind](e, c); }
 
 
 /* An argument for an operator parameter: an operator. */
