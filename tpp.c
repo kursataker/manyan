@@ -964,15 +964,16 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     if (f->kind == V_TUPLE) {
         if (a->kind == V_INT && a->u.i >= 1 && a->u.i <= f->n) return f->u.fcn.vals[a->u.i - 1];
     } else if (f->kind == V_FCN) {
-        int lo = 0, hi = f->n - 1;
+        int lo = 0, hi = f->n;
         if (a->kind == V_MODEL || (f->n && f->u.fcn.keys[0]->kind == V_MODEL)) {
             for (int i = 0; i < f->n; i++) if (veq(a, f->u.fcn.keys[i])) return f->u.fcn.vals[i];
         } else {
-            while (lo <= hi) {
-                int mid = (lo + hi) / 2;
+            /* Probing as TLC tests membership in a function's domain. */
+            while (lo < hi) {
+                int mid = (lo + hi) >> 1;
                 int c = vcmp(a, f->u.fcn.keys[mid]);
                 if (!c) return f->u.fcn.vals[mid];
-                if (c < 0) hi = mid - 1; else lo = mid + 1;
+                if (c < 0) hi = mid; else lo = mid + 1;
             }
         }
     } else {
@@ -1154,6 +1155,7 @@ struct Module {
     int ntoks;
     int resolved;
     int standard;         /* read from the text of a standard module */
+    int instantiated;     /* the target of an INSTANCE */
 };
 
 /* ---------------------------------------------------------------- lexer */
@@ -2554,6 +2556,13 @@ static const struct { const char *name, *text; } standard_modules[] = {
 
 static Module **modules;      /* in the order they were read */
 static int nmodules;
+static Module **finished;     /* each after the modules it uses, as SANY finishes them */
+static int nfinished;
+
+static void finish_module(Module *m) {
+    finished = xrealloc(finished, sizeof(Module *) * (size_t)(nfinished + 1));
+    finished[nfinished++] = m;
+}
 static char *spec_dir;
 
 static char *read_file(const char *path) {
@@ -2587,7 +2596,7 @@ static void load_references(Module *m) {
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         if (u->kind == 1 || (u->kind == 0 && u->def->kind == D_INST))
-            load_module((int)(intptr_t)u->def->target, m);
+            load_module((int)(intptr_t)u->def->target, m)->instantiated = 1;
         if (u->kind == 3) load_references(u->module);
     }
 }
@@ -2643,6 +2652,7 @@ static Module *load_module(int name, Module *from) {
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = m;
     load_references(m);
+    finish_module(m);
     return m;
 }
 
@@ -3288,7 +3298,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
         state_reads++;
         if (primed) {
             if (!next_state || !next_state[d->var_index])
-                fail_at(where, "The variable %s' was not assigned a value.", S(d->name));
+                fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
             return next_state[d->var_index];
         }
         if (!cur_state || !cur_state[d->var_index])
@@ -4262,11 +4272,26 @@ static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
 }
 
 /* The variable an expression assigns: v (initial predicate) or v'
-   (action), through instance substitutions; -1 if none. */
+   (action), through operator parameters, definitions and instance
+   substitutions that stand for it; -1 if none. */
 static int assignable(Expr *lhs, Ctx c) {
     if (!gen_init) {
         if (lhs->kind != K_PRIME) return -1;
         lhs = lhs->args[0];
+    }
+    while (lhs->kind == K_CALL && lhs->n == 0) {
+        Def *d = lhs->def;
+        if (d->kind == D_PARAM || d->local == 2) {
+            Env *b = env_find(c.env, d);
+            if (!b || !b->e) return -1;
+            lhs = b->e;
+            c = (Ctx){b->ctx_env, b->ctx_inst};
+        } else if (d->kind == D_OP && !d->native && !d->nparams && !d->replacement) {
+            lhs = d->body;
+            c = (Ctx){NULL, c.inst};
+        } else {
+            return -1;
+        }
     }
     while (lhs->kind == K_DECL) {
         Def *d = lhs->def;
@@ -5439,8 +5464,46 @@ static void use_property(Def *d) {
     free(parts);
 }
 
+/* TLC evaluates the constant definitions of each module at startup, in
+   the order SANY finishes the modules (a module after those it uses): a
+   constant replaced by a definition must evaluate as a constant, and every
+   other constant definition without parameters is evaluated once, any
+   error ignored. Side effects such as Print show then. */
+static void evaluate_constants(Module *m) {
+    if (m->instantiated && m->ndecls) return;
+    Arena *saved = arena;
+    arena = &perm_arena;
+    for (int i = 0; i < m->ndecls; i++) {
+        Def *c = m->decls[i];
+        if (c->kind != D_CONST || !c->replacement || c->replacement->nparams) continue;
+        jmp_buf here;
+        handler = &here;
+        if (setjmp(here)) {
+            handler = NULL;
+            Buf b = {0};
+            loc_text(&b, error_expr);
+            config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
+                         S(c->replacement->name), error_module ? "" : " - specifically: ",
+                         error_module ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? b.s : "");
+        }
+        call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        handler = NULL;
+    }
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind != 0) continue;
+        Def *d = u->def;
+        if (d->kind != D_OP || d->nparams || d->native || d->cache || def_level(d) != 0) continue;
+        jmp_buf here;
+        handler = &here;
+        if (!setjmp(here)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        handler = NULL;
+    }
+    arena = saved;
+    for (int i = 0; i < m->nnested; i++) evaluate_constants(m->nested[i]);
+}
+
 static void check_assumptions(Module *m, int *done_status) {
-    for (int i = 0; i < nmodules + 1; i++) (void)i;
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         if (u->kind != 2) continue;
@@ -6288,11 +6351,13 @@ int tpp_check(const TPPOptions *o) {
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
     load_references(root);
+    finish_module(root);
     resolve_module(root);
     bind_natives();
     parse_config(config_text);
     setup_model();
 
+    for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);
     int status = 0;
     for (int i = 0; i < nmodules && !status; i++) {
         Module *m = modules[i];
