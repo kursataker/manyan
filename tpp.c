@@ -296,8 +296,9 @@ struct Value {
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
-        struct { Value **elems; } set;               /* V_SET, sorted, distinct */
-        struct { Value **keys, **vals; } fcn;        /* V_TUPLE has no keys */
+        struct { Value **elems; uint64_t hash; } set;           /* V_SET, sorted, distinct */
+        struct { Value **keys, **vals; uint64_t hash; } fcn;    /* V_TUPLE has no keys */
+        /* hash: the sum of the elements' or pairs' hashes, once known; else 0 */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
         struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; void *pattern; } l;
         /* V_LAMBDA: [x \in a |-> expr] in env, with b for @, then n EXCEPT pairs (key, value) */
@@ -1251,6 +1252,8 @@ static Value *mk_fcn_from(List *keys, List *vals) {
 }
 
 /* A copy of f whose value at key is val; key must be in the domain. */
+static inline uint64_t pair_hash(Value *f, int i, Value *val);
+
 static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
     Value *g = NEW(Value);
     *g = *f;
@@ -1268,6 +1271,7 @@ static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
     g->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     g->u.fcn.vals[i] = val;
+    if (f->u.fcn.hash) g->u.fcn.hash = f->u.fcn.hash - pair_hash(f, i, f->u.fcn.vals[i]) + pair_hash(f, i, val);
     return g;
 }
 
@@ -4893,6 +4897,7 @@ NATIVE(n_append) {
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     t->u.fcn.vals[x->n] = a[1];
+    if (x->u.fcn.hash) t->u.fcn.hash = x->u.fcn.hash + pair_hash(t, x->n, a[1]);
     return t;
 }
 
@@ -5528,55 +5533,66 @@ static void split_action(Expr *e, Ctx c, int name) {
 /* ---------------------------------------------------------------- states */
 
 /* The fingerprint of a value hashes its canonical form, the same for
-   equal values: a set is its elements in order, a function its pairs, and
-   a function on 1..n is a tuple. */
-static uint64_t mix(uint64_t h, uint64_t x) {
-    h = (h ^ x) * 0x9e3779b97f4a7c15ULL;
-    return h ^ (h >> 29);
+   equal values. An atom mixes its kind (tag 1 to 4) and payload; a set sums
+   its elements' hashes and a function its pairs', a function on 1..n
+   being a tuple, so that a function with one pair changed differs by one
+   term (fcn_update, Append). A set or function keeps its sum. The mixing
+   is wyhash's: the halves of a full product, folded. */
+static inline uint64_t wymix(uint64_t a, uint64_t b) {
+    __uint128_t m = (__uint128_t)a * b;
+    return (uint64_t)m ^ (uint64_t)(m >> 64);
 }
 
-static uint64_t hash_value(Value *v, uint64_t h);
+static inline uint64_t fmix(uint64_t h) { return wymix(h ^ 0xa0761d6478bd642fULL, 0xe7037ed1a0b428dbULL); }
 
-/* A lazy function hashes as the function it is; out of hash_value's way. */
-static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v, uint64_t h) {
+static uint64_t value_hash(Value *v);
+
+static inline uint64_t atom_word(int kind, int64_t x) { return (uint64_t)(kind + 1) | (uint64_t)x << 8; }
+
+static inline uint64_t elem_hash(Value *v) { return v->kind <= V_MODEL ? fmix(atom_word(v->kind, v->u.i)) : value_hash(v); }
+
+/* The hashes of the first indices of tuples, 1 to 64. */
+static uint64_t index_hash[64];
+
+/* The hash of pair i of f, with value val: the key's hash and the value's,
+   or an atom's word, which the pair's mixing spreads. */
+static inline uint64_t pair_hash(Value *f, int i, Value *val) {
+    uint64_t k = f->kind != V_TUPLE ? elem_hash(f->u.fcn.keys[i]) : i < 64 ? index_hash[i] : fmix(atom_word(V_INT, i + 1));
+    uint64_t x = val->kind <= V_MODEL ? atom_word(val->kind, val->u.i) : value_hash(val);
+    return wymix(k ^ 0x8ebc6af09c88c6e3ULL, x ^ 0x589965cc75374cc3ULL);
+}
+
+/* A lazy function hashes as the function it is; out of value_hash's way. */
+static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v) {
     Value *f = realize(v);
     if (f->kind == V_LAMBDA) fail("Attempted to fingerprint the infinite set %s.", pretty(f->u.l.a));
-    return hash_value(f, h);
+    return value_hash(f);
 }
 
-/* An atom hashes as its kind, tag 1 to 4 in the low byte, and its payload;
-   inline, as most elements are atoms. */
-static inline uint64_t hash_elem(Value *v, uint64_t h) {
-    return v->kind <= V_MODEL ? mix(h, (uint64_t)(v->kind + 1) | (uint64_t)v->u.i << 8) : hash_value(v, h);
-}
-
-static uint64_t hash_value(Value *v, uint64_t h) {
+static uint64_t value_hash(Value *v) {
+    uint64_t sum = 0;
     switch (v->kind) {
-    case V_BOOL: case V_INT: case V_STR: case V_MODEL: return hash_elem(v, h);
-    case V_INTERVAL: {
-        int64_t lo = v->u.range.lo, hi = v->u.range.hi;
-        h = mix(h, 0x05 | (uint64_t)(hi >= lo ? hi - lo + 1 : 0) << 8);
-        for (int64_t i = lo; i <= hi; i++) h = mix(h, 0x02 | (uint64_t)i << 8);
-        return h;
-    }
+    case V_BOOL: case V_INT: case V_STR: case V_MODEL: return elem_hash(v);
+    case V_INTERVAL:
+        for (int64_t i = v->u.range.lo; i <= v->u.range.hi; i++) sum += fmix(atom_word(V_INT, i));
+        return fmix(sum ^ (0x05 | (uint64_t)(v->u.range.hi >= v->u.range.lo ? v->u.range.hi - v->u.range.lo + 1 : 0) << 8));
     case V_SET: case V_LAZY: {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
         Value *set = enumerate(v);
-        h = mix(h, 0x05 | (uint64_t)set->n << 8);
-        for (int i = 0; i < set->n; i++) h = hash_elem(set->u.set.elems[i], h);
-        return h;
-    }
-    case V_LAMBDA: return hash_lambda(v, h);
-    case V_TUPLE: case V_FCN: {
-        if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
-        int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
-        h = mix(h, (tuple ? 0x06 : 0x07) | (uint64_t)v->n << 8);
-        for (int i = 0; i < v->n; i++) {
-            if (!tuple) h = hash_elem(v->u.fcn.keys[i], h);
-            h = hash_elem(v->u.fcn.vals[i], h);
+        if (!(sum = set->u.set.hash)) {
+            for (int i = 0; i < set->n; i++) sum += elem_hash(set->u.set.elems[i]);
+            set->u.set.hash = sum;
         }
-        return h;
+        return fmix(sum ^ (0x05 | (uint64_t)set->n << 8));
     }
+    case V_LAMBDA: return hash_lambda(v);
+    case V_TUPLE: case V_FCN:
+        if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
+        if (!(sum = v->u.fcn.hash)) {
+            for (int i = 0; i < v->n; i++) sum += pair_hash(v, i, v->u.fcn.vals[i]);
+            v->u.fcn.hash = sum;
+        }
+        return fmix(sum ^ (0x06 | (uint64_t)v->n << 8));
     default:
         fail("Attempted to fingerprint an operator.");
     }
@@ -5617,8 +5633,11 @@ static void encode(Buf *b, Value *v) {
 
 static int32_t get32(const char **p) { int32_t x; memcpy(&x, *p, 4); *p += 4; return x; }
 
+/* A value of a state, with its hash: the successors that keep or update it
+   need not hash it again. */
 static Value *decode(const char **p) {
     char tag = *(*p)++;
+    uint64_t sum = 0;
     switch (tag) {
     case 'b': return BOOLV(*(*p)++);
     case 'i': return mk_int(get32(p));
@@ -5628,20 +5647,26 @@ static Value *decode(const char **p) {
     case 'S': {
         int n = get32(p);
         Value *s = mk_set(n);
-        for (int i = 0; i < n; i++) s->u.set.elems[i] = decode(p);
+        for (int i = 0; i < n; i++) sum += elem_hash(s->u.set.elems[i] = decode(p));
+        s->u.set.hash = sum;
         return s;
     }
     case 'T': {
         int n = get32(p);
         Value *t = mk_tuple(n);
-        for (int i = 0; i < n; i++) t->u.fcn.vals[i] = decode(p);
+        for (int i = 0; i < n; i++) sum += pair_hash(t, i, t->u.fcn.vals[i] = decode(p));
+        t->u.fcn.hash = sum;
         return t;
     }
     case 'E': { get32(p); Value *f = mk_fcn(0); f->empty_fcn = 1; return f; }
     default: {
         int n = get32(p);
         Value *f = mk_fcn(n);
-        for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = decode(p); f->u.fcn.vals[i] = decode(p); }
+        for (int i = 0; i < n; i++) {
+            f->u.fcn.keys[i] = decode(p);
+            sum += pair_hash(f, i, f->u.fcn.vals[i] = decode(p));
+        }
+        f->u.fcn.hash = sum;
         if (tag == 'R') f->made = MADE_RECORD;
         return f;
     }
@@ -5659,11 +5684,6 @@ typedef struct { uint64_t fp; int state; } FpSlot;
 
 static FpSlot *fp_table;
 static int fp_size;
-
-static uint64_t fp_finish(uint64_t h) {
-    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL; h ^= h >> 33;
-    return h;
-}
 
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
@@ -5769,14 +5789,14 @@ static uint64_t fingerprint(Value **st) {
         cur_state = st;
         Value *v = eval(view_expr, root_ctx);
         cur_state = saved;
-        return fp_finish(hash_value(v, 0));
+        return value_hash(v);
     }
     uint64_t best = 0;
     for (int p = 0; p <= nsymmetry; p++) {
         if (p == 0 && nsymmetry) continue;
         uint64_t h = 0;
-        for (int i = 0; i < nvars; i++) h = hash_elem(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], h);
-        uint64_t fp = fp_finish(h);
+        for (int i = 0; i < nvars; i++) h = fmix(h + elem_hash(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i]));
+        uint64_t fp = h;
         if (p <= 1 || fp < best) best = fp;
     }
     return best;
@@ -7858,6 +7878,7 @@ int tpp_check(const TPPOptions *o) {
         v->u.i = i;
         small_ints[i + 1] = v;
     }
+    for (int i = 0; i < 64; i++) index_hash[i] = fmix(atom_word(V_INT, i + 1));
     boolean_set = mk_set(2);
     boolean_set->u.set.elems[0] = FALSEV;
     boolean_set->u.set.elems[1] = TRUEV;
