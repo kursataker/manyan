@@ -1,6 +1,6 @@
 # tpp
 
-tpp (TLA Plus Plus) is a model checker for TLA+ written in C11. It reads
+TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
 the same specifications and model configurations as TLC and prints the
 same report, the same traces and counterexamples, and the same state
 counts, 4.7 to 28.7 times faster with one worker (`make release`).
@@ -23,7 +23,7 @@ State 2: <Next line 7, col 9 to line 7, col 30 of module MySpec>
 
 ## Why
 
-TLC is the reference model checker for TLA+, and the oracle tpp is tested
+TLC is the reference model checker for TLA⁺, and the oracle tpp is tested
 against. tpp keeps TLC's semantics and output, so it can stand in for TLC
 in scripts and CI, and it starts quickly and spends less time on each
 state:
@@ -67,7 +67,7 @@ exit statuses and the C API.
 
 ## What it supports
 
-- The TLA+ language as TLC evaluates it: operators, functions, records,
+- The TLA⁺ language as TLC evaluates it: operators, functions, records,
   sequences, sets (including lazily evaluated infinite ones), `CHOOSE`,
   `LET`, recursion, `EXTENDS`, parameterized `INSTANCE`, nested modules,
   labels and subexpression names (`Op(a)!lab!:!2`), SANY's level checks.
@@ -90,7 +90,7 @@ skipped.
 ## How it is tested
 
 What tpp must do is written down first, in
-[the tpp TLA+ Standard](docs/standards/tla2.md), with TLC 2.19 as the
+[the tpp TLA⁺ Standard](docs/standards/tla2.md), with TLC 2.19 as the
 oracle for every choice the language leaves open. The tests follow it:
 
 - `tests/spec`: over 200 models, each with TLC's output and exit status.
@@ -100,7 +100,7 @@ oracle for every choice the language leaves open. The tests follow it:
 - `make test` runs the suite with one worker and with four;
   `make sanitize` runs it under UndefinedBehaviorSanitizer (with Guard
   Malloc on macOS, AddressSanitizer elsewhere).
-- `tests/tla` models parts of tpp's algorithms in TLA+, for TLC and tpp to
+- `tests/tla` models parts of tpp's algorithms in TLA⁺, for TLC and tpp to
   check.
 
 ## Layout
@@ -112,6 +112,6 @@ docs/manual.md         how to use tpp
 docs/benchmark.md      tpp against TLC
 docs/optimizations.md  what made tpp fast, and what did not
 tests/spec/            conformance tests, by chapter of the standard
-tests/tla/             TLA+ models of tpp's algorithms
+tests/tla/             TLA⁺ models of tpp's algorithms
 bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
 ```

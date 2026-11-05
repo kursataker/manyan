@@ -1,4 +1,4 @@
-# The tpp TLA+ Standard
+# The tpp TLA⁺ Standard
 
 Version 0.1. The language tpp accepts and the results it must produce.
 
@@ -19,11 +19,11 @@ Version 0.1. The language tpp accepts and the results it must produce.
 
 ## 1 Scope
 
-This Standard defines TLA+ Version 2 as a model checker must evaluate it:
+This Standard defines TLA⁺ Version 2 as a model checker must evaluate it:
 the syntax of modules, the meaning of the expressions TLC can evaluate,
 the model configuration language, the model-checking procedure, and the
 observable results. It follows *Specifying Systems* (Lamport, 2002) and the
-TLA+ Version 2 language changes. Where those leave a choice open (the order
+TLA⁺ Version 2 language changes. Where those leave a choice open (the order
 in which values print, which errors are reported, how many states are
 counted), TLC 2.19 (tla2tools 1.7.4) decides.
 
@@ -326,9 +326,22 @@ infinite set is an error.
 `f[a, b]` (which is `f[<<a, b>>]`); `DOMAIN f`; the function set
 `[S -> T]`; `[f EXCEPT ![a] = e, ![b][c] = e2, !.r = e3]`, where `@` in a
 replacement is the old value at that path. Applying `f` outside its domain
-is an error. As in TLC, a function is evaluated only where it is applied:
-`f[i \in S] == [j \in T |-> ... f[i][k] ...]` may use other values of
-`f[i]` within `f[i]`, which does not then recurse forever. An EXCEPT path whose key is outside the domain leaves the
+is an error.
+
+As in TLC, `[x \in S |-> e]` is computed in full where it is evaluated,
+except where it stays lazy: in the function position of an application
+`f[a]` (directly, or as the value of the operator, LET definition or arm
+`f` names), within the body of a lazy function, in a function definition
+(§5.3), and over an infinite domain. Applying a lazy function evaluates `e`
+at that argument only, so an error elsewhere in its domain is not raised,
+and `f[i \in S] == [j \in T |-> ... f[i][k] ...]` may use other values of
+`f[i]` within `f[i]`. A lazy function is computed in full when it is
+compared, fingerprinted, printed, or taken `DOMAIN` or `EXCEPT` of. One
+that cannot be, being over an infinite domain or failing, prints as
+`[x \in S |-> <expression LOC>]`: each bound's first name, or `<<a, b>>` for
+a tuple pattern, with its domain, then the location of `e` (§11.3).
+
+An EXCEPT path whose key is outside the domain leaves the
 value unchanged and prints TLC's warning, `Warning: The EXCEPT was applied
 to non-existing fields of the value at` and the location of `f`; the first
 warning of a run adds `(Use the -nowarning option to disable this
@@ -624,6 +637,8 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | successor not specified | `Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: v.`; with several actions, `by action A of the next-state relation` | 75 |
 | invariant not Boolean | `Error: TLC expected a boolean value, but did not find one. ...` | 75 |
 | error evaluating an invariant in an initial state | the evaluation message, then `While working on the initial state:` and the state | 75 |
+| error computing a function constructor in full (§6.6) | the evaluation message (and the trace, in an action), then `Error: TLC was unable to fingerprint.`, a blank line, `Fingerprint Stack Trace:`, the locations of the constructors being computed, innermost first, numbered down to `0)`, a blank line, `Reason:` and the message again | 75 |
+| fingerprinting an initial state that holds a function over an infinite domain | `Attempted to compute the number of elements in the overridden value Nat.` (TLC's error counting the domain), then `While working on the initial state:` and the state | 75 |
 | error evaluating an invariant in a new state | `Error: Evaluating invariant Inv failed.`, the evaluation message, and the trace to the new state | 76 |
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
@@ -674,4 +689,4 @@ Not covered: the proof language (`PROOF`, steps, `USE`, `BY`; skipped,
 except that a `HIDE` may name only theorems, assumptions, and steps, and a
 theorem's statement is kept for §5.7), real numbers, `\AA` and `\EE`, `-simulate`, `-generate`,
 checkpointing, multiple workers' scheduling, distributed TLC, and the
-TLA+ Toolbox outputs (`-tool`).
+TLA⁺ Toolbox outputs (`-tool`).
