@@ -5205,61 +5205,46 @@ static int expand_state(int idx) {
 
 /* Worker processes expand the states of a level in batches. They read the
    store, the state records and the fingerprint set, which live in shared
-   memory, and write what they find to their own shared region. For each
-   state: whether it is clean (no error, violation or deadlock to report)
-   and its successors in order, each seen before the level, outside the
-   constraints, or new, with its encoding. The search merges the batches in
-   order and expands each state that is not clean itself, so it reports
-   exactly what one process would. */
+   memory, and write what they find to their own shared regions: for each
+   state, whether it is clean (no error, violation or deadlock to report)
+   and its successors in order. A successor not seen as the level started
+   is claimed in a table the workers share; the worker that claims it
+   checks the invariants and keeps its encoding, once. The search merges
+   the batches in order, taking a new state's encoding from its claim. It
+   expands a state that is not clean, or that is the first to reach a
+   state whose invariants failed, itself, so it reports exactly what one
+   process would. */
 #define PARALLEL_LEVEL 256    /* smaller levels are expanded by the search alone */
 #define BATCH 32
-#define SEEN (-1)
-#define CONSTRAINED (-2)
+#define MAX_CLAIMS ((size_t)1 << 27)
 
-typedef struct { uint64_t fp; int action; int len; } Found;   /* len: SEEN, CONSTRAINED or bytes */
+typedef struct { uint64_t fp; int action; int constrained; } Found;
 typedef struct { int worker; size_t off; } Batch;
+typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; } Claim;
+enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
 typedef struct {
     atomic_int next;          /* the next batch to take */
     int lo, hi, nbatches;     /* the level */
     FpSlot *fp_table;         /* the fingerprint set as the level starts */
     int fp_size;
+    size_t nclaims;           /* the claim table's size, a power of two */
+    atomic_size_t claimed;
 } Control;
 
 static Control *control;
 static Batch *batches;
-static char **results;         /* each worker's region */
+static Claim *claims;
+static char **results, **encodings;   /* each worker's regions */
 static int (*to_worker)[2], (*from_worker)[2];
 static pid_t *worker_pids;
 static int workers_running, forked_strs;
+static double growth = 1;      /* new states per state expanded, on the last level */
 
-static char *w_out;            /* in a worker: its region, w_n bytes used */
-static size_t w_n;
+static int w_id;               /* in a worker: its number */
+static size_t w_n, w_encoded;  /* bytes used of its regions */
 static int w_clean, w_found;
 static Buf w_bytes;
-static uint64_t *w_sent;       /* fingerprints of the new states it sent for the level */
-static int w_sent_size, w_nsent;
-
-/* Whether the worker sent the state fp for the level, which it then
-   records. Its batches merge in the order it took them, so by the time a
-   later mention of the state merges, the state is in the search. */
-static int w_was_sent(uint64_t fp) {
-    if (w_nsent * 2 >= w_sent_size) {
-        uint64_t *old = w_sent;
-        int size = w_sent_size;
-        w_sent_size = size ? size * 2 : 4096;
-        w_sent = calloc((size_t)w_sent_size, sizeof(uint64_t));
-        w_nsent = 0;
-        for (int i = 0; i < size; i++) if (old[i]) w_was_sent(old[i]);
-        free(old);
-    }
-    fp |= 1;   /* 0 marks an empty slot */
-    int j = (int)(fp & (uint64_t)(w_sent_size - 1));
-    for (; w_sent[j]; j = (j + 1) & (w_sent_size - 1)) if (w_sent[j] == fp) return 1;
-    w_sent[j] = fp;
-    w_nsent++;
-    return 0;
-}
 
 static void *shared(size_t bytes) {
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
@@ -5277,13 +5262,49 @@ static void share_search(void) {
     fp_region = shared(fp_region_size);
     control = shared(sizeof(Control));
     batches = shared(sizeof(Batch) * (size_t)(capstates / BATCH + 1));
+    claims = shared(sizeof(Claim) * MAX_CLAIMS);
     results = xmalloc(sizeof(char *) * (size_t)nworkers);
-    for (int i = 0; i < nworkers; i++) results[i] = shared((size_t)1 << 34);
+    encodings = xmalloc(sizeof(char *) * (size_t)nworkers);
+    for (int i = 0; i < nworkers; i++) {
+        results[i] = shared((size_t)1 << 34);
+        encodings[i] = shared((size_t)1 << 36);
+    }
 }
 
-static void w_put(const void *p, size_t n) {
-    memcpy(w_out + w_n, p, n);
-    w_n += n;
+/* The claim of the state fp, made if `make` and there is none; NULL if
+   there is none, or no room for it. */
+static Claim *claim(uint64_t fp, int make, int *made) {
+    uint64_t key = fp ? fp : 1;   /* 0 marks a free entry */
+    size_t mask = control->nclaims - 1;
+    for (size_t j = key & mask;; j = (j + 1) & mask) {
+        uint64_t k = atomic_load(&claims[j].key);
+        if (k == key) return &claims[j];
+        if (k) continue;
+        if (!make) return NULL;
+        if (atomic_fetch_add(&control->claimed, 1) >= control->nclaims / 2) return NULL;
+        if (atomic_compare_exchange_strong(&claims[j].key, &k, key)) { *made = 1; return &claims[j]; }
+        if (k == key) return &claims[j];
+    }
+}
+
+/* Checks the invariants of the successor a worker claimed and keeps its encoding. */
+static void settle(Claim *c) {
+    sigjmp_buf here, *saved = handler;
+    handler = &here;
+    int ok = 0;
+    if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0) {
+        w_bytes.n = 0;
+        for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
+        ok = 1;
+    }
+    handler = saved;
+    if (ok) {
+        memcpy(encodings[w_id] + w_encoded, w_bytes.s, w_bytes.n);
+        c->loc = (uint64_t)w_id << 40 | w_encoded;
+        c->len = (int)w_bytes.n;
+        w_encoded += w_bytes.n;
+    }
+    atomic_store(&c->state, ok ? SETTLED : FAILED);
 }
 
 static int worker_emit(void) {
@@ -5292,23 +5313,19 @@ static int worker_emit(void) {
     Found f = {0, cur_action, 0};
     if (check_list(constraints, nconstraints, succ) >= 0 ||
         check_actions(action_constraints, naction_constraints, cur_state, succ) >= 0) {
-        f.len = CONSTRAINED;
-        w_put(&f, sizeof f);
-        w_found++;
-        return 0;
+        f.constrained = 1;
+    } else {
+        f.fp = fingerprint(succ);
+        if (check_actions(action_props, naction_props, cur_state, succ) >= 0) { w_clean = 0; return 1; }
+        if (fp_find(f.fp) < 0) {
+            int made = 0;
+            Claim *c = claim(f.fp, 1, &made);
+            if (!c) { w_clean = 0; return 1; }
+            if (made) settle(c);
+        }
     }
-    f.fp = fingerprint(succ);
-    int seen = fp_find(f.fp) >= 0 || w_was_sent(f.fp);
-    if ((!seen && check_list(invariants, ninvariants, succ) >= 0) ||
-        check_actions(action_props, naction_props, cur_state, succ) >= 0) {
-        w_clean = 0;
-        return 1;
-    }
-    w_bytes.n = 0;
-    if (!seen) for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
-    f.len = seen ? SEEN : (int)w_bytes.n;
-    w_put(&f, sizeof f);
-    if (f.len > 0) w_put(w_bytes.s, w_bytes.n);
+    memcpy(results[w_id] + w_n, &f, sizeof f);
+    w_n += sizeof f;
     w_found++;
     return 0;
 }
@@ -5338,21 +5355,19 @@ static void worker_expand(int idx) {
     handler = NULL;
     if (!w_clean) { w_n = head + 2 * sizeof(int); w_found = 0; }
     int header[2] = {w_clean, w_found};
-    memcpy(w_out + head, header, sizeof header);
+    memcpy(results[w_id] + head, header, sizeof header);
     arena_reset(&scratch_arena);
 }
 
 static _Noreturn void worker_main(int id) {
     in_worker = 1;
     gen_emit = worker_emit;
-    w_out = results[id];
+    w_id = id;
     char c;
     while (read(to_worker[id][0], &c, 1) == 1) {
         fp_table = control->fp_table;
         fp_size = control->fp_size;
-        w_n = 0;
-        if (w_nsent) memset(w_sent, 0, sizeof(uint64_t) * (size_t)w_sent_size);
-        w_nsent = 0;
+        w_n = w_encoded = 0;
         for (;;) {
             int b = atomic_fetch_add(&control->next, 1);
             if (b >= control->nbatches) break;
@@ -5397,29 +5412,32 @@ static void stop_workers(void) {
     workers_running = 0;
 }
 
-/* Merges the successors a worker found for state idx. */
-static const char *merge_state(int idx, const char *p, int nfound) {
+/* Whether the successors found for a state can merge: each new one was
+   settled by the worker that claimed it. */
+static int mergeable(const Found *f, int nfound) {
+    for (int k = 0; k < nfound; k++)
+        if (!f[k].constrained && fp_find(f[k].fp) < 0 && atomic_load(&claim(f[k].fp, 0, NULL)->state) != SETTLED)
+            return 0;
+    return 1;
+}
+
+static void merge_state(int idx, const Found *f, int nfound) {
     expanding = idx;
     expanded = idx + 1;
     for (int k = 0; k < nfound; k++) {
-        Found f;
-        memcpy(&f, p, sizeof f);
-        p += sizeof f;
         generated++;
-        if (f.len == CONSTRAINED) continue;
-        int found = fp_find(f.fp);
+        if (f[k].constrained) continue;
+        int found = fp_find(f[k].fp);
         if (found < 0) {
-            /* Unseen as the level started, and not found since: new. */
+            Claim *c = claim(f[k].fp, 0, NULL);
             size_t off = store.n;
-            store_add(p, (size_t)f.len);
+            store_add(encodings[c->loc >> 40] + (c->loc & (((uint64_t)1 << 40) - 1)), (size_t)c->len);
             int depth = states[idx].depth + 1;
-            found = add_record(off, f.fp, idx, f.action, depth);
+            found = add_record(off, f[k].fp, idx, f[k].action, depth);
             if (depth > max_depth) max_depth = depth;
         }
-        if (ntemporal_props) add_edge(idx, found, f.action);
-        if (f.len > 0) p += f.len;
+        if (ntemporal_props) add_edge(idx, found, f[k].action);
     }
-    return p;
 }
 
 static int expand_level(int lo, int hi) {
@@ -5432,6 +5450,11 @@ static int expand_level(int lo, int hi) {
     control->nbatches = (hi - lo + BATCH - 1) / BATCH;
     control->fp_table = fp_table;
     control->fp_size = fp_size;
+    size_t want = (size_t)(4 * (hi - lo) * (growth > 1 ? growth : 1)), n = 4096;
+    while (n < want && n < MAX_CLAIMS) n *= 2;
+    memset(claims, 0, sizeof(Claim) * n);
+    control->nclaims = n;
+    atomic_store(&control->claimed, 0);
     atomic_store(&control->next, 0);
     fflush(stdout);
     char c;
@@ -5445,8 +5468,9 @@ static int expand_level(int lo, int hi) {
         for (int idx = lo + b * BATCH; idx < end; idx++) {
             int header[2];
             memcpy(header, p, sizeof header);
-            p += sizeof header;
-            if (header[0]) { p = merge_state(idx, p, header[1]); continue; }
+            const Found *f = (const Found *)(p + sizeof header);
+            p += sizeof header + sizeof(Found) * (size_t)header[1];
+            if (header[0] && mergeable(f, header[1])) { merge_state(idx, f, header[1]); continue; }
             int status = expand_state(idx);
             if (status) return status;
         }
@@ -5519,6 +5543,7 @@ static int search(void) {
         if (nworkers > 1 && hi - lo >= PARALLEL_LEVEL) status = expand_level(lo, hi);
         else for (int idx = lo; idx < hi && !status; idx++) status = expand_state(idx);
         if (status) return status;
+        growth = (double)(nstates - hi) / (hi - lo);
         lo = hi;
     }
     expanding = -1;
