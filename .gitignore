@@ -1,0 +1,5 @@
+.obj/
+tpp
+*.dSYM/
+states/
+__pycache__/

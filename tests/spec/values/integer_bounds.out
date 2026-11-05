@@ -1,0 +1,4 @@
+2147483647
+Error: Evaluating assumption line 4, col 8 to line 4, col 29 of module integer_bounds failed.
+Overflow when computing 2147483647+1
+exit 10

@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 35 of module infinite_enum failed.
+TLC encountered a non-enumerable quantifier bound
+Nat.
+line 3, col 24 to line 3, col 26 of module infinite_enum
+exit 10

@@ -1,0 +1,3 @@
+Error: Invariant Small is violated by the initial state:
+x = 4
+exit 12

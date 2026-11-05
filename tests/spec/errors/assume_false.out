@@ -1,0 +1,2 @@
+Error: Assumption line 3, col 8 to line 3, col 16 of module assume_false is false.
+exit 10

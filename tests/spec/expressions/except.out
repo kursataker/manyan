@@ -1,0 +1,11 @@
+<<<<1, 20, 3>>, <<101, 2, 0>>, <<6, 2, 3>>>>
+<< [a |-> 9, b |-> [c |-> 2, d |-> <<3, 4>>]],
+   [a |-> 1, b |-> [c |-> 20, d |-> <<3, 4>>]],
+   [a |-> 1, b |-> [c |-> 2, d |-> <<3, "x">>]],
+   [a |-> 1, b |-> [c |-> 0, d |-> <<3, 4>>]] >>
+<<<<0, 1>>, <<7>>>>
+Finished computing initial states: 0 distinct states generated.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

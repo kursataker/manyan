@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Action property Increasing is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 5, col 9 to line 5, col 24 of module action_property>
+x = 1
+
+State 3: <Next line 5, col 9 to line 5, col 24 of module action_property>
+x = 2
+
+State 4: <Next line 5, col 9 to line 5, col 24 of module action_property>
+x = 3
+
+State 5: <Next line 5, col 9 to line 5, col 24 of module action_property>
+x = 0
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

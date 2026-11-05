@@ -1,0 +1,26 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 6, col 12 to line 6, col 40 of module specification>
+/\ x = 1
+/\ y = 0
+
+State 3: <Next line 6, col 12 to line 6, col 40 of module specification>
+/\ x = 2
+/\ y = 0
+
+State 4: <Next line 7, col 12 to line 7, col 40 of module specification>
+/\ x = 2
+/\ y = 1
+
+State 5: <Next line 7, col 12 to line 7, col 40 of module specification>
+/\ x = 2
+/\ y = 2
+
+13 states generated, 9 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 11

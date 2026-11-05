@@ -1,0 +1,17 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Toggle line 6, col 11 to line 6, col 35 of module weak_fails>
+/\ x = 1
+/\ y = 0
+
+Back to state 1: <Toggle line 6, col 11 to line 6, col 35 of module weak_fails>
+
+6 states generated, 4 distinct states found, 0 states left on queue.
+exit 13

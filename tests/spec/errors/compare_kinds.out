@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 22 of module compare_kinds failed.
+Attempted to check equality of integer 1 with non-integer:
+"a"
+exit 10

@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 24 of module not_boolean failed.
+Attempted to evaluate an expression of form P /\ Q when P was
+an integer.
+line 3, col 15 to line 3, col 23 of module not_boolean
+exit 10

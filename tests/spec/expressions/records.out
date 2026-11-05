@@ -1,0 +1,11 @@
+<<[name |-> "n", age |-> 3], "n", 3, {"name", "age"}, TRUE>>
+{ [kind |-> "k1", val |-> 1],
+  [kind |-> "k1", val |-> 2],
+  [kind |-> "k2", val |-> 1],
+  [kind |-> "k2", val |-> 2] }
+[name |-> 0, age |-> 0]
+Finished computing initial states: 0 distinct states generated.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

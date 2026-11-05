@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+n = 0
+
+State 2: <Up line 5, col 7 to line 5, col 16 of module action_names>
+n = 1
+
+State 3: <Up line 5, col 7 to line 5, col 16 of module action_names>
+n = 2
+
+State 4: <Up line 5, col 7 to line 5, col 16 of module action_names>
+n = 3
+
+State 5: <Double line 6, col 11 to line 6, col 29 of module action_names>
+n = 6
+
+8 states generated, 6 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 5.
+exit 12

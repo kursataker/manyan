@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 44 of module case_none failed.
+Attempted to evaluate a CASE with no conditions true.
+line 3, col 15 to line 3, col 43 of module case_none
+exit 10

@@ -1,0 +1,6 @@
+Error: TLC expected a boolean value, but did not find one. line 6, col 8 to line 6, col 8 of module invariant_not_boolean
+While working on the initial state:
+x = 0
+
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

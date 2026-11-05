@@ -1,0 +1,7 @@
+<<0, 7, 42, 10, 3, 15, 7, 255, 255, 0>>
+<<-1, -2, 2147483647, -2147483647>>
+Finished computing initial states: 0 distinct states generated.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

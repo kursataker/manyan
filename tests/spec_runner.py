@@ -1,0 +1,137 @@
+"""Run the specification tests (tests/spec) on a model checker.
+
+usage: spec_runner.py ENGINE [--oracle TLC] [--bless] [--only SUBSTRING] [--strict]
+
+A test is NAME.tla: a module, then, after the line that ends it, the model
+configuration (SANY ignores text after a module). NAME.out is the
+normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
+Modules a test uses go in a sibling NAME.files directory. Each test is
+staged in a temporary directory and run as `ENGINE -config NAME.cfg NAME`.
+
+With --oracle, the oracle (a command running TLC) must produce NAME.out
+too, which validates the test; --bless writes NAME.out from the oracle.
+With --strict the exit status is nonzero when the engine fails any test.
+"""
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SPEC = ROOT / "tests/spec"
+
+NOISE = re.compile(
+    r"^(TLC2 Version|tpp version|Running |Parsing file|Semantic processing|Starting\.\.\.|"
+    r"Computing initial states\.\.\.|Computed \d+ initial states|Progress\(|Checking temporal properties for|"
+    r"Finished checking temporal properties|Implied-temporal checking|Finished in|"
+    r"The average outdegree|  Estimates of the probability|  because two distinct states|"
+    r"  calculated \(optimistic\)|  based on the actual fingerprints|Checking \d+ branches of temporal properties|"
+    r"Warning: Please run the Java VM)")
+
+
+def normalize(output, directory):
+    if "Error: Parsing or semantic analysis failed." in output:
+        return "Error: Parsing or semantic analysis failed.\n"
+    lines = []
+    nested = False
+    for line in output.replace(str(directory) + "/", "").splitlines():
+        if line.startswith("Error: The error occurred when TLC was evaluating the nested"):
+            nested = True
+        if nested:
+            nested = line.strip() != ""
+            continue
+        if NOISE.match(line):
+            continue
+        line = re.sub(r" at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.$", ".", line)
+        if line.strip() == "" and (not lines or lines[-1] == ""):
+            continue
+        lines.append(line.rstrip())
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def stage(path, directory):
+    text = path.read_text()
+    ends = list(re.finditer(r"^====+[ \t]*$", text, flags=re.M))
+    config = text[ends[-1].end():].lstrip("\n") if ends else ""
+    shutil.copy(path, directory / path.name)
+    (directory / (path.stem + ".cfg")).write_text(config)
+    files = path.with_suffix(".files")
+    if files.is_dir():
+        shutil.copytree(files, directory, dirs_exist_ok=True)
+
+
+def run(command, path):
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp).resolve()
+        stage(path, directory)
+        try:
+            done = subprocess.run(command + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
+            output, code = done.stdout, done.returncode
+        except subprocess.TimeoutExpired:
+            output, code = "timeout\n", "timeout"
+        except OSError as error:
+            output, code = f"{error}\n", "error"
+        return normalize(output, directory) + f"exit {code}\n"
+
+
+def oracle_command(tlc):
+    meta = tempfile.mkdtemp(prefix="tpp-meta-")
+    return tlc.split() + ["-workers", "1", "-metadir", meta]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("engine")
+    parser.add_argument("--oracle")
+    parser.add_argument("--bless", action="store_true")
+    parser.add_argument("--only", default="")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+    tests = sorted(p for p in SPEC.rglob("*.tla") if ".files" not in str(p) and args.only in str(p))
+
+    def check(path):
+        expected_path = path.with_suffix(".out")
+        notes = []
+        if args.oracle:
+            reference = run(oracle_command(args.oracle), path)
+            if args.bless:
+                expected_path.write_text(reference)
+            elif not expected_path.exists() or reference != expected_path.read_text():
+                notes.append("oracle disagrees with " + expected_path.name)
+        expected = expected_path.read_text() if expected_path.exists() else None
+        if expected is None:
+            return path, False, ["no " + expected_path.name], ""
+        actual = run([args.engine], path)
+        if actual != expected:
+            notes.append("output differs")
+        return path, not notes, notes, actual if actual != expected else ""
+
+    failed = 0
+    chapters = {}
+    # TLC unpacks its standard modules into one shared directory, so it runs alone.
+    with ThreadPoolExecutor(max_workers=1 if args.oracle else 8) as pool:
+        for path, ok, notes, actual in pool.map(check, tests):
+            chapter = path.parent.relative_to(SPEC).as_posix()
+            passed, total = chapters.get(chapter, (0, 0))
+            chapters[chapter] = (passed + ok, total + 1)
+            if not ok:
+                failed += 1
+                print("FAIL", path.relative_to(ROOT), "-", "; ".join(notes))
+                if args.verbose and actual:
+                    print(actual)
+    for chapter, (passed, total) in sorted(chapters.items()):
+        print(f"{chapter:24} {passed:4}/{total}")
+    print(f"{'total':24} {len(tests) - failed:4}/{len(tests)}")
+    return 1 if failed and args.strict else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

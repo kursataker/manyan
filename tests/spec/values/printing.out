@@ -1,0 +1,10 @@
+<<TRUE, -3, "q\"\\", {}, <<>>, <<1, 2>>, (0 :> 0 @@ 1 :> 1), [f |-> 1]>>
+<<{<<>>, <<1>>, <<1, 2>>}, {{}, {3}, {1, 2}}, {FALSE, TRUE}, {-1, 0, 5}>>
+<<<<{}, {}>>, (<<1>> :> 0), ({} :> 0)>>
+"label"  1
+<<1>>  {2}
+Finished computing initial states: 0 distinct states generated.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

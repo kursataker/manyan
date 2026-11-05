@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: The first argument of Assert evaluated to FALSE; the second argument was:
+"x got too big"
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 5, col 9 to line 5, col 52 of module assert>
+x = 1
+
+State 3: <Next line 5, col 9 to line 5, col 52 of module assert>
+x = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+exit 14

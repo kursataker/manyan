@@ -1,0 +1,3 @@
+Error: The initial predicate Start specified in the configuration file
+is not defined in the specification.
+exit 151
