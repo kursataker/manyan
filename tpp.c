@@ -181,7 +181,7 @@ static const char *builtin_names[] = {
     "$SetEnumerate", "$SetOfAll", "$SetOfFcns", "$SetOfRcds", "$SF", "$SquareAct", "$SubsetOf",
     "$TemporalExists", "$TemporalForall", "$TemporalWhile", "$Tuple", "$UnboundedChoose",
     "$UnboundedExists", "$UnboundedForall", "$WF", "$Nop", "$Qed", "$Pfcase", "$Have", "$Take",
-    "$Pick", "$Witness", "$Suffices", "@", "VARIABLE", "<<", "SF_", "WF_", "LAMBDA", ">>", NULL};
+    "$Pick", "$Witness", "$Suffices", "@", "VARIABLE", "<<", "SF_", "WF_", "LAMBDA", NULL};
 
 /* ---------------------------------------------------------------- errors */
 
@@ -428,8 +428,11 @@ static char *value_str(Value *v) {
 
 /* TLC's pretty printer (tlc2.pprint.Format) breaks a value longer than
    the line width, element by element (§7.6). */
+static int set_is_infinite(Value *s);
+
 static int pp_plain(Value *v) {
-    if (v->kind == V_INTERVAL || v->kind == V_LAZY) return 1;
+    if (v->kind == V_INTERVAL || (v->kind == V_LAZY && set_is_infinite(v))) return 1;
+    if (v->kind == V_LAZY) return pp_plain(normalize_set(v));
     if (v->kind == V_SET)
         for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
     if (is_fcn(v))
@@ -485,6 +488,7 @@ static void pp_pairs(Buf *b, Value *f, int record, int width, int trailer, const
 }
 
 static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad) {
+    if (v->kind == V_LAZY && !set_is_infinite(v)) v = normalize_set(v);
     char *flat = value_str(v);
     if ((int)strlen(flat) <= width - trailer || pp_plain(v) || v->n == 0) { buf_puts(b, flat); return; }
     if (v->kind == V_SET) {
@@ -592,12 +596,10 @@ static int vcmp(Value *a, Value *b) {
 
 static _Noreturn void equality_error(Value *a, Value *b) {
     const char *k = kind_name(a);
-    if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", pretty(a), pretty(b));
+    if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", a->n ? pretty(a) : "<< >>", pretty(b));
     if (is_set(a)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(a), pretty(b));
     fail("Attempted to check equality of %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
 }
-
-static int set_is_infinite(Value *s);
 
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
@@ -895,8 +897,8 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     } else {
         fail_at(where, "A non-function (%s) was applied as a function.", pretty(f));
     }
-    fail_at(where, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
-            pretty(f), pretty(a));
+    fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+         pretty(f), pretty(a));
 }
 
 static Value *fcn_domain(Value *f) {
@@ -1726,6 +1728,9 @@ static Expr *parse_primary(void) {
             e = parse_expr();
             P->limit = saved;
             expect_op(")");
+            /* A parenthesized expression is located by its parentheses. */
+            e->l1 = t->line; e->c1 = t->col;
+            finish(e);
             return e;
         }
         if (is_op(t, "@")) {
@@ -3506,7 +3511,9 @@ static Value *eval_inner(Expr *e, Ctx c) {
         case K_CUP: return set_union(a, b);
         case K_CAP: return set_inter(a, b);
         case K_SETMINUS: return set_minus(a, b);
-        default: return BOOLV(all_members(a, b));
+        default:
+            if (set_is_infinite(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
+            return BOOLV(all_members(a, b));
         }
     }
     case K_SUBSET: {
@@ -4331,7 +4338,6 @@ static int gen(Expr *e, Ctx c, Cont *k) {
 /* Whether action a has a successor from the current state. */
 static int enabled_found;
 static int enabled_emit(void) {
-    for (int i = 0; i < nvars; i++) if (!gen_target[i]) return 0;
     enabled_found = 1;
     return 1;
 }
@@ -4730,6 +4736,8 @@ static Value **succ;          /* the assignment the generator fills */
 static int succ_count;
 static int violation;         /* the exit status of the first violation, 0 if none */
 
+static Value **error_state;   /* the state an invariant failed to evaluate in */
+
 static int check_list(Check *list, int n, Value **st) {
     Value **saved = cur_state;
     cur_state = st;
@@ -4737,7 +4745,13 @@ static int check_list(Check *list, int n, Value **st) {
         Value *v = eval(list[i].expr, root_ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
-            fail_at(list[i].expr, "TLC expected a boolean value, but did not find one.");
+            Expr *body = list[i].def && list[i].def->body ? list[i].def->body : list[i].expr;
+            error_reset();
+            buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
+            loc_text(&error_message, body);
+            error_status = TPP_FAILURE_EVAL;
+            error_state = st;
+            raise_error();
         }
         if (!v->u.i) { cur_state = saved; return i; }
     }
@@ -4767,15 +4781,14 @@ static int init_emit(void) {
     if (check_list(constraints, nconstraints, st) >= 0) return 0;
     uint64_t fp = fingerprint(st);
     if (fp_find(fp) >= 0) return 0;
+    add_state(st, fp, -1, -1, 1);
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
-        add_state(st, fp, -1, -1, 1);
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
         print_state(st);
         violation = TPP_VIOLATION_SAFETY;
         return 1;
     }
-    add_state(st, fp, -1, -1, 1);
     return 0;
 }
 
@@ -4832,6 +4845,12 @@ static int search(void) {
         handler = NULL;
         if (expanding < 0) {
             print_error_message();
+            if (error_state) {
+                printf("While working on the initial state:\n");
+                print_state(error_state);
+                printf("\n");
+                print_counts(nstates, 0);
+            }
             return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
         }
         print_error_message();
@@ -4931,8 +4950,16 @@ static void cfg_space(CfgLexer *L) {
     }
 }
 
-/* The next token: its text in tok (interned for names), kind 'a' name,
-   'n' number, 's' string, 'p' punctuation, 0 end. */
+static const char *cfg_keywords_list[] = {
+    "CONSTANT", "CONSTANTS", "INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS", "PROPERTY",
+    "PROPERTIES", "CONSTRAINT", "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "SYMMETRY",
+    "VIEW", "CHECK_DEADLOCK", "POSTCONDITION", "ALIAS", NULL};
+
+/* The next token: kind 'a' name, 'n' number, 's' string, 'p' punctuation,
+   0 end. A name's text is in cfg_text; it is interned unless cfg_scanning. */
+static const char *cfg_text;
+static int cfg_len, cfg_scanning;
+
 static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
     cfg_space(L);
     const char *s = L->s + L->pos;
@@ -4944,7 +4971,9 @@ static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
         for (int i = 0; i < n; i++) if (!isdigit((unsigned char)s[i])) digits = 0;
         L->pos += n;
         if (digits) { *num = strtoll(s, NULL, 10); return 'n'; }
-        *id = intern_n(s, n);
+        cfg_text = s;
+        cfg_len = n;
+        *id = cfg_scanning ? -1 : intern_n(s, n);
         return 'a';
     }
     if (*s == '-' && isdigit((unsigned char)s[1])) {
@@ -4963,23 +4992,50 @@ static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
             n++;
         }
         L->pos += n + 1;
-        *id = intern_n(b.s ? b.s : "", (int)b.n);
+        *id = cfg_scanning ? -1 : intern_n(b.s ? b.s : "", (int)b.n);
         free(b.s);
         return 's';
     }
-    if (s[0] == '<' && s[1] == '-') { L->pos += 2; *id = intern("<-"); return 'p'; }
+    if (s[0] == '<' && s[1] == '-') { L->pos += 2; cfg_text = s; cfg_len = 2; *id = cfg_scanning ? -1 : intern("<-"); return 'p'; }
     L->pos++;
-    *id = intern_n(s, 1);
+    cfg_text = s;
+    cfg_len = 1;
+    *id = cfg_scanning ? -1 : intern_n(s, 1);
     return 'p';
 }
 
-static const char *cfg_keywords[] = {
-    "CONSTANT", "CONSTANTS", "INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS", "PROPERTY",
-    "PROPERTIES", "CONSTRAINT", "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "SYMMETRY",
-    "VIEW", "CHECK_DEADLOCK", "POSTCONDITION", "ALIAS", NULL};
+/* TLC makes the configuration's model values before it reads a module, so
+   their names are interned first (§7.5). */
+static void intern_model_values(const char *text) {
+    CfgLexer L = {text, 0};
+    int id, after_eq = 0, in_constants = 0;
+    int64_t num;
+    cfg_scanning = 1;
+    for (int kind; (kind = cfg_token(&L, &id, &num));) {
+        if (kind == 'a') {
+            char name[256];
+            snprintf(name, sizeof name, "%.*s", cfg_len, cfg_text);
+            int keyword = 0;
+            for (int i = 0; cfg_keywords_list[i]; i++) if (strcmp(name, cfg_keywords_list[i]) == 0) keyword = 1;
+            if (keyword) { in_constants = strncmp(name, "CONSTANT", 8) == 0; after_eq = 0; continue; }
+            if (in_constants && after_eq && strcmp(name, "TRUE") && strcmp(name, "FALSE")) intern_n(cfg_text, cfg_len);
+            if (in_constants && after_eq == 1) after_eq = 0;
+        } else if (kind == 'p' && cfg_text[0] == '=' && in_constants) {
+            after_eq = 1;
+        } else if (kind == 'p' && cfg_text[0] == '{' && after_eq) {
+            after_eq = 2;
+        } else if (kind == 'p' && cfg_text[0] == '}' && after_eq == 2) {
+            after_eq = 0;
+        } else if (after_eq == 1) {
+            after_eq = 0;
+        }
+    }
+    cfg_scanning = 0;
+}
+
 
 static int is_cfg_keyword(int id) {
-    for (int i = 0; cfg_keywords[i]; i++) if (strcmp(S(id), cfg_keywords[i]) == 0) return 1;
+    for (int i = 0; cfg_keywords_list[i]; i++) if (strcmp(S(id), cfg_keywords_list[i]) == 0) return 1;
     return 0;
 }
 
@@ -5256,6 +5312,33 @@ static int check_liveness(void) { return 0; }
 /* ---------------------------------------------------------------- driver */
 
 int tpp_check(const TPPOptions *o) {
+    printf("tpp version %s\n", TPP_VERSION);
+    size_t len = strlen(o->spec);
+    char *path = xmalloc(len + 5);
+    strcpy(path, o->spec);
+    if (len < 4 || strcmp(path + len - 4, ".tla") != 0) strcat(path, ".tla");
+    char *slash = strrchr(path, '/');
+    spec_dir = xmalloc(strlen(path) + 1);
+    if (slash) { memcpy(spec_dir, path, (size_t)(slash - path + 1)); spec_dir[slash - path + 1] = 0; }
+    else spec_dir[0] = 0;
+    char *config_path;
+    if (o->config) {
+        config_path = (char *)o->config;
+    } else {
+        config_path = xmalloc(strlen(path) + 1);
+        strcpy(config_path, path);
+        strcpy(config_path + strlen(config_path) - 4, ".cfg");
+    }
+    char *config_text = read_file(config_path);
+    if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
+    char *text = read_file(path);
+    if (!text) {
+        printf("Error: Cannot find source file %s.\n", path);
+        printf("Error: Parsing or semantic analysis failed.\n");
+        return TPP_ERROR_PARSE;
+    }
+
+    intern_model_values(config_text);
     for (int i = 0; builtin_names[i]; i++) intern(builtin_names[i]);
     for (int i = -1; i < 1023; i++) {
         Value *v = NEW(Value);
@@ -5268,38 +5351,12 @@ int tpp_check(const TPPOptions *o) {
     boolean_set->u.set.elems[1] = TRUEV;
     check_deadlock = o->check_deadlock;
 
-    printf("tpp version %s\n", TPP_VERSION);
-    size_t len = strlen(o->spec);
-    char *path = xmalloc(len + 5);
-    strcpy(path, o->spec);
-    if (len < 4 || strcmp(path + len - 4, ".tla") != 0) strcat(path, ".tla");
-    char *slash = strrchr(path, '/');
-    spec_dir = xmalloc(strlen(path) + 1);
-    if (slash) { memcpy(spec_dir, path, (size_t)(slash - path + 1)); spec_dir[slash - path + 1] = 0; }
-    else spec_dir[0] = 0;
-    char *text = read_file(path);
-    if (!text) {
-        printf("Error: Cannot find source file %s.\n", path);
-        printf("Error: Parsing or semantic analysis failed.\n");
-        return TPP_ERROR_PARSE;
-    }
     root = parse_text(text, path);
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
     load_references(root);
     resolve_module(root);
     bind_natives();
-
-    char *config_path;
-    if (o->config) {
-        config_path = (char *)o->config;
-    } else {
-        config_path = xmalloc(strlen(path) + 1);
-        strcpy(config_path, path);
-        strcpy(config_path + strlen(config_path) - 4, ".cfg");
-    }
-    char *config_text = read_file(config_path);
-    if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
     parse_config(config_text);
     setup_model();
 
