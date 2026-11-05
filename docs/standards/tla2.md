@@ -278,7 +278,11 @@ infinite set is an error.
 `f[a, b]` (which is `f[<<a, b>>]`); `DOMAIN f`; the function set
 `[S -> T]`; `[f EXCEPT ![a] = e, ![b][c] = e2, !.r = e3]`, where `@` in a
 replacement is the old value at that path. Applying `f` outside its domain
-is an error.
+is an error. An EXCEPT path whose key is outside the domain leaves the
+value unchanged and prints TLC's warning, `Warning: The EXCEPT was applied
+to non-existing fields of the value at` and the location of `f`; the first
+warning of a run adds `(Use the -nowarning option to disable this
+warning.)`, and a warning already printed is not printed again.
 
 ### 6.7 Records
 

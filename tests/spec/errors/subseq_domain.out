@@ -1,0 +1,7 @@
+<<>>
+Error: Evaluating assumption line 5, col 8 to line 5, col 37 of module subseq_domain failed.
+The third argument of SubSeq must be in the domain of its first argument:
+<<1, 2>>
+, but instead it is
+5
+exit 10

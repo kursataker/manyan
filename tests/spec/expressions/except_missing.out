@@ -1,0 +1,22 @@
+Warning: The EXCEPT was applied to non-existing fields of the value at
+line 4, col 32 to line 4, col 36 of module except_missing
+(Use the -nowarning option to disable this warning.)
+<<1>>
+Warning: The EXCEPT was applied to non-existing fields of the value at
+line 4, col 32 to line 4, col 36 of module except_missing
+<<1>>
+<<1>>
+Warning: The EXCEPT was applied to non-existing fields of the value at
+line 5, col 16 to line 5, col 28 of module except_missing
+[a |-> <<1>>]
+Warning: The EXCEPT was applied to non-existing fields of the value at
+line 6, col 16 to line 6, col 28 of module except_missing
+[a |-> <<1>>]
+[a |-> <<2>>]
+Finished computing initial states: 1 distinct state generated.
+Warning: The EXCEPT was applied to non-existing fields of the value at
+line 10, col 15 to line 10, col 19 of module except_missing
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

@@ -3748,9 +3748,28 @@ static Value *fcndef_value(Def *d, Ctx c) {
     return f;
 }
 
+/* TLC's warning that an EXCEPT names a key outside the domain. Like TLC it
+   prints each message once, and only the first has the -nowarning line. */
+static void warn_except(Expr *e) {
+    static char **seen;
+    static int nseen;
+    if (in_worker) worker_cannot();   /* the search prints in order */
+    Buf b = {0};
+    buf_puts(&b, "Warning: The EXCEPT was applied to non-existing fields of the value at\n");
+    loc_text(&b, e);
+    if (!nseen) buf_puts(&b, "\n(Use the -nowarning option to disable this warning.)");
+    for (int i = 0; i < nseen; i++)
+        if (!strcmp(seen[i], b.s)) { free(b.s); return; }
+    seen = xrealloc(seen, sizeof(char *) * (size_t)(nseen + 1));
+    seen[nseen++] = b.s;
+    printf("%s\n", b.s);
+    fflush(stdout);
+}
+
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
     if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
+    if (f->kind != V_LAMBDA && fcn_index(f, key) < 0) { warn_except(where->args[0]); return f; }
     Value *old = fcn_apply(f, key, where);
     Value *nv;
     if (i + 1 < p->n) {
@@ -4355,8 +4374,10 @@ NATIVE(n_subseq) {
     Value *x = seq_arg(a[0], NOT_SEQ("first argument", "SubSeq"));
     int64_t m = int_arg(a[1], 2, "SubSeq"), n = int_arg(a[2], 3, "SubSeq");
     if (m > n) return mk_tuple(0);
-    if (m < 1 || n > x->n)
-        fail_module("The second argument of SubSeq must be in the domain of its first argument:\n%s\nbut instead it is\n%lld", pretty(x), (long long)m);
+    int second = m < 1 || m > x->n;
+    if (second || n > x->n)
+        fail_module("The %s argument of SubSeq must be in the domain of its first argument:\n%s\n, but instead it is\n%lld",
+                    second ? "second" : "third", pretty(x), (long long)(second ? m : n));
     Value *t = mk_tuple((int)(n - m + 1));
     for (int64_t i = m; i <= n; i++) t->u.fcn.vals[i - m] = x->u.fcn.vals[i - 1];
     return t;
