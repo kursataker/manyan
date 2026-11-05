@@ -260,13 +260,20 @@ enum {
     V_OPER      /* an operator passed as an argument; never a TLA+ value */
 };
 
+/* How a function was made, which decides TLC's errors applying it: a
+   record, or [x \in S |-> e] not yet stored in a state or a constant. */
+enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA };
+
 enum LazyKind {
     L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_CUP, L_CAP, L_DIFF
 };
 
 struct Value {
     unsigned char kind;
-    unsigned char lazy;      /* LazyKind of a V_LAZY */
+    union {
+        unsigned char lazy;  /* LazyKind of a V_LAZY */
+        unsigned char made;  /* Made of a V_FCN */
+    };
     unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
     int n;                   /* elements of a set, tuple, or function */
@@ -281,8 +288,8 @@ struct Value {
     } u;
 };
 
-static Value value_true = {V_BOOL, 0, 0, 0, 0, {.i = 1}};
-static Value value_false = {V_BOOL, 0, 0, 0, 0, {.i = 0}};
+static Value value_true = {.kind = V_BOOL, .u.i = 1};
+static Value value_false = {.kind = V_BOOL, .u.i = 0};
 #define TRUEV (&value_true)
 #define FALSEV (&value_false)
 #define BOOLV(b) ((b) ? TRUEV : FALSEV)
@@ -1104,6 +1111,16 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     if (!is_fcn(f)) fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
     int i = fcn_index(f, a);
     if (i >= 0) return f->u.fcn.vals[i];
+    if (f->kind == V_TUPLE) {
+        if (a->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument.");
+        fail("Attempted to apply tuple\n%s\nto integer %lld which is out of domain.", pretty(f), (long long)a->u.i);
+    }
+    if (f->made == MADE_RECORD) {
+        if (a->kind != V_STR) fail("Attempted to apply record to a non-string value %s.", pretty(a));
+        fail("Attempted to apply the record\n%s\nto nonexistent record field %s.", pretty(f), S(a->u.i));
+    }
+    if (f->made == MADE_LAMBDA)
+        fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.", pretty(f), pretty(a));
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(f), pretty(a));
 }
@@ -2299,6 +2316,9 @@ static Expr *parse_binary(int bound) {
             last = info;
             continue;
         }
+        /* SANY rejects a prefix minus right of an operator binding tighter: 2 * -1. */
+        if (info->hi > 12 && is_op(peek(), "-"))
+            parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and -.", info->name);
         Expr *right = parse_binary(info->hi);
         Expr *pair[2] = {left, right};
         Expr *e = mk_op(t, intern(info->name), 2, pair);
@@ -3942,7 +3962,9 @@ static Value *eval(Expr *e, Ctx c) {
     case X_RECORD: {
         List keys = {0}, vals = {0};
         for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
-        return mk_fcn_from(&keys, &vals);
+        Value *r = mk_fcn_from(&keys, &vals);
+        r->made = MADE_RECORD;
+        return r;
     }
     case X_RCDSET: {
         List keys = {0}, vals = {0};
@@ -3976,6 +3998,7 @@ static Value *eval(Expr *e, Ctx c) {
             f->u.fcn.vals[i] = eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, dom->u.set.elems[i], c.env, e), c.inst});
         }
         if (!dom->n) f->empty_fcn = 1;
+        f->made = MADE_LAMBDA;
         return f;
     }
     case X_APPLY: {
@@ -3994,7 +4017,13 @@ static Value *eval(Expr *e, Ctx c) {
     case X_DOT: {
         Value *r = eval(e->args[0], c);
         if (!is_fcn(r)) fail_at(e, "Attempted to access field %s of the non-record\n%s.", S(e->op), pretty(r));
-        return fcn_apply(r, mk_str(e->op), e);
+        Value *field = mk_str(e->op);
+        int i = fcn_index(r, field);
+        if (i >= 0) return r->u.fcn.vals[i];
+        if (r->made == MADE_RECORD)
+            fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
+        fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+             pretty(r), pretty(field));
     }
     case X_EXCEPT: {
         Value *f = eval(e->args[0], c);
@@ -4117,6 +4146,14 @@ static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
     return call_values(d, args, n, c, where);
 }
 
+/* TLC normalizes the value of a constant definition, as a state's. */
+static void materialize(Value *v) {
+    if (v->kind == V_SET) for (int i = 0; i < v->n; i++) materialize(v->u.set.elems[i]);
+    if (!is_fcn(v)) return;
+    if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;
+    for (int i = 0; i < v->n; i++) materialize(v->u.fcn.vals[i]);
+}
+
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
@@ -4161,6 +4198,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
             Value *v = eval(d->body, bare);
             handler = outer;
             arena = saved;
+            materialize(v);
             d->cache = v;
             return v;
         }
@@ -4884,6 +4922,7 @@ static uint64_t hash_value(Value *v, uint64_t h) {
         return h;
     }
     case V_TUPLE: case V_FCN: {
+        if (v->made == MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
         int tuple = v->kind == V_TUPLE || fcn_is_tuple(v) || v->n == 0;
         h = mix(h, (tuple ? 0x06 : 0x07) | (uint64_t)v->n << 8);
         for (int i = 0; i < v->n; i++) {
@@ -4917,7 +4956,7 @@ static void encode(Buf *b, Value *v) {
     }
     case V_TUPLE: case V_FCN: {
         if (v->kind == V_FCN && v->n == 0) { tag = v->empty_fcn ? 'E' : 'T'; buf_add(b, &tag, 1); put32(b, 0); return; }
-        tag = v->kind == V_TUPLE ? 'T' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
+        tag = v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
         for (int i = 0; i < v->n; i++) {
             if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
             encode(b, v->u.fcn.vals[i]);
@@ -4956,6 +4995,7 @@ static Value *decode(const char **p) {
         int n = get32(p);
         Value *f = mk_fcn(n);
         for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = decode(p); f->u.fcn.vals[i] = decode(p); }
+        if (tag == 'R') f->made = MADE_RECORD;
         return f;
     }
     }
@@ -5156,6 +5196,7 @@ static int cur_action;
    until one yields the next state. Side effects such as Print happen
    again, so tpp replays the same evaluations for the same output. */
 static Value **replay_target;
+static uint64_t replay_fp;
 static int replay_found;
 static int replay_checks;     /* also evaluate the invariants, as TLC does replaying Init */
 static int check_list(Check *list, int n, Value **st);
@@ -5164,7 +5205,7 @@ static int replay_emit(void) {
     if (!replay_found) {
         int complete = 1;
         for (int i = 0; i < nvars && complete; i++) complete = gen_target[i] != NULL;
-        replay_found = complete && replay_target && fingerprint(gen_target) == fingerprint(replay_target);
+        replay_found = complete && replay_target && fingerprint(gen_target) == replay_fp;
     }
     if (replay_checks) check_list(invariants, ninvariants, gen_target);
     return 0;
@@ -5175,7 +5216,10 @@ static void replay(Value **from, Value **to) {
     int (*saved_emit)(void) = gen_emit;
     int saved_init = gen_init;
     Value **st = NEWN(Value *, nvars);
+    /* A successor not completely specified is no state to find. */
     replay_target = to;
+    for (int i = 0; i < nvars && replay_target; i++) if (!to[i]) replay_target = NULL;
+    if (replay_target) replay_fp = fingerprint(to);
     replay_found = 0;
     gen_target = st;
     gen_emit = replay_emit;
@@ -5264,12 +5308,17 @@ static Value **succ;          /* the assignment the generator fills */
 static int succ_count;
 static int violation;         /* the exit status of the first violation, 0 if none */
 
-static Value **error_state;   /* the state an invariant failed to evaluate in */
+/* The check being evaluated, and its state, when an error stops it. */
+static Check *error_check;
+static Value **error_state;
 
 static int check_list(Check *list, int n, Value **st) {
     Value **saved = cur_state;
     cur_state = st;
-    for (int i = 0; i < n; i++) {
+    int bad = -1;
+    for (int i = 0; i < n && bad < 0; i++) {
+        error_check = &list[i];
+        error_state = st;
         Value *v = eval(list[i].expr, root_ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
@@ -5278,13 +5327,14 @@ static int check_list(Check *list, int n, Value **st) {
             buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
             loc_text(&error_message, body);
             error_status = TPP_FAILURE_EVAL;
-            error_state = st;
             raise_error();
         }
-        if (!v->u.i) { cur_state = saved; return i; }
+        if (!v->u.i) bad = i;
     }
+    error_check = NULL;
+    error_state = NULL;
     cur_state = saved;
-    return -1;
+    return bad;
 }
 
 static int check_actions(Check *list, int n, Value **from, Value **to) {
@@ -5338,8 +5388,10 @@ static int next_emit(void) {
     generated++;
     for (int i = 0; i < nvars; i++)
         if (!succ[i]) {
-            printf("Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: %s.\n\n",
-                   S(vars[i]->name));
+            printf("Error: Successor state is not completely specified by ");
+            if (nactions == 1) printf("the next-state action");
+            else printf("action %s of the next-state relation", S(actions[cur_action].name));
+            printf(". The following variable is not assigned: %s.\n\n", S(vars[i]->name));
             print_trace(expanding, succ, cur_action);
             violation = TPP_FAILURE_EVAL;
             return 1;
@@ -5353,10 +5405,10 @@ static int next_emit(void) {
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
     if (found < 0) {
         int depth = states[expanding].depth + 1;
-        int bad = check_list(invariants, ninvariants, st);
         int idx = add_state(st, fp, expanding, cur_action, depth);
-        if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (depth > max_depth) max_depth = depth;
+        int bad = check_list(invariants, ninvariants, st);
+        if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             print_trace(expanding, st, cur_action);
@@ -5705,6 +5757,17 @@ static int merge_level(int lo, int hi) {
     return 0;
 }
 
+/* The message of the error that stopped the search, then where it was. */
+static void print_error_text(void) {
+    printf("%s\n", error_message.s ? error_message.s : "");
+    if (error_expr && error_expr->mod) {
+        Buf b = {0};
+        loc_text(&b, error_expr);
+        printf("%s\n", b.s);
+        free(b.s);
+    }
+}
+
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
     if (dump_file) nworkers = 1;
@@ -5727,6 +5790,14 @@ static int search(void) {
             print_counts(nstates, 0);
             return status;
         }
+        if (error_check && error_check >= invariants && error_check < invariants + ninvariants) {
+            /* An invariant of a new state failed to evaluate. */
+            printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
+            print_error_text();
+            print_trace(expanding, error_state, cur_action);
+            print_counts(nstates - expanded - 1, 1);
+            return TPP_FAILURE_SAFETY_EVAL;
+        }
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
         if (status == TPP_FAILURE_EVAL && !error_module)
@@ -5736,14 +5807,7 @@ static int search(void) {
                    "The exception was a java.lang.RuntimeException\n: ");
         else
             printf("Error: ");
-        Expr *where = error_expr;
-        printf("%s\n", error_message.s ? error_message.s : "");
-        if (where && where->mod) {
-            Buf b = {0};
-            loc_text(&b, where);
-            printf("%s\n", b.s);
-            free(b.s);
-        }
+        print_error_text();
         Value **from = decode_state(expanding);
         print_trace(expanding, NULL, 0);
         replay_error(from);

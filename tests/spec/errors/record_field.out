@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 43 of module record_field failed.
+Attempted to select nonexistent field "b" from the record
+[a |-> 2]
+line 3, col 15 to line 3, col 42 of module record_field
+exit 10

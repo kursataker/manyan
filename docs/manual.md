@@ -93,6 +93,7 @@ output TLC produces when it reconstructs a trace.
 | 13 | a temporal or action property is violated |
 | 14 | an `Assert` failed |
 | 75 | an evaluation error |
+| 76 | an invariant cannot be evaluated in a state the search reached |
 | 150 | the spec does not parse or fails semantic checks |
 | 151 | the configuration is wrong |
 | 255 | another error |

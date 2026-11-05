@@ -19,7 +19,7 @@ TLA_SHA256 = 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 
-.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle bench install clean
 
 all: tpp
 
@@ -50,10 +50,22 @@ $(TLA_JAR):
 	echo "$(TLA_SHA256)  $@.tmp" | shasum -a 256 -c -
 	mv $@.tmp $@
 
-sanitize:
+$(OBJDIR)/tpp-sanitize: tpp.c tpp.h
 	mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all tpp.c $(LDLIBS) -o $(OBJDIR)/tpp-sanitize
+	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all tpp.c $(LDLIBS) -o $@
+
+sanitize: $(OBJDIR)/tpp-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
+
+# Mutated models must not crash the sanitized build; random expressions
+# must print as TLC prints them. RUNS and SEED choose how many and which.
+RUNS ?= 1000
+SEED ?= 1
+fuzz: $(OBJDIR)/tpp-sanitize
+	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/tpp-sanitize --runs $(RUNS) --seed $(SEED)
+
+fuzz-oracle: tpp $(TLA_JAR)
+	python3 tests/fuzz.py diff ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
 bench: tpp $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"

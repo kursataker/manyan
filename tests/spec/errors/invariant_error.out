@@ -1,0 +1,16 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating invariant Inv failed.
+The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 6, col 9 to line 6, col 27 of module invariant_error>
+x = 1
+
+State 3: <Next line 6, col 9 to line 6, col 27 of module invariant_error>
+x = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 76

@@ -555,8 +555,10 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | action property | `Error: Action property P is violated.` | 13 |
 | temporal property | `Error: Temporal properties were violated.` | 13 |
 | `Assert` | `Error: The first argument of Assert evaluated to FALSE; the second argument was:` | 14 |
-| successor not specified | `Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: v.` | 75 |
+| successor not specified | `Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: v.`; with several actions, `by action A of the next-state relation` | 75 |
 | invariant not Boolean | `Error: TLC expected a boolean value, but did not find one. ...` | 75 |
+| error evaluating an invariant in an initial state | the evaluation message, then `While working on the initial state:` and the state | 75 |
+| error evaluating an invariant in a new state | `Error: Evaluating invariant Inv failed.`, the evaluation message, and the trace to the new state | 76 |
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |
@@ -571,6 +573,10 @@ or as the first line of an action error:
 | `0 ^ 0` | `0^0 is undefined.` |
 | result outside 32 bits | `Overflow when computing a+b` (the operator and operands) |
 | `f[a]` outside `DOMAIN f` | `Attempted to apply function:` / `f` / `to argument a, which is not in the domain of the function.` |
+| `t[i]` for a tuple `t` | `Attempted to apply tuple` / `t` / `to integer i which is out of domain.` |
+| `r["f"]` for a record `r` | `Attempted to apply the record` / `r` / `to nonexistent record field f.` |
+| `r.f` for a record `r` | `Attempted to select nonexistent field "f" from the record` / `r` / location |
+| `f[a]` for `f` made by `[x \in S \|-> e]`, not yet in a state or a constant | `In applying the function` / `f,` / `the first argument is:` / `a` / `which is not in its domain.` |
 | `CHOOSE` with no witness | `Attempted to compute the value of an expression of form` / `CHOOSE x \in S: P, but no element of S satisfied P.` |
 | `CASE` with no true guard | `Attempted to evaluate a CASE with no conditions true.` |
 | `1 = "a"` | `Attempted to check equality of integer 1 with non-integer:` / `"a"` |

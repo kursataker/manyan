@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating invariant Inv failed.
+Attempted to select nonexistent field "b" from the record
+[a |-> 2]
+line 6, col 19 to line 6, col 21 of module record_state
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+r = [a |-> 1]
+
+State 2: <Next line 5, col 9 to line 5, col 31 of module record_state>
+r = [a |-> 2]
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 76

@@ -1,0 +1,9 @@
+Error: Attempted to apply function:
+<<1, 2>>
+to argument 3, which is not in the domain of the function.
+While working on the initial state:
+/\ f = <<1, 2>>
+/\ r = [a |-> 1]
+
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

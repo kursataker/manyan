@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 3, col 8 to line 3, col 29 of module apply_record failed.
+Attempted to apply the record
+[a |-> 1]
+to nonexistent record field b.
+exit 10

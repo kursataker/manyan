@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 50 of module apply_constructed failed.
+In applying the function
+<<1, 2>>,
+the first argument is:
+3
+which is not in its domain.
+exit 10
