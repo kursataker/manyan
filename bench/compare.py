@@ -3,9 +3,10 @@
 usage: compare.py ENGINE --tlc "TLC CMD" [--runs N] [--only SUBSTRING]
 
 Each bench/NAME.tla holds a module and, after it, its configuration, as in
-tests/spec. Each engine runs with one worker and with one per core; every
-run must print what TLC prints with one worker. The time is the best
-wall-clock time of N runs.
+tests/spec. Each engine runs with one worker and with one per core; each
+tpp run must print what TLC prints with one worker (TLC's own parallel
+runs may not: their search order, so their depth, varies). The time is
+the best wall-clock time of N runs.
 """
 import argparse
 import os
@@ -54,11 +55,11 @@ def main():
             continue
         tlc = args.tlc.split() + ["-metadir", tempfile.mkdtemp(prefix="tpp-meta-"), "-workers"]
         tlc1, reference = measure(tlc + ["1"], path, args.runs)
-        tlcn, tlcn_out = measure(tlc + [str(cores)], path, args.runs)
+        tlcn, _ = measure(tlc + [str(cores)], path, args.runs)
         tpp1, tpp1_out = measure([engine], path, args.runs)
         tppn, tppn_out = measure([engine, "-workers", str(cores)], path, args.runs)
         counts = COUNTS.search(reference)
-        same = tlcn_out == tpp1_out == tppn_out == reference
+        same = tpp1_out == tppn_out == reference
         failed |= not same
         distinct = counts.group(2) if counts else "?"
         rows.append(f"| {path.stem} | {distinct} | {tlc1:.2f} | {tpp1:.2f} | {tlc1 / tpp1:.1f}x "

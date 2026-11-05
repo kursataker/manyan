@@ -2,7 +2,7 @@
 
 TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
 the same specifications and model configurations as TLC and produces same
-outcome, 4.7 to 27.2 times faster with one worker (`make release`).
+outcome, 1.1 to 28.0 times faster with one worker (`make release`).
 
 ```
 $ tpp -workers auto MySpec
@@ -41,11 +41,16 @@ report as TLC with one worker.
 
 | spec | distinct states | TLC | tpp | speedup | TLC (8) | tpp (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| closure | 65536 | 2.35 | 0.50 | 4.7x | 1.28 | 0.14 | 9.2x |
-| counters | 823543 | 4.03 | 0.76 | 5.3x | 3.48 | 0.25 | 13.7x |
-| log | 31501 | 1.03 | 0.05 | 21.5x | 0.95 | 0.03 | 29.1x |
-| mutex | 11365 | 0.76 | 0.03 | 27.2x | 0.73 | 0.03 | 26.9x |
-| queue | 183680 | 1.34 | 0.17 | 8.0x | 1.25 | 0.07 | 17.6x |
+| closure | 65536 | 2.27 | 0.49 | 4.7x | 1.27 | 0.13 | 9.6x |
+| counters | 823543 | 3.89 | 0.75 | 5.2x | 3.43 | 0.24 | 14.3x |
+| liveness | 38880 | 4.63 | 0.37 | 12.6x | 3.17 | 0.37 | 8.6x |
+| log | 31501 | 1.03 | 0.05 | 22.5x | 0.97 | 0.03 | 31.3x |
+| mutex | 11365 | 0.77 | 0.03 | 28.0x | 0.74 | 0.02 | 30.4x |
+| partition | 21147 | 1.22 | 0.22 | 5.6x | 1.06 | 0.07 | 14.7x |
+| queue | 183680 | 1.29 | 0.16 | 7.8x | 1.28 | 0.07 | 18.6x |
+| recursion | 78125 | 1.54 | 0.24 | 6.5x | 1.22 | 0.07 | 17.2x |
+| refinement | 30618 | 0.99 | 0.29 | 3.5x | 1.04 | 0.28 | 3.8x |
+| symmetry | 21123 | 1.44 | 1.35 | 1.1x | 1.08 | 0.31 | 3.5x |
 
 `make bench` reproduces these numbers, with the `make release` build, in [docs/benchmark.md](docs/benchmark.md);
 [docs/optimizations.md](docs/optimizations.md) records how they were reached.
