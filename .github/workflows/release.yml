@@ -106,6 +106,10 @@ jobs:
           dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
           mkdir $dir && cp tpp.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md LICENSE $dir
           zip -qr $dir.zip $dir
+      - shell: pwsh
+        run: |
+          .\tpp-${{ needs.version.outputs.version }}-windows-x86_64\tpp.exe -version
+          if ($LASTEXITCODE) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -130,13 +134,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows
+      - run: unzip -q tpp-${{ needs.version.outputs.version }}-windows-x86_64.zip
+      # As it ships, from Windows; then the suite in Cygwin, whose own dll
+      # it must use there, as two Cygwin dlls in one session conflict.
+      - shell: pwsh
+        run: |
+          .\tpp-${{ needs.version.outputs.version }}-windows-x86_64\tpp.exe -version
+          if ($LASTEXITCODE) { exit 1 }
       - run: |
-          dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
-          unzip -q $dir.zip
-          ls -l $dir
-          "$PWD/$dir/tpp.exe" -version
-          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe" --strict --verbose
-          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe -workers 4" --strict --verbose
+          mkdir solo && cp tpp-${{ needs.version.outputs.version }}-windows-x86_64/tpp.exe solo/
+          python3 tests/spec_runner.py "$PWD/solo/tpp.exe" --strict --verbose
+          python3 tests/spec_runner.py "$PWD/solo/tpp.exe -workers 4" --strict --verbose
 
   publish:
     if: github.ref_type == 'tag'

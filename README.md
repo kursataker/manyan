@@ -2,7 +2,7 @@
 
 TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
 the same specifications and model configurations as TLC and produces same
-outcome, 4.7 to 28.7 times faster with one worker (`make release`).
+outcome, 4.7 to 27.2 times faster with one worker (`make release`).
 
 ```
 $ tpp -workers auto MySpec
@@ -41,11 +41,11 @@ report as TLC with one worker.
 
 | spec | distinct states | TLC | tpp | speedup | TLC (8) | tpp (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| closure | 65536 | 2.29 | 0.49 | 4.7x | 1.28 | 0.12 | 10.4x |
-| counters | 823543 | 3.86 | 0.73 | 5.3x | 3.30 | 0.23 | 14.3x |
-| log | 31501 | 1.01 | 0.05 | 22.0x | 0.96 | 0.03 | 34.1x |
-| mutex | 11365 | 0.77 | 0.03 | 28.7x | 0.76 | 0.02 | 30.7x |
-| queue | 183680 | 1.28 | 0.16 | 8.0x | 1.21 | 0.07 | 18.3x |
+| closure | 65536 | 2.35 | 0.50 | 4.7x | 1.28 | 0.14 | 9.2x |
+| counters | 823543 | 4.03 | 0.76 | 5.3x | 3.48 | 0.25 | 13.7x |
+| log | 31501 | 1.03 | 0.05 | 21.5x | 0.95 | 0.03 | 29.1x |
+| mutex | 11365 | 0.76 | 0.03 | 27.2x | 0.73 | 0.03 | 26.9x |
+| queue | 183680 | 1.34 | 0.17 | 8.0x | 1.25 | 0.07 | 17.6x |
 
 `make bench` reproduces these numbers, with the `make release` build, in [docs/benchmark.md](docs/benchmark.md);
 [docs/optimizations.md](docs/optimizations.md) records how they were reached.

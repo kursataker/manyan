@@ -32,4 +32,5 @@ Known differences from TLC, found by the fuzzers:
 
 Binaries: macOS (arm64, x86_64), Linux (x86_64, arm64; static), Windows
 (x86_64, built with Cygwin, `cygwin1.dll` beside `tpp.exe`; it runs on
-Windows on Arm too, emulated, as Cygwin has no arm64 port).
+Windows on Arm too, emulated, as Cygwin has no arm64 port). In a Cygwin
+shell, delete the bundled `cygwin1.dll`: two in one session conflict.
