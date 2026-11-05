@@ -1,0 +1,5358 @@
+/* tpp: a TLA+ model checker, with TLC as its oracle.
+
+   The language and the results it must produce are defined by
+   docs/standards/tla2.md; section numbers below (§) refer to it.
+
+   A run reads the root module and the modules it uses (lexer, parser),
+   resolves names (resolver), binds the constants from the configuration,
+   and explores the state graph breadth first (checker), evaluating
+   expressions (evaluator) and enumerating the states an initial predicate
+   or an action allows (generator). */
+#include "tpp.h"
+
+#include <ctype.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct Value Value;
+typedef struct Expr Expr;
+typedef struct Def Def;
+typedef struct Module Module;
+typedef struct Env Env;
+typedef struct Inst Inst;
+
+/* ---------------------------------------------------------------- memory */
+
+/* Values and expressions live in arenas. The permanent arena holds the
+   modules and everything computed before the search; the scratch arena
+   holds what the search computes for one state and is reset after it. */
+typedef struct Chunk { struct Chunk *next; size_t used, size; char data[]; } Chunk;
+typedef struct { Chunk *head; } Arena;
+
+static Arena perm_arena, scratch_arena;
+static Arena *arena = &perm_arena;
+
+static void *xmalloc(size_t n) {
+    void *p = malloc(n ? n : 1);
+    if (!p) { fputs("tpp: out of memory\n", stderr); exit(TPP_ERROR); }
+    return p;
+}
+
+static void *xrealloc(void *p, size_t n) {
+    p = realloc(p, n ? n : 1);
+    if (!p) { fputs("tpp: out of memory\n", stderr); exit(TPP_ERROR); }
+    return p;
+}
+
+static void *alloc(size_t n) {
+    n = (n + 15) & ~(size_t)15;
+    Chunk *c = arena->head;
+    if (!c || c->used + n > c->size) {
+        size_t size = n > 1 << 20 ? n : 1 << 20;
+        if (c && !c->next) {
+            /* reuse nothing: chunks are only freed by arena_reset */
+        }
+        Chunk *fresh = xmalloc(sizeof(Chunk) + size);
+        fresh->next = c; fresh->used = 0; fresh->size = size;
+        arena->head = c = fresh;
+    }
+    void *p = c->data + c->used;
+    c->used += n;
+    memset(p, 0, n);
+    return p;
+}
+
+#define NEW(T) ((T *)alloc(sizeof(T)))
+#define NEWN(T, n) ((T *)alloc(sizeof(T) * (size_t)(n)))
+
+static void arena_reset(Arena *a) {
+    Chunk *c = a->head;
+    while (c && c->next) { Chunk *next = c->next; free(c); c = next; }
+    if (c) c->used = 0;
+    a->head = c;
+}
+
+/* A growable byte buffer. */
+typedef struct { char *s; size_t n, cap; } Buf;
+
+static void buf_add(Buf *b, const char *s, size_t n) {
+    if (b->n + n + 1 > b->cap) {
+        b->cap = (b->n + n + 1) * 2;
+        b->s = xrealloc(b->s, b->cap);
+    }
+    memcpy(b->s + b->n, s, n);
+    b->n += n;
+    b->s[b->n] = 0;
+}
+
+static void buf_puts(Buf *b, const char *s) { buf_add(b, s, strlen(s)); }
+
+static void buf_printf(Buf *b, const char *fmt, ...) {
+    char small[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(small, sizeof small, fmt, ap);
+    va_end(ap);
+    if (n < (int)sizeof small) { buf_add(b, small, (size_t)n); return; }
+    char *big = xmalloc((size_t)n + 1);
+    va_start(ap, fmt);
+    vsnprintf(big, (size_t)n + 1, fmt, ap);
+    va_end(ap);
+    buf_add(b, big, (size_t)n);
+    free(big);
+}
+
+static char *buf_take(Buf *b) {
+    char *s = alloc(b->n + 1);
+    if (b->n) memcpy(s, b->s, b->n);
+    free(b->s);
+    b->s = NULL; b->n = b->cap = 0;
+    return s;
+}
+
+/* ---------------------------------------------------------------- strings */
+
+/* Every identifier and string is interned; strings compare by the order in
+   which they were first interned (§7.5). */
+typedef struct { char *s; int len; } Str;
+
+static Str *strs;
+static int nstrs, capstrs;
+static int *str_table;   /* open addressing: index + 1, 0 empty */
+static int str_table_size;
+
+static uint64_t hash_bytes(const void *p, size_t n, uint64_t h) {
+    const unsigned char *s = p;
+    for (size_t i = 0; i < n; i++) { h ^= s[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+static int intern_n(const char *s, int len) {
+    if (nstrs * 2 >= str_table_size) {
+        int size = str_table_size ? str_table_size * 2 : 1024;
+        int *table = calloc((size_t)size, sizeof(int));
+        for (int i = 0; i < nstrs; i++) {
+            uint64_t h = hash_bytes(strs[i].s, (size_t)strs[i].len, 0xcbf29ce484222325ULL);
+            int j = (int)(h & (uint64_t)(size - 1));
+            while (table[j]) j = (j + 1) & (size - 1);
+            table[j] = i + 1;
+        }
+        free(str_table);
+        str_table = table;
+        str_table_size = size;
+    }
+    uint64_t h = hash_bytes(s, (size_t)len, 0xcbf29ce484222325ULL);
+    int j = (int)(h & (uint64_t)(str_table_size - 1));
+    while (str_table[j]) {
+        Str *t = &strs[str_table[j] - 1];
+        if (t->len == len && memcmp(t->s, s, (size_t)len) == 0) return str_table[j] - 1;
+        j = (j + 1) & (str_table_size - 1);
+    }
+    if (nstrs == capstrs) {
+        capstrs = capstrs ? capstrs * 2 : 1024;
+        strs = xrealloc(strs, sizeof(Str) * (size_t)capstrs);
+    }
+    char *copy = xmalloc((size_t)len + 1);
+    memcpy(copy, s, (size_t)len);
+    copy[len] = 0;
+    strs[nstrs].s = copy;
+    strs[nstrs].len = len;
+    str_table[j] = nstrs + 1;
+    return nstrs++;
+}
+
+static int intern(const char *s) { return intern_n(s, (int)strlen(s)); }
+#define S(id) (strs[id].s)
+
+/* Names TLC interns before it reads a module, in its order. */
+static const char *builtin_names[] = {
+    "'", "*", "-", "+", "=", "\\lnot", "~", "\\neg", "\\land", "/\\", "\\lor", "\\/", "~>", "=>",
+    "[]", "<>", "ENABLED", "UNCHANGED", "SUBSET", "UNION", "DOMAIN", "\\cdot", "\\equiv", "<=>",
+    "-+->", "/=", "#", "\\subseteq", "\\in", "\\notin", "\\times", "\\", "\\intersect", "\\cap",
+    "\\union", "\\cup", "...", "..", "$", "@@", ":>", "\\o", "\\circ", "STRING", "FALSE", "TRUE",
+    "BOOLEAN", "$AngleAct", "$BoundedChoose", "$BoundedExists", "$BoundedForall", "$CartesianProd",
+    "$Case", "$ConjList", "$DisjList", "$Except", "$FcnApply", "$FcnConstructor", "$IfThenElse",
+    "$NonRecursiveFcnSpec", "$Pair", "$RcdConstructor", "$RcdSelect", "$RecursiveFcnSpec", "$Seq",
+    "$SetEnumerate", "$SetOfAll", "$SetOfFcns", "$SetOfRcds", "$SF", "$SquareAct", "$SubsetOf",
+    "$TemporalExists", "$TemporalForall", "$TemporalWhile", "$Tuple", "$UnboundedChoose",
+    "$UnboundedExists", "$UnboundedForall", "$WF", "$Nop", "$Qed", "$Pfcase", "$Have", "$Take",
+    "$Pick", "$Witness", "$Suffices", "@", "VARIABLE", "<<", "SF_", "WF_", "LAMBDA", ">>", NULL};
+
+/* ---------------------------------------------------------------- errors */
+
+/* An error unwinds to the innermost handler with its message. */
+typedef struct Expr Expr;
+static jmp_buf *handler;
+static Buf error_message;
+static Expr *error_expr;   /* the expression an evaluation error names, if any */
+static int error_status;   /* the exit status the error implies */
+
+static void error_reset(void) {
+    error_message.n = 0;
+    if (error_message.s) error_message.s[0] = 0;
+    error_expr = NULL;
+    error_status = TPP_ERROR;
+}
+
+static _Noreturn void raise_error(void) {
+    if (!handler) {
+        fputs(error_message.s ? error_message.s : "error", stdout);
+        exit(TPP_ERROR);
+    }
+    longjmp(*handler, 1);
+}
+
+static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
+    char small[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(small, sizeof small, fmt, ap);
+    va_end(ap);
+    error_reset();
+    buf_puts(&error_message, small);
+    error_expr = e;
+    error_status = TPP_ERROR;
+    raise_error();
+}
+
+#define fail(...) fail_at(NULL, __VA_ARGS__)
+
+/* ---------------------------------------------------------------- values */
+
+/* Kinds, in the order values of different kinds sort (§7.4). */
+enum {
+    V_BOOL, V_INT, V_STR, V_MODEL, V_TUPLE, V_FCN, V_SET, V_INTERVAL,
+    V_LAZY,     /* a set kept as its definition: see LazyKind */
+    V_OPER      /* an operator passed as an argument; never a TLA+ value */
+};
+
+enum LazyKind {
+    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_MAP, L_UNION, L_TIMES
+};
+
+struct Value {
+    unsigned char kind;
+    unsigned char lazy;      /* LazyKind of a V_LAZY */
+    unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
+    int n;                   /* elements of a set, tuple, or function */
+    union {
+        int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
+        struct { Value **elems; } set;               /* V_SET, sorted, distinct */
+        struct { Value **keys, **vals; } fcn;        /* V_TUPLE has no keys */
+        struct { int64_t lo, hi; } range;            /* V_INTERVAL */
+        struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; void *pattern; } l;
+        struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
+    } u;
+};
+
+static Value value_true = {V_BOOL, 0, 0, 0, {.i = 1}};
+static Value value_false = {V_BOOL, 0, 0, 0, {.i = 0}};
+#define TRUEV (&value_true)
+#define FALSEV (&value_false)
+#define BOOLV(b) ((b) ? TRUEV : FALSEV)
+
+static Value *small_ints[1024];
+
+static Value *mk_int(int64_t i) {
+    if (i >= -1 && i < 1023 && small_ints[i + 1]) return small_ints[i + 1];
+    Value *v = NEW(Value);
+    v->kind = V_INT;
+    v->u.i = i;
+    return v;
+}
+
+static Value *mk_str(int id) {
+    Value *v = NEW(Value);
+    v->kind = V_STR;
+    v->u.i = id;
+    return v;
+}
+
+static Value *mk_model(int id) {
+    Value *v = NEW(Value);
+    v->kind = V_MODEL;
+    v->u.i = id;
+    return v;
+}
+
+static Value *mk_tuple(int n) {
+    Value *v = NEW(Value);
+    v->kind = V_TUPLE;
+    v->n = n;
+    v->u.fcn.vals = NEWN(Value *, n);
+    return v;
+}
+
+static Value *mk_fcn(int n) {
+    Value *v = NEW(Value);
+    v->kind = V_FCN;
+    v->n = n;
+    v->u.fcn.keys = NEWN(Value *, n);
+    v->u.fcn.vals = NEWN(Value *, n);
+    return v;
+}
+
+static Value *mk_interval(int64_t lo, int64_t hi) {
+    Value *v = NEW(Value);
+    v->kind = V_INTERVAL;
+    v->u.range.lo = lo;
+    v->u.range.hi = hi;
+    v->n = hi >= lo ? (int)(hi - lo + 1) : 0;
+    return v;
+}
+
+static Value *mk_lazy(int kind) {
+    Value *v = NEW(Value);
+    v->kind = V_LAZY;
+    v->lazy = (unsigned char)kind;
+    return v;
+}
+
+static const char *kind_name(Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return "boolean";
+    case V_INT: return "integer";
+    case V_STR: return "string";
+    case V_MODEL: return "model value";
+    case V_TUPLE: case V_FCN: return "function";
+    default: return "set";
+    }
+}
+
+static int is_set(Value *v) { return v->kind == V_SET || v->kind == V_INTERVAL || v->kind == V_LAZY; }
+static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
+
+/* ---------------------------------------------------------------- printing */
+
+static void print_value(Buf *b, Value *v);
+static Value *normalize_set(Value *v);
+
+/* A function whose domain is 1..n prints as a tuple. */
+static int fcn_is_tuple(Value *f) {
+    if (f->kind == V_TUPLE) return 1;
+    for (int i = 0; i < f->n; i++)
+        if (f->u.fcn.keys[i]->kind != V_INT || f->u.fcn.keys[i]->u.i != i + 1) return 0;
+    return f->n > 0 || !f->empty_fcn;
+}
+
+static int fcn_is_record(Value *f) {
+    if (f->kind != V_FCN || f->n == 0) return 0;
+    for (int i = 0; i < f->n; i++)
+        if (f->u.fcn.keys[i]->kind != V_STR) return 0;
+    return 1;
+}
+
+static void print_string(Buf *b, int id) {
+    buf_puts(b, "\"");
+    for (const char *s = S(id); *s; s++) {
+        switch (*s) {
+        case '"': buf_puts(b, "\\\""); break;
+        case '\\': buf_puts(b, "\\\\"); break;
+        case '\n': buf_puts(b, "\\n"); break;
+        case '\t': buf_puts(b, "\\t"); break;
+        case '\r': buf_puts(b, "\\r"); break;
+        case '\f': buf_puts(b, "\\f"); break;
+        default: buf_add(b, s, 1);
+        }
+    }
+    buf_puts(b, "\"");
+}
+
+static void print_value(Buf *b, Value *v) {
+    switch (v->kind) {
+    case V_BOOL: buf_puts(b, v->u.i ? "TRUE" : "FALSE"); return;
+    case V_INT: buf_printf(b, "%lld", (long long)v->u.i); return;
+    case V_STR: print_string(b, (int)v->u.i); return;
+    case V_MODEL: buf_puts(b, S(v->u.i)); return;
+    case V_INTERVAL:
+        if (v->n == 0) buf_puts(b, "{}");
+        else buf_printf(b, "%lld..%lld", (long long)v->u.range.lo, (long long)v->u.range.hi);
+        return;
+    case V_LAZY:
+        if (v->lazy == L_NAT) { buf_puts(b, "Nat"); return; }
+        if (v->lazy == L_INT) { buf_puts(b, "Int"); return; }
+        if (v->lazy == L_STRING) { buf_puts(b, "STRING"); return; }
+        if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
+        print_value(b, normalize_set(v));
+        return;
+    case V_SET:
+        buf_puts(b, "{");
+        for (int i = 0; i < v->n; i++) {
+            if (i) buf_puts(b, ", ");
+            print_value(b, v->u.set.elems[i]);
+        }
+        buf_puts(b, "}");
+        return;
+    case V_TUPLE: case V_FCN:
+        if (v->n == 0) { buf_puts(b, v->empty_fcn ? "<< >>" : "<<>>"); return; }
+        if (fcn_is_tuple(v)) {
+            buf_puts(b, "<<");
+            for (int i = 0; i < v->n; i++) {
+                if (i) buf_puts(b, ", ");
+                print_value(b, v->u.fcn.vals[i]);
+            }
+            buf_puts(b, ">>");
+        } else if (fcn_is_record(v)) {
+            buf_puts(b, "[");
+            for (int i = 0; i < v->n; i++) {
+                if (i) buf_puts(b, ", ");
+                buf_printf(b, "%s |-> ", S(v->u.fcn.keys[i]->u.i));
+                print_value(b, v->u.fcn.vals[i]);
+            }
+            buf_puts(b, "]");
+        } else {
+            buf_puts(b, "(");
+            for (int i = 0; i < v->n; i++) {
+                if (i) buf_puts(b, " @@ ");
+                print_value(b, v->u.fcn.keys[i]);
+                buf_puts(b, " :> ");
+                print_value(b, v->u.fcn.vals[i]);
+            }
+            buf_puts(b, ")");
+        }
+        return;
+    case V_OPER: buf_puts(b, "<operator>"); return;
+    }
+}
+
+static char *value_str(Value *v) {
+    Buf b = {0};
+    print_value(&b, v);
+    return buf_take(&b);
+}
+
+/* TLC's pretty printer (tlc2.pprint.Format) breaks a value longer than
+   the line width, element by element (§7.6). */
+static int pp_plain(Value *v) {
+    if (v->kind == V_INTERVAL || v->kind == V_LAZY) return 1;
+    if (v->kind == V_SET)
+        for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
+    if (is_fcn(v))
+        for (int i = 0; i < v->n; i++)
+            if (pp_plain(v->u.fcn.vals[i]) || (v->kind == V_FCN && pp_plain(v->u.fcn.keys[i]))) return 1;
+    return 0;
+}
+
+static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad);
+
+static void pp_values(Buf *b, Value **vals, int n, int width, int trailer, const char *pad) {
+    for (int i = 0; i < n; i++) {
+        if (i + 1 < n) {
+            pp_format(b, vals[i], width, 1, pad);
+            buf_puts(b, ",\n");
+            buf_puts(b, pad);
+        } else {
+            pp_format(b, vals[i], width, trailer, pad);
+        }
+    }
+}
+
+static char *pad_more(const char *pad, int n) {
+    size_t len = strlen(pad);
+    char *s = alloc(len + (size_t)n + 1);
+    memcpy(s, pad, len);
+    memset(s + len, ' ', (size_t)n);
+    return s;
+}
+
+static void pp_pairs(Buf *b, Value *f, int record, int width, int trailer, const char *pad) {
+    const char *sep = record ? "," : " @@";
+    const char *div = record ? " |->" : " :>";
+    int seplen = (int)strlen(sep), divlen = (int)strlen(div), divpad = 4;
+    char *inner = pad_more(pad, divpad);
+    for (int i = 0; i < f->n; i++) {
+        Value *key = f->u.fcn.keys[i], *val = f->u.fcn.vals[i];
+        char *ks = record ? S(key->u.i) : value_str(key);
+        char *vs = value_str(val);
+        int kl = (int)strlen(ks), vl = (int)strlen(vs);
+        int last = i + 1 == f->n;
+        int tail = last ? trailer : 0;
+        if (kl + divlen + 1 + vl + (last ? 0 : seplen) <= width - tail) {
+            buf_printf(b, "%s%s %s", ks, div, vs);
+        } else {
+            if (kl + divlen <= width || record) buf_printf(b, "%s%s", ks, div);
+            else { pp_format(b, key, width, trailer + divlen, pad); buf_puts(b, div); }
+            buf_printf(b, "\n%s    ", pad);
+            pp_format(b, val, width - divpad, last ? trailer : seplen, inner);
+        }
+        if (!last) { buf_printf(b, "%s\n%s", sep, pad); }
+    }
+}
+
+static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad) {
+    char *flat = value_str(v);
+    if ((int)strlen(flat) <= width - trailer || pp_plain(v) || v->n == 0) { buf_puts(b, flat); return; }
+    if (v->kind == V_SET) {
+        buf_puts(b, "{ ");
+        pp_values(b, v->u.set.elems, v->n, width - 2, trailer + 2, pad_more(pad, 2));
+        buf_puts(b, " }");
+    } else if (is_fcn(v) && fcn_is_tuple(v)) {
+        buf_puts(b, "<< ");
+        pp_values(b, v->u.fcn.vals, v->n, width - 3, trailer + 3, pad_more(pad, 3));
+        buf_puts(b, " >>");
+    } else if (is_fcn(v)) {
+        int record = fcn_is_record(v);
+        buf_puts(b, record ? "[ " : "( ");
+        pp_pairs(b, v, record, width - 2, trailer + 2, pad_more(pad, 2));
+        buf_puts(b, record ? " ]" : " )");
+    } else {
+        buf_puts(b, flat);
+    }
+}
+
+static char *pretty(Value *v) {
+    Buf b = {0};
+    pp_format(&b, v, 80, 0, "");
+    return buf_take(&b);
+}
+
+/* ---------------------------------------------------------------- environments */
+
+/* A context is where an expression is evaluated: the bindings of bound
+   names and operator parameters, and the module instance (§4.3). */
+typedef struct { Env *env; Inst *inst; } Ctx;
+
+/* A binding. An operator's argument is bound unevaluated, as `e` in its
+   caller's context, and evaluated where it is used (§5.2). */
+struct Env {
+    Def *def;
+    Value *v;
+    Expr *e;
+    Env *ctx_env;
+    Inst *ctx_inst;
+    Env *next;
+    unsigned char perm;   /* allocated in the permanent arena */
+};
+
+/* An instance: the module instance definition and the context of the
+   instantiation, where the substitutions are evaluated. */
+struct Inst {
+    Def *def;
+    Env *env;
+    Inst *parent;
+};
+
+static Value *eval(Expr *e, Ctx c);
+static int eval_bool(Expr *e, Ctx c);
+static Value *filter_member_test(Value *s, Value *v);
+static Value *enumerate(Value *s);
+
+/* ---------------------------------------------------------------- comparison */
+
+static int vcmp(Value *a, Value *b);
+static int veq(Value *a, Value *b);
+
+static Value *fcn_key(Value *f, int i) { return f->kind == V_TUPLE ? mk_int(i + 1) : f->u.fcn.keys[i]; }
+
+static _Noreturn void compare_error(Value *a, Value *b) {
+    const char *k = kind_name(a);
+    if (is_fcn(a)) fail("Attempted to compare the function %s with the value:\n%s", pretty(a), pretty(b));
+    if (is_set(a)) fail("Attempted to compare the set %s with the value:\n%s", pretty(a), pretty(b));
+    fail("Attempted to compare %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
+}
+
+/* The standard order (§7.4). Model values come first; other values of
+   different kinds cannot be compared. */
+static int vcmp(Value *a, Value *b) {
+    if (a == b) return 0;
+    if (a->kind == V_MODEL || b->kind == V_MODEL) {
+        if (a->kind != b->kind) return a->kind == V_MODEL ? -1 : 1;
+        return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
+    }
+    if (is_fcn(a) && is_fcn(b)) {
+        if (a->n != b->n) return a->n < b->n ? -1 : 1;
+        for (int i = 0; i < a->n; i++) {
+            if (!(a->kind == V_TUPLE && b->kind == V_TUPLE)) {
+                int c = vcmp(fcn_key(a, i), fcn_key(b, i));
+                if (c) return c;
+            }
+            int c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+            if (c) return c;
+        }
+        return 0;
+    }
+    if (is_set(a) && is_set(b)) {
+        a = enumerate(a);
+        b = enumerate(b);
+        if (a->n != b->n) return a->n < b->n ? -1 : 1;
+        for (int i = 0; i < a->n; i++) {
+            int c = vcmp(a->u.set.elems[i], b->u.set.elems[i]);
+            if (c) return c;
+        }
+        return 0;
+    }
+    if (a->kind != b->kind || a->kind == V_OPER) compare_error(a, b);
+    return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
+}
+
+static _Noreturn void equality_error(Value *a, Value *b) {
+    const char *k = kind_name(a);
+    if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", pretty(a), pretty(b));
+    if (is_set(a)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(a), pretty(b));
+    fail("Attempted to check equality of %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
+}
+
+static int set_is_infinite(Value *s);
+
+static int veq(Value *a, Value *b) {
+    if (a == b) return 1;
+    if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
+    if (is_fcn(a) && is_fcn(b)) {
+        if (a->n != b->n) return 0;
+        for (int i = 0; i < a->n; i++) {
+            if (!(a->kind == V_TUPLE && b->kind == V_TUPLE) && !veq(fcn_key(a, i), fcn_key(b, i))) return 0;
+            if (!veq(a->u.fcn.vals[i], b->u.fcn.vals[i])) return 0;
+        }
+        return 1;
+    }
+    if (is_set(a) && is_set(b)) {
+        if (a->kind == V_INTERVAL && b->kind == V_INTERVAL)
+            return a->n == b->n && (a->n == 0 || a->u.range.lo == b->u.range.lo);
+        if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 1;
+        if (set_is_infinite(a) || set_is_infinite(b)) {
+            if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy == L_SEQ)
+                return veq(a->u.l.a, b->u.l.a);
+            fail("Attempted to check equality of the infinite set %s with %s", pretty(a), pretty(b));
+        }
+        a = enumerate(a);
+        b = enumerate(b);
+        if (a->n != b->n) return 0;
+        for (int i = 0; i < a->n; i++)
+            if (!veq(a->u.set.elems[i], b->u.set.elems[i])) return 0;
+        return 1;
+    }
+    if (a->kind != b->kind || a->kind == V_OPER) equality_error(a, b);
+    return a->u.i == b->u.i;
+}
+
+/* ---------------------------------------------------------------- sets */
+
+static Value *mk_set(int n) {
+    Value *v = NEW(Value);
+    v->kind = V_SET;
+    v->n = n;
+    v->u.set.elems = NEWN(Value *, n);
+    return v;
+}
+
+static int cmp_for_sort(const void *x, const void *y) { return vcmp(*(Value **)x, *(Value **)y); }
+
+/* Sorts the elements and removes duplicates. */
+static Value *set_normalize(Value *s) {
+    if (s->n > 1) {
+        qsort(s->u.set.elems, (size_t)s->n, sizeof(Value *), cmp_for_sort);
+        int k = 1;
+        for (int i = 1; i < s->n; i++)
+            if (vcmp(s->u.set.elems[k - 1], s->u.set.elems[i]) != 0) s->u.set.elems[k++] = s->u.set.elems[i];
+        s->n = k;
+    }
+    return s;
+}
+
+/* A list that builds a set. */
+typedef struct { Value **v; int n, cap; } List;
+
+static void list_add(List *l, Value *v) {
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 8;
+        Value **grown = NEWN(Value *, cap);
+        if (l->n) memcpy(grown, l->v, sizeof(Value *) * (size_t)l->n);
+        l->v = grown;
+        l->cap = cap;
+    }
+    l->v[l->n++] = v;
+}
+
+static Value *list_set(List *l) {
+    Value *s = mk_set(l->n);
+    if (l->n) memcpy(s->u.set.elems, l->v, sizeof(Value *) * (size_t)l->n);
+    return set_normalize(s);
+}
+
+static int set_is_infinite(Value *s) {
+    if (s->kind != V_LAZY) return 0;
+    switch (s->lazy) {
+    case L_NAT: case L_INT: case L_STRING: case L_SEQ: return 1;
+    case L_SUBSET: case L_FILTER: return set_is_infinite(s->u.l.a);
+    case L_FCNSET: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
+    case L_RCDSET: case L_TIMES:
+        for (int i = 0; i < s->n; i++) if (set_is_infinite(s->u.l.names[s->n + i])) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+static Value *mk_fcn_from(List *keys, List *vals);
+
+/* All functions from the elements of `dom` (sorted) to elements of `rng`,
+   in the standard order. */
+static Value *enumerate_functions(Value **dom, int nd, Value *rng, int as_record) {
+    rng = enumerate(rng);
+    int64_t total = 1;
+    for (int i = 0; i < nd; i++) {
+        total *= rng->n;
+        if (total > 100000000) fail("Attempted to enumerate a set of functions with too many elements.");
+    }
+    List out = {0};
+    int *idx = calloc((size_t)nd + 1, sizeof(int));
+    for (int64_t k = 0; k < total; k++) {
+        Value *f = mk_fcn(nd);
+        for (int i = 0; i < nd; i++) { f->u.fcn.keys[i] = dom[i]; f->u.fcn.vals[i] = rng->u.set.elems[idx[i]]; }
+        if (nd == 0) f->empty_fcn = 1;
+        (void)as_record;
+        list_add(&out, f);
+        for (int i = nd - 1; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
+    }
+    free(idx);
+    return list_set(&out);
+}
+
+/* The elements of a finite set, as a normalized V_SET. */
+static Value *enumerate(Value *s) {
+    if (s->kind == V_SET) return s;
+    if (s->kind == V_INTERVAL) {
+        Value *r = mk_set(s->n);
+        for (int i = 0; i < s->n; i++) r->u.set.elems[i] = mk_int(s->u.range.lo + i);
+        return r;
+    }
+    if (s->kind != V_LAZY) fail("Attempted to enumerate %s, which is not a set.", pretty(s));
+    switch (s->lazy) {
+    case L_SUBSET: {
+        Value *base = enumerate(s->u.l.a);
+        if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
+        List out = {0};
+        for (uint32_t m = 0; m < (1u << base->n); m++) {
+            Value *sub = mk_set(__builtin_popcount(m));
+            int k = 0;
+            for (int i = 0; i < base->n; i++) if (m & (1u << i)) sub->u.set.elems[k++] = base->u.set.elems[i];
+            list_add(&out, sub);
+        }
+        return list_set(&out);
+    }
+    case L_FCNSET: {
+        Value *dom = enumerate(s->u.l.a);
+        return enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, 0);
+    }
+    case L_RCDSET: case L_TIMES: {
+        int n = s->n;
+        Value **sets = NEWN(Value *, n);
+        int64_t total = 1;
+        for (int i = 0; i < n; i++) {
+            sets[i] = enumerate(s->u.l.names[n + i]);
+            total *= sets[i]->n;
+            if (total > 100000000) fail("Attempted to enumerate a set with too many elements.");
+        }
+        List out = {0};
+        int *idx = calloc((size_t)n + 1, sizeof(int));
+        for (int64_t k = 0; k < total; k++) {
+            Value *t;
+            if (s->lazy == L_TIMES) {
+                t = mk_tuple(n);
+                for (int i = 0; i < n; i++) t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]];
+            } else {
+                t = mk_fcn(n);
+                for (int i = 0; i < n; i++) { t->u.fcn.keys[i] = s->u.l.names[i]; t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]]; }
+            }
+            list_add(&out, t);
+            for (int i = n - 1; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
+        }
+        free(idx);
+        return list_set(&out);
+    }
+    case L_FILTER: {
+        if (set_is_infinite(s->u.l.a))
+            fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
+        Value *base = enumerate(s->u.l.a);
+        List out = {0};
+        for (int i = 0; i < base->n; i++)
+            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
+        return list_set(&out);
+    }
+    default:
+        fail("TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+    }
+}
+
+static Value *normalize_set(Value *v) { return enumerate(v); }
+
+static int set_member(Value *v, Value *s);
+
+static int all_members(Value *sub, Value *s) {
+    Value *e = enumerate(sub);
+    for (int i = 0; i < e->n; i++) if (!set_member(e->u.set.elems[i], s)) return 0;
+    return 1;
+}
+
+static int set_member(Value *v, Value *s) {
+    switch (s->kind) {
+    case V_SET: {
+        int lo = 0, hi = s->n - 1;
+        if (v->kind == V_MODEL || (s->n && s->u.set.elems[0]->kind == V_MODEL)) {
+            for (int i = 0; i < s->n; i++) if (veq(v, s->u.set.elems[i])) return 1;
+            return 0;
+        }
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            int c = vcmp(v, s->u.set.elems[mid]);
+            if (!c) return 1;
+            if (c < 0) hi = mid - 1; else lo = mid + 1;
+        }
+        return 0;
+    }
+    case V_INTERVAL:
+        if (v->kind != V_INT) {
+            if (v->kind == V_MODEL) return 0;
+            fail("Attempted to check if the value:\n%s\nis in the integer interval %s", pretty(v), pretty(s));
+        }
+        return v->u.i >= s->u.range.lo && v->u.i <= s->u.range.hi;
+    case V_LAZY:
+        switch (s->lazy) {
+        case L_NAT: return v->kind == V_INT && v->u.i >= 0;
+        case L_INT: return v->kind == V_INT;
+        case L_STRING: return v->kind == V_STR;
+        case L_SUBSET: return is_set(v) && all_members(v, s->u.l.a);
+        case L_SEQ:
+            if (!is_fcn(v) || !fcn_is_tuple(v)) return 0;
+            for (int i = 0; i < v->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.a)) return 0;
+            return 1;
+        case L_FCNSET: {
+            if (!is_fcn(v)) return 0;
+            Value *dom = enumerate(s->u.l.a);
+            if (dom->n != v->n) return 0;
+            for (int i = 0; i < v->n; i++) {
+                if (!veq(fcn_key(v, i), dom->u.set.elems[i])) return 0;
+                if (!set_member(v->u.fcn.vals[i], s->u.l.b)) return 0;
+            }
+            return 1;
+        }
+        case L_RCDSET: {
+            if (v->kind != V_FCN || v->n != s->n) return 0;
+            for (int i = 0; i < s->n; i++) {
+                if (!veq(v->u.fcn.keys[i], s->u.l.names[i])) return 0;
+                if (!set_member(v->u.fcn.vals[i], s->u.l.names[s->n + i])) return 0;
+            }
+            return 1;
+        }
+        case L_TIMES: {
+            if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != s->n) return 0;
+            for (int i = 0; i < s->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.names[s->n + i])) return 0;
+            return 1;
+        }
+        case L_FILTER:
+            return set_member(v, s->u.l.a) && filter_member_test(s, v) == TRUEV;
+        }
+        return 0;
+    default:
+        fail("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
+    }
+}
+
+static Value *set_union(Value *a, Value *b) {
+    a = enumerate(a); b = enumerate(b);
+    List l = {0};
+    for (int i = 0; i < a->n; i++) list_add(&l, a->u.set.elems[i]);
+    for (int i = 0; i < b->n; i++) list_add(&l, b->u.set.elems[i]);
+    return list_set(&l);
+}
+
+static Value *set_inter(Value *a, Value *b) {
+    a = enumerate(a);
+    List l = {0};
+    for (int i = 0; i < a->n; i++) if (set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
+    return list_set(&l);
+}
+
+static Value *set_minus(Value *a, Value *b) {
+    a = enumerate(a);
+    List l = {0};
+    for (int i = 0; i < a->n; i++) if (!set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
+    return list_set(&l);
+}
+
+/* ---------------------------------------------------------------- functions */
+
+/* Applies f to the argument a. */
+static Value *fcn_apply(Value *f, Value *a, Expr *where) {
+    if (f->kind == V_TUPLE) {
+        if (a->kind == V_INT && a->u.i >= 1 && a->u.i <= f->n) return f->u.fcn.vals[a->u.i - 1];
+    } else if (f->kind == V_FCN) {
+        int lo = 0, hi = f->n - 1;
+        if (a->kind == V_MODEL || (f->n && f->u.fcn.keys[0]->kind == V_MODEL)) {
+            for (int i = 0; i < f->n; i++) if (veq(a, f->u.fcn.keys[i])) return f->u.fcn.vals[i];
+        } else {
+            while (lo <= hi) {
+                int mid = (lo + hi) / 2;
+                int c = vcmp(a, f->u.fcn.keys[mid]);
+                if (!c) return f->u.fcn.vals[mid];
+                if (c < 0) hi = mid - 1; else lo = mid + 1;
+            }
+        }
+    } else {
+        fail_at(where, "A non-function (%s) was applied as a function.", pretty(f));
+    }
+    fail_at(where, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+            pretty(f), pretty(a));
+}
+
+static Value *fcn_domain(Value *f) {
+    if (f->kind == V_TUPLE) return mk_interval(1, f->n);
+    Value *s = mk_set(f->n);
+    for (int i = 0; i < f->n; i++) s->u.set.elems[i] = f->u.fcn.keys[i];
+    return s;
+}
+
+typedef struct { Value *k, *v; } Pair;
+
+static int cmp_pair(const void *x, const void *y) { return vcmp(((Pair *)x)->k, ((Pair *)y)->k); }
+
+/* A function from parallel lists of keys and values, sorted by key. */
+static Value *mk_fcn_from(List *keys, List *vals) {
+    int n = keys->n;
+    Pair *p = NEWN(Pair, n);
+    for (int i = 0; i < n; i++) { p[i].k = keys->v[i]; p[i].v = vals->v[i]; }
+    if (n > 1) qsort(p, (size_t)n, sizeof(Pair), cmp_pair);
+    Value *f = mk_fcn(n);
+    for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = p[i].k; f->u.fcn.vals[i] = p[i].v; }
+    if (n == 0) f->empty_fcn = 1;
+    return f;
+}
+
+/* A copy of f whose value at key is val; key must be in the domain. */
+static Value *fcn_update(Value *f, Value *key, Value *val, Expr *where) {
+    Value *g = NEW(Value);
+    *g = *f;
+    g->u.fcn.vals = NEWN(Value *, f->n);
+    memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
+    if (f->kind == V_TUPLE) {
+        if (key->kind == V_INT && key->u.i >= 1 && key->u.i <= f->n) { g->u.fcn.vals[key->u.i - 1] = val; return g; }
+    } else if (f->kind == V_FCN) {
+        for (int i = 0; i < f->n; i++)
+            if (veq(f->u.fcn.keys[i], key)) { g->u.fcn.vals[i] = val; return g; }
+    }
+    (void)where;
+    return f;
+}
+
+/* ---------------------------------------------------------------- syntax */
+
+enum { T_EOF, T_IDENT, T_NUM, T_STR, T_OP, T_KW, T_SEP, T_END };
+
+typedef struct {
+    int kind;
+    int id;              /* interned text of an identifier, numeral, operator, or keyword */
+    int64_t num;
+    const char *text;    /* a string literal's contents, unescaped */
+    int len;
+    int line, col, eline, ecol;
+} Tok;
+
+/* Expression kinds. The parser produces the X_ kinds; the resolver turns
+   names and operator applications into the kinds after X_RESOLVED. */
+enum {
+    X_NUM, X_STR, X_BOOL, X_NAME, X_OP, X_AT, X_LAMBDA, X_OPREF,
+    X_SETENUM, X_TUPLE, X_RECORD, X_RCDSET, X_FCNSET, X_FCN, X_APPLY, X_DOT, X_EXCEPT,
+    X_FILTER, X_MAP, X_FORALL, X_EXISTS, X_CHOOSE, X_IF, X_CASE, X_LET,
+    X_SQACT, X_ANGLEACT, X_WF, X_SF, X_TFORALL, X_TEXISTS,
+    X_RESOLVED,
+    /* resolved */
+    K_BOUND,     /* a bound name or operator parameter: def */
+    K_DECL,      /* a constant or variable: def */
+    K_CALL,      /* a definition applied to args: def */
+    K_PARAMCALL, /* an operator parameter applied to args: def */
+    K_INSTCALL,  /* a definition reached through instances: path in defs, final def */
+    K_BOOLEAN, K_STRINGSET,
+    K_AND, K_OR, K_NOT, K_IMPLIES, K_EQUIV, K_EQ, K_NEQ, K_IN, K_NOTIN,
+    K_CUP, K_CAP, K_SETMINUS, K_SUBSETEQ, K_SUBSET, K_UNION, K_DOMAIN,
+    K_PRIME, K_UNCHANGED, K_ENABLED, K_ALWAYS, K_EVENTUALLY, K_LEADSTO, K_TIMES, K_CDOT, K_WHILE
+};
+
+typedef struct {
+    int n;
+    int *names;
+    Def **defs;     /* filled by the resolver */
+    int tuple;      /* <<a, b>> \in S */
+    Expr *set;      /* NULL for an unbounded binding */
+} Bound;
+
+typedef struct { int name; Expr **args; int n; } Seg;
+
+typedef struct { int n; Expr **keys; int *fields; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f */
+
+struct Expr {
+    short kind;
+    int op;               /* operator or name; field of X_DOT */
+    int n;
+    Expr **args;
+    Bound *bounds;
+    int nb;
+    Def *def;
+    Def **defs;           /* LET definitions; instance path of K_INSTCALL */
+    int ndefs;
+    Seg *segs;            /* X_NAME: A!B(x)!C */
+    int nseg;
+    Path *paths;          /* X_EXCEPT */
+    int64_t num;
+    const char *text;
+    int len;
+    Module *mod;
+    int l1, c1, l2, c2;
+};
+
+enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE };
+
+typedef Value *(*Native)(Expr *call, Value **args, Ctx c);
+
+struct Def {
+    int kind;
+    int name;
+    int arity;            /* of an operator parameter or declared constant: F(_, _) */
+    int nparams;
+    Def **params;
+    Expr *body;
+    Bound *bounds;        /* D_FCN: f[x \in S] == body */
+    int nb;
+    Module *mod;
+    Native native;
+    int var_index;        /* D_VAR of the root: index in the state, or -1 */
+    Value *value;         /* D_CONST: the configured value */
+    Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
+    int level;            /* 0 constant, 1 state, 2 action, 3 temporal; -1 unknown */
+    int level_busy;
+    Value *cache;         /* a constant definition without parameters, once evaluated */
+    int local;
+    Module *target;       /* D_INST */
+    int nsubst;
+    Def **subst_decl;
+    Expr **subst_expr;
+    Expr *where;          /* the definition's location */
+};
+
+/* A symbol of a module: a definition, reached through `npath` instances. */
+typedef struct { int name; Def *def; Def **path; int npath; int local; } Sym;
+
+typedef struct {
+    int kind;             /* 0 definition, 1 instance, 2 assume, 3 nested module */
+    Def *def;
+    Expr *expr;
+    Module *module;
+    int local;
+} Unit;
+
+struct Module {
+    int name;
+    char *path;
+    Module *outer;        /* a nested module's enclosing module */
+    int nouter_syms;      /* the enclosing module's symbols visible to it */
+    int *extends;
+    int nextends;
+    Sym *syms;
+    int nsyms, capsyms;
+    Def **decls;          /* constants and variables, own and extended, in order */
+    int ndecls, capdecls;
+    Unit *units;
+    int nunits, capunits;
+    Module **nested;
+    int nnested;
+    Tok *toks;
+    int ntoks;
+    int resolved;
+    int standard;         /* read from the text of a standard module */
+};
+
+/* ---------------------------------------------------------------- lexer */
+
+static const char *keywords[] = {
+    "ASSUME", "ASSUMPTION", "AXIOM", "BOOLEAN", "CASE", "CHOOSE", "CONSTANT", "CONSTANTS", "DOMAIN", "ELSE",
+    "ENABLED", "EXCEPT", "EXTENDS", "FALSE", "IF", "IN", "INSTANCE", "LET", "LOCAL", "MODULE", "OTHER",
+    "STRING", "SUBSET", "THEN", "THEOREM", "TRUE", "UNCHANGED", "UNION", "VARIABLE", "VARIABLES",
+    "WITH", "WF_", "SF_", "LAMBDA", "RECURSIVE", "LEMMA", "PROPOSITION", "COROLLARY", "PROOF", "BY",
+    "OBVIOUS", "OMITTED", "QED", "USE", "HIDE", "DEFS", "DEF", "SUFFICES", "HAVE", "TAKE", "WITNESS",
+    "PICK", "NEW", "ACTION", "STATE", "TEMPORAL", "ONLY", NULL};
+
+static const char *symbols[] = {
+    "(\\X)", "-+->", "<=>", "...", "::=", "|->", "(+)", "(-)", "(.)", "(/)",
+    "<<", ">>", "==", "/=", "<=", ">=", "=<", "=>", "->", "<-", "/\\", "\\/", "..", "::", ":=", ":>",
+    "<:", "@@", "~>", "[]", "<>", "++", "--", "**", "//", "^^", "%%", "&&", "||", "$$", "??", "!!",
+    "##", "|-", "-|", "|=", "=|", "^+", "^*", "^#", "-.",
+    "(", ")", "[", "]", "{", "}", ",", ":", ".", "!", "@", "'", "=", "#", "<", ">", "+", "-", "*",
+    "/", "%", "^", "&", "|", "$", "?", "~", "_", "\\", NULL};
+
+static int is_keyword(const char *s, int len) {
+    for (int i = 0; keywords[i]; i++)
+        if ((int)strlen(keywords[i]) == len && memcmp(keywords[i], s, (size_t)len) == 0) return 1;
+    return 0;
+}
+
+static int id_char(int c) { return isalnum(c) || c == '_'; }
+
+typedef struct { const char *src; const char *file; int pos, line, col; } Lexer;
+
+static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...);
+
+static void lex_advance(Lexer *L, int n) {
+    while (n--) {
+        if (L->src[L->pos] == '\n') { L->line++; L->col = 1; }
+        else L->col++;
+        L->pos++;
+    }
+}
+
+static int starts_module(Lexer *L) {
+    const char *s = L->src + L->pos;
+    int i = 0;
+    while (s[i] == '-') i++;
+    if (i < 4) return 0;
+    while (s[i] == ' ' || s[i] == '\t') i++;
+    return strncmp(s + i, "MODULE", 6) == 0 && !id_char(s[i + 6]);
+}
+
+/* Skips white space and comments. */
+static void lex_space(Lexer *L) {
+    for (;;) {
+        char c = L->src[L->pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') { lex_advance(L, 1); continue; }
+        if (c == '\\' && L->src[L->pos + 1] == '*') {
+            while (L->src[L->pos] && L->src[L->pos] != '\n') lex_advance(L, 1);
+            continue;
+        }
+        if (c == '(' && L->src[L->pos + 1] == '*') {
+            int depth = 0;
+            do {
+                if (!L->src[L->pos]) parse_error(L->file, L->line, L->col, "Unterminated comment");
+                if (L->src[L->pos] == '(' && L->src[L->pos + 1] == '*') { depth++; lex_advance(L, 2); }
+                else if (L->src[L->pos] == '*' && L->src[L->pos + 1] == ')') { depth--; lex_advance(L, 2); }
+                else lex_advance(L, 1);
+            } while (depth > 0);
+            continue;
+        }
+        return;
+    }
+}
+
+static int digit_value(int c) {
+    if (isdigit(c)) return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 99;
+}
+
+/* The tokens of a file's outermost module, interning identifiers and
+   numerals in the order they appear (§7.5). */
+static Tok *lex(const char *src, const char *file, int *count) {
+    Lexer L = {src, file, 0, 1, 1};
+    Tok *toks = NULL;
+    int n = 0, cap = 0, depth = 0;
+    /* Text before the module is ignored (§3.2). */
+    for (;;) {
+        if (!src[L.pos]) parse_error(file, L.line, L.col, "Could not find a module");
+        if ((L.pos == 0 || src[L.pos - 1] == '\n' || 1) && src[L.pos] == '-' && starts_module(&L)) break;
+        lex_advance(&L, 1);
+    }
+    for (;;) {
+        lex_space(&L);
+        if (n + 2 >= cap) { cap = cap ? cap * 2 : 1024; toks = xrealloc(toks, sizeof(Tok) * (size_t)cap); }
+        Tok *t = &toks[n];
+        memset(t, 0, sizeof *t);
+        t->line = L.line; t->col = L.col;
+        const char *s = src + L.pos;
+        if (!*s) { t->kind = T_EOF; n++; break; }
+        int len = 0;
+        if (s[0] == '-' && s[1] == '-' && s[2] == '-' && s[3] == '-') {
+            while (s[len] == '-') len++;
+            t->kind = T_SEP;
+            if (starts_module(&L)) depth++;
+        } else if (s[0] == '=' && s[1] == '=' && s[2] == '=' && s[3] == '=') {
+            while (s[len] == '=') len++;
+            t->kind = T_END;
+            depth--;
+        } else if (id_char(s[0])) {
+            while (id_char(s[len])) len++;
+            int digits = 1;
+            for (int i = 0; i < len; i++) if (!isdigit((unsigned char)s[i])) digits = 0;
+            if (digits) {
+                t->kind = T_NUM;
+                int64_t v = 0;
+                for (int i = 0; i < len; i++) { v = v * 10 + (s[i] - '0'); if (v > 0x7fffffffffffLL) v = 0x7fffffffffffLL; }
+                t->num = v;
+                t->id = intern_n(s, len);
+            } else if ((len > 3 && (strncmp(s, "WF_", 3) == 0 || strncmp(s, "SF_", 3) == 0))) {
+                len = 3;
+                t->kind = T_KW;
+                t->id = intern_n(s, 3);
+            } else if (is_keyword(s, len)) {
+                t->kind = T_KW;
+                t->id = intern_n(s, len);
+            } else if (len == 1 && s[0] == '_') {
+                t->kind = T_OP;
+                t->id = intern("_");
+            } else {
+                t->kind = T_IDENT;
+                t->id = intern_n(s, len);
+            }
+        } else if (s[0] == '"') {
+            Buf b = {0};
+            len = 1;
+            while (s[len] != '"') {
+                if (!s[len] || s[len] == '\n') parse_error(file, t->line, t->col, "Unterminated string");
+                if (s[len] == '\\') {
+                    char e = s[len + 1];
+                    char c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'f' ? '\f' : e;
+                    buf_add(&b, &c, 1);
+                    len += 2;
+                } else {
+                    buf_add(&b, s + len, 1);
+                    len++;
+                }
+            }
+            len++;
+            t->kind = T_STR;
+            t->len = (int)b.n;
+            t->text = b.s ? b.s : "";
+        } else if (s[0] == '\\' && isalnum((unsigned char)s[1])) {
+            len = 1;
+            while (isalnum((unsigned char)s[len])) len++;
+            int base = strchr("bB", s[1]) ? 2 : strchr("oO", s[1]) ? 8 : strchr("hH", s[1]) ? 16 : 0;
+            int ok = base && len > 2;
+            for (int i = 2; ok && i < len; i++) if (digit_value(s[i]) >= base) ok = 0;
+            if (ok) {
+                t->kind = T_NUM;
+                int64_t v = 0;
+                for (int i = 2; i < len; i++) { v = v * base + digit_value(s[i]); if (v > 0x7fffffffffffLL) v = 0x7fffffffffffLL; }
+                t->num = v;
+                t->id = intern_n(s, len);
+            } else {
+                t->kind = T_OP;
+                t->id = intern_n(s, len);
+            }
+        } else {
+            for (int i = 0; symbols[i]; i++) {
+                int l = (int)strlen(symbols[i]);
+                if (strncmp(s, symbols[i], (size_t)l) == 0) { len = l; break; }
+            }
+            if (!len) parse_error(file, t->line, t->col, "Unexpected character '%c'", s[0]);
+            /* >>_ and ]_ begin a subscript: <<A>>_v and [A]_v. */
+            if ((len == 2 && s[0] == '>' && s[1] == '>' && s[2] == '_') || (len == 1 && s[0] == ']' && s[1] == '_')) len++;
+            t->kind = T_OP;
+            t->id = intern_n(s, len);
+        }
+        lex_advance(&L, len - 1);
+        t->eline = L.line; t->ecol = L.col;
+        lex_advance(&L, 1);
+        n++;
+        if (t->kind == T_END && depth == 0) {
+            toks[n].kind = T_EOF; toks[n].line = L.line; toks[n].col = L.col; n++;
+            break;
+        }
+    }
+    *count = n;
+    return toks;
+}
+
+/* ---------------------------------------------------------------- parser */
+
+typedef struct {
+    Tok *t;
+    int pos, n;
+    int limit;        /* tokens at or left of this column end the junction item (§6.2) */
+    Module *mod;
+    const char *file;
+} Parser;
+
+static Parser *P;
+
+static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...) {
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    printf("***Parse Error***\n%s at line %d, column %d in %s\n\n", msg, line, col, file);
+    printf("Error: Parsing or semantic analysis failed.\n");
+    exit(TPP_ERROR_PARSE);
+}
+
+static Tok eof_tok;
+
+static Tok *peek(void) {
+    Tok *t = &P->t[P->pos];
+    if (t->kind != T_EOF && t->col <= P->limit) { eof_tok = *t; eof_tok.kind = T_EOF; return &eof_tok; }
+    return t;
+}
+
+static Tok *peek_at(int k) {
+    if (P->pos + k >= P->n) return &P->t[P->n - 1];
+    return &P->t[P->pos + k];
+}
+
+static Tok *prev_tok(void) { return &P->t[P->pos - 1]; }
+
+static Tok *next(void) { Tok *t = &P->t[P->pos]; if (t->kind != T_EOF) P->pos++; return t; }
+
+static _Noreturn void syntax_error(const char *what) {
+    Tok *t = &P->t[P->pos];
+    const char *text = t->kind == T_EOF ? "end of module" : t->kind == T_STR ? "string" : S(t->id);
+    parse_error(P->file, t->line, t->col, "Encountered \"%s\": %s", text, what);
+}
+
+static int is_op(Tok *t, const char *s) { return t->kind == T_OP && strcmp(S(t->id), s) == 0; }
+static int is_kw(Tok *t, const char *s) { return t->kind == T_KW && strcmp(S(t->id), s) == 0; }
+
+static void expect_op(const char *s) { if (!is_op(peek(), s)) syntax_error(s); next(); }
+static void expect_kw(const char *s) { if (!is_kw(peek(), s)) syntax_error(s); next(); }
+
+static int expect_ident(void) {
+    Tok *t = peek();
+    if (t->kind != T_IDENT) syntax_error("expected an identifier");
+    next();
+    return t->id;
+}
+
+static Expr *mk_expr(int kind, Tok *start) {
+    Expr *e = NEW(Expr);
+    e->kind = (short)kind;
+    e->mod = P->mod;
+    e->l1 = start->line; e->c1 = start->col;
+    e->l2 = start->eline; e->c2 = start->ecol;
+    return e;
+}
+
+static void finish(Expr *e) {
+    Tok *t = prev_tok();
+    e->l2 = t->eline; e->c2 = t->ecol;
+}
+
+static Expr **args_array(Expr **a, int n) {
+    Expr **r = NEWN(Expr *, n);
+    for (int i = 0; i < n; i++) r[i] = a[i];
+    return r;
+}
+
+/* Operators (§6.1). */
+typedef struct { const char *name; int lo, hi, left, fix; } OpInfo;
+enum { INFIX, PREFIX, POSTFIX };
+
+static const OpInfo op_table[] = {
+    {"=>", 1, 1, 0, INFIX}, {"~>", 2, 2, 0, INFIX}, {"<=>", 2, 2, 0, INFIX}, {"-+->", 2, 2, 0, INFIX},
+    {"/\\", 3, 3, 1, INFIX}, {"\\/", 3, 3, 1, INFIX},
+    {"=", 5, 5, 0, INFIX}, {"/=", 5, 5, 0, INFIX}, {"<", 5, 5, 0, INFIX}, {">", 5, 5, 0, INFIX},
+    {"\\leq", 5, 5, 0, INFIX}, {"\\geq", 5, 5, 0, INFIX}, {"\\in", 5, 5, 0, INFIX},
+    {"\\notin", 5, 5, 0, INFIX}, {"\\subseteq", 5, 5, 0, INFIX}, {"\\subset", 5, 5, 0, INFIX},
+    {"\\supseteq", 5, 5, 0, INFIX}, {"\\supset", 5, 5, 0, INFIX}, {"\\prec", 5, 5, 0, INFIX},
+    {"\\succ", 5, 5, 0, INFIX}, {"\\preceq", 5, 5, 0, INFIX}, {"\\succeq", 5, 5, 0, INFIX},
+    {"\\sim", 5, 5, 0, INFIX}, {"\\simeq", 5, 5, 0, INFIX}, {"\\ll", 5, 5, 0, INFIX},
+    {"\\gg", 5, 5, 0, INFIX}, {"\\asymp", 5, 5, 0, INFIX}, {"\\approx", 5, 5, 0, INFIX},
+    {"\\cong", 5, 5, 0, INFIX}, {"\\sqsubset", 5, 5, 0, INFIX}, {"\\sqsubseteq", 5, 5, 0, INFIX},
+    {"\\sqsupset", 5, 5, 0, INFIX}, {"\\sqsupseteq", 5, 5, 0, INFIX}, {"\\doteq", 5, 5, 0, INFIX},
+    {"\\propto", 5, 5, 0, INFIX}, {":=", 5, 5, 0, INFIX}, {"::=", 5, 5, 0, INFIX},
+    {"|-", 5, 5, 0, INFIX}, {"-|", 5, 5, 0, INFIX}, {"|=", 5, 5, 0, INFIX}, {"=|", 5, 5, 0, INFIX},
+    {"\\cdot", 5, 14, 1, INFIX}, {"@@", 6, 6, 1, INFIX}, {":>", 7, 7, 0, INFIX}, {"<:", 7, 7, 0, INFIX},
+    {"\\", 8, 8, 0, INFIX}, {"\\cap", 8, 8, 1, INFIX}, {"\\cup", 8, 8, 1, INFIX},
+    {"..", 9, 9, 0, INFIX}, {"...", 9, 9, 0, INFIX}, {"!!", 9, 13, 0, INFIX}, {"##", 9, 13, 1, INFIX},
+    {"$", 9, 13, 1, INFIX}, {"$$", 9, 13, 1, INFIX}, {"??", 9, 13, 1, INFIX}, {"\\uplus", 9, 13, 1, INFIX},
+    {"\\sqcap", 9, 13, 1, INFIX}, {"\\sqcup", 9, 13, 1, INFIX}, {"\\wr", 9, 14, 0, INFIX},
+    {"\\X", 10, 13, 1, INFIX}, {"+", 10, 10, 1, INFIX}, {"++", 10, 10, 1, INFIX},
+    {"\\oplus", 10, 10, 1, INFIX}, {"%", 10, 11, 0, INFIX}, {"%%", 10, 11, 1, INFIX},
+    {"|", 10, 11, 1, INFIX}, {"||", 10, 11, 1, INFIX}, {"-", 11, 11, 1, INFIX}, {"--", 11, 11, 1, INFIX},
+    {"\\ominus", 11, 11, 1, INFIX}, {"*", 13, 13, 1, INFIX}, {"**", 13, 13, 1, INFIX},
+    {"&", 13, 13, 1, INFIX}, {"&&", 13, 13, 1, INFIX}, {"\\o", 13, 13, 1, INFIX},
+    {"\\odot", 13, 13, 1, INFIX}, {"\\otimes", 13, 13, 1, INFIX}, {"\\star", 13, 13, 1, INFIX},
+    {"\\bigcirc", 13, 13, 1, INFIX}, {"\\bullet", 13, 13, 1, INFIX}, {"/", 13, 13, 0, INFIX},
+    {"//", 13, 13, 0, INFIX}, {"\\div", 13, 13, 0, INFIX}, {"\\oslash", 13, 13, 0, INFIX},
+    {"^", 14, 14, 0, INFIX}, {"^^", 14, 14, 0, INFIX},
+    {"~", 4, 4, 0, PREFIX}, {"[]", 4, 15, 0, PREFIX}, {"<>", 4, 15, 0, PREFIX},
+    {"ENABLED", 4, 15, 0, PREFIX}, {"UNCHANGED", 4, 15, 0, PREFIX}, {"SUBSET", 10, 13, 0, PREFIX},
+    {"UNION", 10, 13, 0, PREFIX}, {"DOMAIN", 10, 13, 0, PREFIX}, {"-.", 12, 12, 0, PREFIX},
+    {"'", 15, 15, 0, POSTFIX}, {"^+", 15, 15, 0, POSTFIX}, {"^*", 15, 15, 0, POSTFIX}, {"^#", 15, 15, 0, POSTFIX},
+    {NULL, 0, 0, 0, 0}};
+
+/* The canonical name of an operator symbol: synonyms map to one name. */
+static int canonical(int id) {
+    static const char *syn[][2] = {
+        {"\\land", "/\\"}, {"\\lor", "\\/"}, {"\\lnot", "~"}, {"\\neg", "~"}, {"\\equiv", "<=>"},
+        {"#", "/="}, {"\\intersect", "\\cap"}, {"\\union", "\\cup"}, {"\\times", "\\X"},
+        {"<=", "\\leq"}, {"=<", "\\leq"}, {">=", "\\geq"}, {"\\circ", "\\o"}, {"\\mod", "%"},
+        {"(+)", "\\oplus"}, {"(-)", "\\ominus"}, {"(.)", "\\odot"}, {"(/)", "\\oslash"},
+        {"(\\X)", "\\otimes"}, {NULL, NULL}};
+    for (int i = 0; syn[i][0]; i++) if (strcmp(S(id), syn[i][0]) == 0) return intern(syn[i][1]);
+    return id;
+}
+
+static const OpInfo *op_info(Tok *t, int fix) {
+    if (t->kind != T_OP && t->kind != T_KW) return NULL;
+    const char *name = S(canonical(t->id));
+    if (fix == PREFIX && strcmp(name, "-") == 0) name = "-.";
+    for (int i = 0; op_table[i].name; i++)
+        if (op_table[i].fix == fix && strcmp(op_table[i].name, name) == 0) return &op_table[i];
+    return NULL;
+}
+
+static Expr *parse_expr(void);
+static Expr *parse_binary(int bound);
+static Def *parse_definition(int local);
+static void parse_bounds(Expr *e, int allow_unbounded);
+
+static Expr *mk_op(Tok *start, int op, int n, Expr **args) {
+    Expr *e = mk_expr(X_OP, start);
+    e->op = op;
+    e->n = n;
+    e->args = args_array(args, n);
+    return e;
+}
+
+/* Arguments of an operator application: expressions, LAMBDAs, or
+   operator symbols passed as operators. */
+static Expr **parse_args(int *count) {
+    Expr *args[64];
+    int n = 0;
+    int saved = P->limit;
+    P->limit = 0;
+    expect_op("(");
+    for (;;) {
+        Tok *t = peek();
+        if (n == 64) syntax_error("too many arguments");
+        if (is_kw(t, "LAMBDA")) {
+            Expr *l = mk_expr(X_LAMBDA, t);
+            next();
+            Def *params[16];
+            int np = 0;
+            do {
+                Def *d = NEW(Def);
+                d->kind = D_PARAM;
+                d->name = expect_ident();
+                params[np++] = d;
+            } while (is_op(peek(), ",") && next());
+            expect_op(":");
+            Def *op = NEW(Def);
+            op->kind = D_OP;
+            op->name = intern("LAMBDA");
+            op->nparams = np;
+            op->params = NEWN(Def *, np);
+            memcpy(op->params, params, sizeof(Def *) * (size_t)np);
+            op->body = parse_expr();
+            op->mod = P->mod;
+            op->level = -1;
+            op->var_index = -1;
+            l->def = op;
+            finish(l);
+            args[n++] = l;
+        } else if ((t->kind == T_OP || t->kind == T_KW) && (op_info(t, INFIX) || op_info(t, PREFIX) || op_info(t, POSTFIX)) &&
+                   (is_op(peek_at(1), ",") || is_op(peek_at(1), ")"))) {
+            Expr *r = mk_expr(X_OPREF, t);
+            r->op = canonical(t->id);
+            next();
+            args[n++] = r;
+        } else {
+            args[n++] = parse_expr();
+        }
+        if (is_op(peek(), ",")) { next(); continue; }
+        expect_op(")");
+        break;
+    }
+    P->limit = saved;
+    *count = n;
+    return args_array(args, n);
+}
+
+/* A name, its arguments, and instance selections: A!B(x)!C. */
+static Expr *parse_name(void) {
+    Tok *start = peek();
+    Expr *e = mk_expr(X_NAME, start);
+    Seg segs[16];
+    int n = 0;
+    for (;;) {
+        Tok *t = peek();
+        Seg *s = &segs[n++];
+        memset(s, 0, sizeof *s);
+        if (t->kind == T_IDENT) s->name = t->id;
+        else if (t->kind == T_OP || t->kind == T_KW) s->name = canonical(t->id);
+        else syntax_error("expected a name");
+        next();
+        if (is_op(peek(), "(") && n < 16) s->args = parse_args(&s->n);
+        if (is_op(peek(), "!") && n < 16) { next(); continue; }
+        break;
+    }
+    e->segs = NEWN(Seg, n);
+    memcpy(e->segs, segs, sizeof(Seg) * (size_t)n);
+    e->nseg = n;
+    e->op = segs[n - 1].name;
+    finish(e);
+    return e;
+}
+
+/* `x, y \in S, <<a, b>> \in T` or, unbounded, `x, y`. */
+static void parse_bounds(Expr *e, int allow_unbounded) {
+    Bound bs[32];
+    int nb = 0;
+    for (;;) {
+        Bound *b = &bs[nb++];
+        memset(b, 0, sizeof *b);
+        int names[32];
+        int n = 0;
+        if (is_op(peek(), "<<")) {
+            next();
+            b->tuple = 1;
+            do names[n++] = expect_ident(); while (is_op(peek(), ",") && next());
+            expect_op(">>");
+        } else {
+            names[n++] = expect_ident();
+            while (is_op(peek(), ",") && peek_at(1)->kind == T_IDENT && !b->tuple) {
+                Tok *after = peek_at(2);
+                (void)after;
+                next();
+                names[n++] = expect_ident();
+            }
+        }
+        b->n = n;
+        b->names = NEWN(int, n);
+        memcpy(b->names, names, sizeof(int) * (size_t)n);
+        if (is_op(peek(), "\\in")) {
+            next();
+            b->set = parse_expr();
+        } else if (!allow_unbounded) {
+            syntax_error("expected \\in");
+        }
+        if (is_op(peek(), ",") && nb < 32) { next(); continue; }
+        break;
+    }
+    e->bounds = NEWN(Bound, nb);
+    memcpy(e->bounds, bs, sizeof(Bound) * (size_t)nb);
+    e->nb = nb;
+}
+
+/* Whether the tokens ahead are `x \in` or `x, y \in` or `<<x, y>> \in`. */
+static int binder_ahead(void) {
+    int k = 0;
+    if (is_op(peek_at(0), "<<")) {
+        k = 1;
+        while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",")) k += 2;
+        if (peek_at(k)->kind != T_IDENT || !is_op(peek_at(k + 1), ">>")) return 0;
+        return is_op(peek_at(k + 2), "\\in");
+    }
+    while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",")) k += 2;
+    return peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), "\\in");
+}
+
+static Expr *parse_junction(Tok *bullet) {
+    int col = bullet->col;
+    int op = canonical(bullet->id);
+    Expr *items[256];
+    int n = 0;
+    int saved = P->limit;
+    Expr *list = mk_expr(X_OP, bullet);
+    while (n < 256) {
+        Tok *t = &P->t[P->pos];
+        if (t->kind != T_OP || canonical(t->id) != op || t->col != col) break;
+        next();
+        P->limit = col;
+        items[n++] = parse_expr();
+        P->limit = saved;
+    }
+    if (n == 1) { P->limit = saved; return items[0]; }
+    list->op = op;
+    list->n = n;
+    list->args = args_array(items, n);
+    finish(list);
+    return list;
+}
+
+static Expr *parse_subscript(void) {
+    Tok *t = peek();
+    if (t->kind == T_IDENT) {
+        Expr *e = mk_expr(X_NAME, t);
+        next();
+        e->segs = NEW(Seg);
+        e->segs->name = t->id;
+        e->nseg = 1;
+        e->op = t->id;
+        return e;
+    }
+    if (is_op(t, "<<") || is_op(t, "(")) return parse_binary(16);
+    syntax_error("expected a subscript");
+}
+
+static Expr *parse_primary(void) {
+    Tok *t = peek();
+    Expr *e;
+    switch (t->kind) {
+    case T_NUM:
+        next();
+        e = mk_expr(X_NUM, t);
+        e->num = t->num;
+        return e;
+    case T_STR:
+        next();
+        e = mk_expr(X_STR, t);
+        e->text = t->text;
+        e->len = t->len;
+        return e;
+    case T_IDENT:
+        return parse_name();
+    case T_KW:
+        if (is_kw(t, "TRUE") || is_kw(t, "FALSE")) {
+            next();
+            e = mk_expr(X_BOOL, t);
+            e->num = is_kw(t, "TRUE");
+            return e;
+        }
+        if (is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) {
+            next();
+            e = mk_expr(X_OP, t);
+            e->op = t->id;
+            return e;
+        }
+        if (is_kw(t, "IF")) {
+            next();
+            e = mk_expr(X_IF, t);
+            Expr *a[3];
+            a[0] = parse_expr();
+            expect_kw("THEN");
+            a[1] = parse_expr();
+            expect_kw("ELSE");
+            a[2] = parse_expr();
+            e->n = 3;
+            e->args = args_array(a, 3);
+            finish(e);
+            return e;
+        }
+        if (is_kw(t, "CASE")) {
+            next();
+            e = mk_expr(X_CASE, t);
+            Expr *a[256];
+            int n = 0;
+            e->num = 0;
+            for (;;) {
+                if (is_kw(peek(), "OTHER")) {
+                    next();
+                    expect_op("->");
+                    a[n++] = NULL;
+                    a[n++] = parse_expr();
+                    e->num = 1;
+                    break;
+                }
+                a[n++] = parse_expr();
+                expect_op("->");
+                a[n++] = parse_expr();
+                if (!is_op(peek(), "[]") || n >= 254) break;
+                next();
+            }
+            e->n = n;
+            e->args = args_array(a, n);
+            finish(e);
+            return e;
+        }
+        if (is_kw(t, "LET")) {
+            next();
+            e = mk_expr(X_LET, t);
+            Def *defs[256];
+            int n = 0;
+            while (!is_kw(peek(), "IN")) {
+                if (is_kw(peek(), "RECURSIVE")) {
+                    next();
+                    do {
+                        expect_ident();
+                        if (is_op(peek(), "(")) {
+                            next();
+                            while (!is_op(peek(), ")")) next();
+                            next();
+                        }
+                    } while (is_op(peek(), ",") && next());
+                    continue;
+                }
+                if (n == 256) syntax_error("too many LET definitions");
+                defs[n++] = parse_definition(0);
+            }
+            next();
+            e->defs = NEWN(Def *, n);
+            memcpy(e->defs, defs, sizeof(Def *) * (size_t)n);
+            e->ndefs = n;
+            e->n = 1;
+            e->args = NEWN(Expr *, 1);
+            e->args[0] = parse_expr();
+            finish(e);
+            return e;
+        }
+        if (is_kw(t, "CHOOSE")) {
+            next();
+            e = mk_expr(X_CHOOSE, t);
+            parse_bounds(e, 1);
+            expect_op(":");
+            e->n = 1;
+            e->args = NEWN(Expr *, 1);
+            e->args[0] = parse_expr();
+            finish(e);
+            return e;
+        }
+        if (is_kw(t, "WF_") || is_kw(t, "SF_")) {
+            next();
+            e = mk_expr(is_kw(t, "WF_") ? X_WF : X_SF, t);
+            Expr *a[2];
+            a[0] = parse_subscript();
+            expect_op("(");
+            int saved = P->limit;
+            P->limit = 0;
+            a[1] = parse_expr();
+            P->limit = saved;
+            expect_op(")");
+            e->n = 2;
+            e->args = args_array(a, 2);
+            finish(e);
+            return e;
+        }
+        break;
+    case T_OP:
+        if (is_op(t, "\\A") || is_op(t, "\\E") || is_op(t, "\\AA") || is_op(t, "\\EE") ||
+            is_op(t, "\\forall") || is_op(t, "\\exists")) {
+            next();
+            int all = is_op(t, "\\A") || is_op(t, "\\forall") || is_op(t, "\\AA");
+            int temporal = is_op(t, "\\AA") || is_op(t, "\\EE");
+            e = mk_expr(temporal ? (all ? X_TFORALL : X_TEXISTS) : all ? X_FORALL : X_EXISTS, t);
+            parse_bounds(e, 1);
+            expect_op(":");
+            e->n = 1;
+            e->args = NEWN(Expr *, 1);
+            e->args[0] = parse_expr();
+            finish(e);
+            return e;
+        }
+        if (is_op(t, "(")) {
+            next();
+            int saved = P->limit;
+            P->limit = 0;
+            e = parse_expr();
+            P->limit = saved;
+            expect_op(")");
+            return e;
+        }
+        if (is_op(t, "@")) {
+            next();
+            return mk_expr(X_AT, t);
+        }
+        if (is_op(t, "<<")) {
+            next();
+            int saved = P->limit;
+            P->limit = 0;
+            Expr *a[256];
+            int n = 0;
+            if (!is_op(peek(), ">>") && !is_op(peek(), ">>_")) {
+                do {
+                    if (n == 256) syntax_error("tuple too long");
+                    a[n++] = parse_expr();
+                } while (is_op(peek(), ",") && next());
+            }
+            P->limit = saved;
+            if (is_op(peek(), ">>_")) {
+                next();
+                e = mk_expr(X_ANGLEACT, t);
+                Expr *b[2] = {n == 1 ? a[0] : NULL, parse_subscript()};
+                if (n != 1) syntax_error("<<A>>_v takes one action");
+                e->n = 2;
+                e->args = args_array(b, 2);
+                finish(e);
+                return e;
+            }
+            expect_op(">>");
+            e = mk_expr(X_TUPLE, t);
+            e->n = n;
+            e->args = args_array(a, n);
+            finish(e);
+            return e;
+        }
+        if (is_op(t, "{")) {
+            next();
+            int saved = P->limit;
+            P->limit = 0;
+            Expr *a[1024];
+            int n = 0;
+            if (is_op(peek(), "}")) {
+                next();
+                P->limit = saved;
+                e = mk_expr(X_SETENUM, t);
+                finish(e);
+                return e;
+            }
+            if (binder_ahead()) {
+                e = mk_expr(X_FILTER, t);
+                int start = P->pos;
+                Bound b;
+                memset(&b, 0, sizeof b);
+                Expr tmp;
+                memset(&tmp, 0, sizeof tmp);
+                parse_bounds(&tmp, 0);
+                if (tmp.nb == 1 && is_op(peek(), ":") && (tmp.bounds[0].n == 1 || tmp.bounds[0].tuple)) {
+                    next();
+                    e->bounds = tmp.bounds;
+                    e->nb = 1;
+                    e->n = 1;
+                    e->args = NEWN(Expr *, 1);
+                    e->args[0] = parse_expr();
+                    expect_op("}");
+                    P->limit = saved;
+                    finish(e);
+                    return e;
+                }
+                P->pos = start;
+            }
+            Expr *first = parse_expr();
+            if (is_op(peek(), ":")) {
+                next();
+                e = mk_expr(X_MAP, t);
+                parse_bounds(e, 0);
+                e->n = 1;
+                e->args = NEWN(Expr *, 1);
+                e->args[0] = first;
+                expect_op("}");
+                P->limit = saved;
+                finish(e);
+                return e;
+            }
+            a[n++] = first;
+            while (is_op(peek(), ",")) {
+                next();
+                if (n == 1024) syntax_error("set too long");
+                a[n++] = parse_expr();
+            }
+            expect_op("}");
+            P->limit = saved;
+            e = mk_expr(X_SETENUM, t);
+            e->n = n;
+            e->args = args_array(a, n);
+            finish(e);
+            return e;
+        }
+        if (is_op(t, "[")) {
+            next();
+            int saved = P->limit;
+            P->limit = 0;
+            if (peek()->kind == T_IDENT && (is_op(peek_at(1), "|->") || is_op(peek_at(1), ":"))) {
+                int set = is_op(peek_at(1), ":");
+                e = mk_expr(set ? X_RCDSET : X_RECORD, t);
+                Expr *a[256];
+                int names[256];
+                int n = 0;
+                do {
+                    if (n == 256) syntax_error("record too long");
+                    names[n] = expect_ident();
+                    expect_op(set ? ":" : "|->");
+                    a[n++] = parse_expr();
+                } while (is_op(peek(), ",") && next());
+                expect_op("]");
+                P->limit = saved;
+                e->n = n;
+                e->args = args_array(a, n);
+                e->segs = NEWN(Seg, n);
+                for (int i = 0; i < n; i++) e->segs[i].name = names[i];
+                e->nseg = n;
+                finish(e);
+                return e;
+            }
+            if (binder_ahead()) {
+                e = mk_expr(X_FCN, t);
+                parse_bounds(e, 0);
+                expect_op("|->");
+                e->n = 1;
+                e->args = NEWN(Expr *, 1);
+                e->args[0] = parse_expr();
+                expect_op("]");
+                P->limit = saved;
+                finish(e);
+                return e;
+            }
+            Expr *first = parse_expr();
+            if (is_op(peek(), "->")) {
+                next();
+                e = mk_expr(X_FCNSET, t);
+                Expr *a[2] = {first, parse_expr()};
+                expect_op("]");
+                P->limit = saved;
+                e->n = 2;
+                e->args = args_array(a, 2);
+                finish(e);
+                return e;
+            }
+            if (is_kw(peek(), "EXCEPT")) {
+                next();
+                e = mk_expr(X_EXCEPT, t);
+                Expr *vals[256];
+                Path paths[256];
+                int n = 0;
+                do {
+                    expect_op("!");
+                    Expr *keys[32];
+                    int fields[32];
+                    int k = 0;
+                    while (k < 32) {
+                        if (is_op(peek(), ".")) {
+                            next();
+                            fields[k] = expect_ident();
+                            keys[k++] = NULL;
+                        } else if (is_op(peek(), "[")) {
+                            Tok *open = peek();
+                            next();
+                            Expr *ks[32];
+                            int nk = 0;
+                            do ks[nk++] = parse_expr(); while (is_op(peek(), ",") && next() && nk < 32);
+                            expect_op("]");
+                            if (nk == 1) keys[k] = ks[0];
+                            else {
+                                Expr *tup = mk_expr(X_TUPLE, open);
+                                tup->n = nk;
+                                tup->args = args_array(ks, nk);
+                                finish(tup);
+                                keys[k] = tup;
+                            }
+                            fields[k++] = -1;
+                        } else break;
+                    }
+                    if (!k) syntax_error("expected ! path");
+                    expect_op("=");
+                    if (n == 256) syntax_error("too many EXCEPT clauses");
+                    paths[n].n = k;
+                    paths[n].keys = args_array(keys, k);
+                    paths[n].fields = NEWN(int, k);
+                    memcpy(paths[n].fields, fields, sizeof(int) * (size_t)k);
+                    vals[n++] = parse_expr();
+                } while (is_op(peek(), ",") && next());
+                expect_op("]");
+                P->limit = saved;
+                Expr *a[257];
+                a[0] = first;
+                for (int i = 0; i < n; i++) a[i + 1] = vals[i];
+                e->n = n + 1;
+                e->args = args_array(a, n + 1);
+                e->paths = NEWN(Path, n);
+                memcpy(e->paths, paths, sizeof(Path) * (size_t)n);
+                finish(e);
+                return e;
+            }
+            if (is_op(peek(), "]_")) {
+                next();
+                P->limit = saved;
+                e = mk_expr(X_SQACT, t);
+                Expr *a[2] = {first, parse_subscript()};
+                e->n = 2;
+                e->args = args_array(a, 2);
+                finish(e);
+                return e;
+            }
+            syntax_error("expected ]_, ->, or EXCEPT");
+        }
+        if (is_op(t, "/\\") || is_op(t, "\\/") || is_op(t, "\\land") || is_op(t, "\\lor"))
+            return parse_junction(t);
+        break;
+    default:
+        break;
+    }
+    syntax_error("unexpected token");
+}
+
+/* A primary followed by applications f[a] and fields r.f. */
+static Expr *parse_postfix(void) {
+    Expr *e = parse_primary();
+    for (;;) {
+        Tok *t = peek();
+        if (is_op(t, "[")) {
+            Tok *start = t;
+            next();
+            int saved = P->limit;
+            P->limit = 0;
+            Expr *a[33];
+            int n = 1;
+            a[0] = e;
+            do a[n++] = parse_expr(); while (is_op(peek(), ",") && next() && n < 33);
+            expect_op("]");
+            P->limit = saved;
+            Expr *app = mk_expr(X_APPLY, start);
+            app->l1 = e->l1; app->c1 = e->c1;
+            app->n = n;
+            app->args = args_array(a, n);
+            finish(app);
+            e = app;
+        } else if (is_op(t, ".") && peek_at(1)->kind == T_IDENT) {
+            next();
+            Expr *d = mk_expr(X_DOT, t);
+            d->l1 = e->l1; d->c1 = e->c1;
+            d->op = expect_ident();
+            d->n = 1;
+            d->args = NEWN(Expr *, 1);
+            d->args[0] = e;
+            finish(d);
+            e = d;
+        } else {
+            return e;
+        }
+    }
+}
+
+static Expr *parse_unary(void) {
+    Tok *t = peek();
+    const OpInfo *info = op_info(t, PREFIX);
+    if (info && !(is_op(t, "-") && 0)) {
+        next();
+        Expr *arg = parse_binary(info->hi);
+        Expr *e = mk_op(t, intern(info->name), 1, &arg);
+        e->l2 = arg->l2; e->c2 = arg->c2;
+        return e;
+    }
+    return parse_postfix();
+}
+
+/* An expression whose operators all bind tighter than `bound` (§6.1). */
+static Expr *parse_binary(int bound) {
+    Expr *left = parse_unary();
+    const OpInfo *last = NULL;
+    for (;;) {
+        Tok *t = peek();
+        const OpInfo *post = op_info(t, POSTFIX);
+        if (post && post->lo > bound) {
+            next();
+            Expr *e = mk_op(t, intern(post->name), 1, &left);
+            e->l1 = left->l1; e->c1 = left->c1;
+            left = e;
+            continue;
+        }
+        const OpInfo *info = op_info(t, INFIX);
+        if (!info || info->lo <= bound) break;
+        if (last && !(info->hi < last->lo)) {
+            if (!(info == last && info->left))
+                parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and %s", last->name, info->name);
+        }
+        next();
+        if (strcmp(info->name, "\\X") == 0) {
+            /* a \X b \X c is a product of three sets. */
+            Expr *a[32];
+            int n = 0;
+            a[n++] = left;
+            a[n++] = parse_binary(info->hi);
+            while (is_op(peek(), "\\X") || is_op(peek(), "\\times")) {
+                next();
+                if (n == 32) syntax_error("product too long");
+                a[n++] = parse_binary(info->hi);
+            }
+            Expr *e = mk_op(t, intern("\\X"), n, a);
+            e->l1 = left->l1; e->c1 = left->c1;
+            e->l2 = a[n - 1]->l2; e->c2 = a[n - 1]->c2;
+            left = e;
+            last = info;
+            continue;
+        }
+        Expr *right = parse_binary(info->hi);
+        Expr *pair[2] = {left, right};
+        Expr *e = mk_op(t, intern(info->name), 2, pair);
+        e->l1 = left->l1; e->c1 = left->c1;
+        e->l2 = right->l2; e->c2 = right->c2;
+        left = e;
+        last = info;
+    }
+    return left;
+}
+
+static Expr *parse_expr(void) { return parse_binary(0); }
+
+static Def *new_def(int kind, int name, Tok *where) {
+    Def *d = NEW(Def);
+    d->kind = kind;
+    d->name = name;
+    d->mod = P->mod;
+    d->var_index = -1;
+    d->level = -1;
+    if (where) {
+        Expr *w = mk_expr(X_BOOL, where);
+        d->where = w;
+    }
+    return d;
+}
+
+/* An operator parameter or constant: x, F(_, _), _ + _, -. _, or _ ^+. */
+static Def *parse_param(int kind) {
+    Tok *t = peek();
+    if (is_op(t, "_")) {
+        next();
+        Tok *op = peek();
+        if (op->kind != T_OP && op->kind != T_KW) syntax_error("expected an operator");
+        next();
+        Def *d = new_def(kind, canonical(op->id), op);
+        if (is_op(peek(), "_")) { next(); d->arity = 2; }
+        else d->arity = 1;
+        return d;
+    }
+    if ((t->kind == T_OP || t->kind == T_KW) && is_op(peek_at(1), "_")) {
+        next();
+        next();
+        int name = canonical(t->id);
+        if (strcmp(S(name), "-") == 0) name = intern("-.");
+        Def *d = new_def(kind, name, t);
+        d->arity = 1;
+        return d;
+    }
+    Def *d = new_def(kind, expect_ident(), t);
+    if (is_op(peek(), "(")) {
+        next();
+        do { expect_op("_"); d->arity++; } while (is_op(peek(), ",") && next());
+        expect_op(")");
+    }
+    return d;
+}
+
+static Def *parse_instance(Tok *start, int name);
+
+/* Name == e, Name(p) == e, f[x \in S] == e, a + b == e, -. a == e, a ^+ == e. */
+static Def *parse_definition(int local) {
+    Tok *t = peek();
+    Def *d;
+    Def *params[64];
+    int np = 0;
+    if (t->kind == T_IDENT && is_op(peek_at(1), "==")) {
+        d = new_def(D_OP, t->id, t);
+        next();
+    } else if (t->kind == T_IDENT && is_op(peek_at(1), "(")) {
+        d = new_def(D_OP, t->id, t);
+        next();
+        next();
+        do {
+            if (np == 64) syntax_error("too many parameters");
+            params[np++] = parse_param(D_PARAM);
+        } while (is_op(peek(), ",") && next());
+        expect_op(")");
+    } else if (t->kind == T_IDENT && is_op(peek_at(1), "[")) {
+        d = new_def(D_FCN, t->id, t);
+        next();
+        next();
+        Expr tmp;
+        memset(&tmp, 0, sizeof tmp);
+        parse_bounds(&tmp, 0);
+        d->bounds = tmp.bounds;
+        d->nb = tmp.nb;
+        expect_op("]");
+    } else if (t->kind == T_IDENT && (peek_at(1)->kind == T_OP || peek_at(1)->kind == T_KW) &&
+               peek_at(2)->kind == T_IDENT && is_op(peek_at(3), "==")) {
+        Tok *op = peek_at(1);
+        d = new_def(D_OP, canonical(op->id), op);
+        params[np++] = new_def(D_PARAM, t->id, t);
+        next();
+        next();
+        params[np++] = new_def(D_PARAM, peek()->id, peek());
+        next();
+    } else if ((t->kind == T_OP || t->kind == T_KW) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==")) {
+        int name = canonical(t->id);
+        if (strcmp(S(name), "-") == 0) name = intern("-.");
+        d = new_def(D_OP, name, t);
+        next();
+        params[np++] = new_def(D_PARAM, peek()->id, peek());
+        next();
+    } else if (t->kind == T_IDENT && (peek_at(1)->kind == T_OP) && is_op(peek_at(2), "==")) {
+        Tok *op = peek_at(1);
+        d = new_def(D_OP, canonical(op->id), op);
+        params[np++] = new_def(D_PARAM, t->id, t);
+        next();
+        next();
+    } else {
+        syntax_error("expected a definition");
+    }
+    expect_op("==");
+    d->local = local;
+    d->nparams = np;
+    d->params = NEWN(Def *, np);
+    memcpy(d->params, params, sizeof(Def *) * (size_t)np);
+    if (is_kw(peek(), "INSTANCE")) {
+        Tok *start = peek();
+        next();
+        Def *inst = parse_instance(start, d->name);
+        inst->nparams = np;
+        inst->params = d->params;
+        inst->local = local;
+        return inst;
+    }
+    d->body = parse_expr();
+    return d;
+}
+
+/* INSTANCE M WITH a <- e, ...: the substitutions are completed by the
+   resolver once M is read. */
+static Def *parse_instance(Tok *start, int name) {
+    Def *d = new_def(D_INST, name, start);
+    d->target = (Module *)(intptr_t)expect_ident();   /* the module's name until resolved */
+    Def *decls[256];
+    Expr *exprs[256];
+    int n = 0;
+    if (is_kw(peek(), "WITH")) {
+        next();
+        do {
+            Tok *t = peek();
+            int pname;
+            if (t->kind == T_IDENT) pname = t->id;
+            else if (t->kind == T_OP || t->kind == T_KW) pname = canonical(t->id);
+            else syntax_error("expected a parameter");
+            next();
+            expect_op("<-");
+            Def *p = NEW(Def);
+            p->name = pname;
+            decls[n] = p;
+            Tok *at = peek();
+            if ((at->kind == T_OP || at->kind == T_KW) && (is_op(peek_at(1), ",") || peek_at(1)->line != at->line ||
+                                                             peek_at(1)->kind == T_SEP || peek_at(1)->kind == T_END)) {
+                Expr *r = mk_expr(X_OPREF, at);
+                r->op = canonical(at->id);
+                next();
+                exprs[n++] = r;
+            } else {
+                exprs[n++] = parse_expr();
+            }
+        } while (is_op(peek(), ",") && next() && n < 256);
+    }
+    d->nsubst = n;
+    d->subst_decl = NEWN(Def *, n);
+    d->subst_expr = NEWN(Expr *, n);
+    memcpy(d->subst_decl, decls, sizeof(Def *) * (size_t)n);
+    memcpy(d->subst_expr, exprs, sizeof(Expr *) * (size_t)n);
+    return d;
+}
+
+static void add_unit(Module *m, int kind, Def *d, Expr *e, Module *nested, int local) {
+    if (m->nunits == m->capunits) {
+        m->capunits = m->capunits ? m->capunits * 2 : 64;
+        m->units = xrealloc(m->units, sizeof(Unit) * (size_t)m->capunits);
+    }
+    Unit *u = &m->units[m->nunits++];
+    u->kind = kind; u->def = d; u->expr = e; u->module = nested; u->local = local;
+}
+
+static int at_unit_start(void) {
+    Tok *t = &P->t[P->pos];
+    return t->kind == T_EOF || t->kind == T_END || t->kind == T_SEP || t->col == 1;
+}
+
+/* A module: ---- MODULE Name ---- units ====. */
+static Module *parse_module(Module *outer) {
+    Module *m = NEW(Module);
+    m->outer = outer;
+    Module *saved_mod = P->mod;
+    P->mod = m;
+    if (peek()->kind != T_SEP) syntax_error("expected ---- MODULE");
+    next();
+    expect_kw("MODULE");
+    m->name = expect_ident();
+    if (peek()->kind != T_SEP) syntax_error("expected ----");
+    next();
+    if (is_kw(peek(), "EXTENDS")) {
+        next();
+        int names[64];
+        int n = 0;
+        do { if (n < 64) names[n++] = expect_ident(); } while (is_op(peek(), ",") && next());
+        m->extends = NEWN(int, n);
+        memcpy(m->extends, names, sizeof(int) * (size_t)n);
+        m->nextends = n;
+    }
+    for (;;) {
+        Tok *t = peek();
+        if (t->kind == T_END) { next(); break; }
+        if (t->kind == T_EOF) syntax_error("missing ==== at the end of the module");
+        if (t->kind == T_SEP) {
+            if (is_kw(peek_at(1), "MODULE")) {
+                Module *inner = parse_module(m);
+                add_unit(m, 3, NULL, NULL, inner, 0);
+            } else {
+                next();
+            }
+            continue;
+        }
+        int local = 0;
+        if (is_kw(t, "LOCAL")) { local = 1; next(); t = peek(); }
+        if (is_kw(t, "CONSTANT") || is_kw(t, "CONSTANTS") || is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES")) {
+            int var = is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES");
+            next();
+            do {
+                Def *d = parse_param(var ? D_VAR : D_CONST);
+                add_unit(m, 0, d, NULL, NULL, 0);
+            } while (is_op(peek(), ",") && next());
+            continue;
+        }
+        if (is_kw(t, "ASSUME") || is_kw(t, "ASSUMPTION") || is_kw(t, "AXIOM")) {
+            next();
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { next(); next(); }
+            add_unit(m, 2, NULL, parse_expr(), NULL, 0);
+            continue;
+        }
+        if (is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY")) {
+            next();
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { next(); next(); }
+            parse_expr();
+            while (!at_unit_start()) next();
+            continue;
+        }
+        if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
+            is_kw(t, "OMITTED") || (is_op(t, "<") && peek_at(1)->kind == T_NUM)) {
+            next();
+            while (!at_unit_start()) next();
+            continue;
+        }
+        if (is_kw(t, "RECURSIVE")) {
+            next();
+            do parse_param(D_RECURSIVE); while (is_op(peek(), ",") && next());
+            continue;
+        }
+        if (is_kw(t, "INSTANCE")) {
+            next();
+            Def *d = parse_instance(t, 0);
+            d->local = local;
+            add_unit(m, 1, d, NULL, NULL, local);
+            continue;
+        }
+        Def *d = parse_definition(local);
+        add_unit(m, 0, d, NULL, NULL, local);
+    }
+    P->mod = saved_mod;
+    return m;
+}
+
+/* ---------------------------------------------------------------- modules */
+
+/* The standard modules of tla2tools, without their comments (§8). Their
+   operators are evaluated natively; their identifiers are interned as
+   TLC interns them. */
+static const struct { const char *name, *text; } standard_modules[] = {
+    {"Naturals",
+     "---- MODULE Naturals ----\n"
+     "Nat       == { }\n"
+     "a+b       == {a, b}\n"
+     "a-b       == CHOOSE n : b + n = a\n"
+     "a*b       == TRUE\n"
+     "a^b       == {a, b}\n"
+     "a<b       ==  a = b\n"
+     "a>b       ==  a = b\n"
+     "a \\leq b  ==  a = b\n"
+     "a \\geq b  ==  a = b\n"
+     "a % b     ==  {a, b}\n"
+     "a \\div b  ==  {a, b}\n"
+     "a .. b    ==  {a, b}\n"
+     "====\n"},
+    {"Integers",
+     "---- MODULE Integers ----\n"
+     "EXTENDS Naturals\n"
+     "Int  ==  { }\n"
+     "-. a == 0 - a\n"
+     "====\n"},
+    {"Sequences",
+     "---- MODULE Sequences ----\n"
+     "LOCAL INSTANCE Naturals\n"
+     "Seq(S) == UNION {[1..n -> S] : n \\in Nat}\n"
+     "Len(s) == CHOOSE n \\in Nat : DOMAIN s = 1..n\n"
+     "s \\o t == [i \\in 1..(Len(s) + Len(t)) |-> IF i \\leq Len(s) THEN s[i]\n"
+     "                                                           ELSE t[i-Len(s)]]\n"
+     "Append(s, e) == s \\o <<e>>\n"
+     "Head(s) == s[1]\n"
+     "Tail(s) == CASE s # << >> -> [i \\in 1..(Len(s)-1) |-> s[i+1]]\n"
+     "SubSeq(s, m, n) == [i \\in 1..(1+n-m) |-> s[i+m-1]]\n"
+     "SelectSeq(s, Test(_)) ==\n"
+     "  LET F[i \\in 0..Len(s)] ==\n"
+     "        IF i = 0 THEN << >>\n"
+     "                 ELSE IF Test(s[i]) THEN Append(F[i-1], s[i])\n"
+     "                                    ELSE F[i-1]\n"
+     "  IN F[Len(s)]\n"
+     "====\n"},
+    {"FiniteSets",
+     "---- MODULE FiniteSets ----\n"
+     "LOCAL INSTANCE Naturals\n"
+     "LOCAL INSTANCE Sequences\n"
+     "IsFiniteSet(S) ==\n"
+     "  \\E seq \\in Seq(S) : \\A s \\in S : \\E n \\in 1..Len(seq) : seq[n] = s\n"
+     "Cardinality(S) ==\n"
+     "  LET CS[T \\in SUBSET S] == IF T = {} THEN 0\n"
+     "                                      ELSE 1 + CS[T \\ {CHOOSE x : x \\in T}]\n"
+     "  IN  CS[S]\n"
+     "====\n"},
+    {"TLC",
+     "---- MODULE TLC ----\n"
+     "LOCAL INSTANCE Naturals\n"
+     "LOCAL INSTANCE Sequences\n"
+     "LOCAL INSTANCE FiniteSets\n"
+     "Print(out, val) == val\n"
+     "PrintT(out) == TRUE\n"
+     "Assert(val, out) == IF val = TRUE THEN TRUE\n"
+     "                                  ELSE CHOOSE v : TRUE\n"
+     "JavaTime == CHOOSE n : n \\in Nat\n"
+     "TLCGet(i) == CHOOSE n : TRUE\n"
+     "TLCSet(i, v) == TRUE\n"
+     "d :> e == [x \\in {d} |-> e]\n"
+     "f @@ g == [x \\in (DOMAIN f) \\cup (DOMAIN g) |->\n"
+     "            IF x \\in DOMAIN f THEN f[x] ELSE g[x]]\n"
+     "Permutations(S) ==\n"
+     "   {f \\in [S -> S] : \\A w \\in S : \\E v \\in S : f[v]=w}\n"
+     "SortSeq(s, Op(_, _)) ==\n"
+     "    LET Perm == CHOOSE p \\in Permutations(1 .. Len(s)) :\n"
+     "                  \\A i, j \\in 1..Len(s) :\n"
+     "                     (i < j) => Op(s[p[i]], s[p[j]]) \\/ (s[p[i]] = s[p[j]])\n"
+     "    IN  [i \\in 1..Len(s) |-> s[Perm[i]]]\n"
+     "RandomElement(s) == CHOOSE x \\in s : TRUE\n"
+     "Any == CHOOSE x : TRUE\n"
+     "ToString(v) == (CHOOSE x \\in [a : v, b : STRING] : TRUE).b\n"
+     "TLCEval(v) == v\n"
+     "====\n"},
+    {"Bags",
+     "---- MODULE Bags ----\n"
+     "EXTENDS TLC\n"
+     "LOCAL INSTANCE Naturals\n"
+     "IsABag(B) ==\n"
+     "  B \\in [DOMAIN B -> {n \\in Nat : n > 0}]\n"
+     "BagToSet(B) == DOMAIN B\n"
+     "SetToBag(S) == [e \\in S |-> 1]\n"
+     "BagIn(e,B) == e \\in BagToSet(B)\n"
+     "EmptyBag == SetToBag({})\n"
+     "B1 (+) B2  ==\n"
+     "  [e \\in (DOMAIN B1) \\cup (DOMAIN B2) |->\n"
+     "      (IF e \\in DOMAIN B1 THEN B1[e] ELSE 0)\n"
+     "    + (IF e \\in DOMAIN B2 THEN B2[e] ELSE 0) ]\n"
+     "B1 (-) B2  ==\n"
+     "  LET B == [e \\in DOMAIN B1 |-> IF e \\in DOMAIN B2 THEN B1[e] - B2[e]\n"
+     "                                                   ELSE B1[e]]\n"
+     "  IN  [e \\in {d \\in DOMAIN B : B[d] > 0} |-> B[e]]\n"
+     "LOCAL Sum(f) ==\n"
+     "        LET DSum[S \\in SUBSET DOMAIN f] ==\n"
+     "               LET elt == CHOOSE e \\in S : TRUE\n"
+     "               IN  IF S = {} THEN 0\n"
+     "                             ELSE f[elt] + DSum[S \\ {elt}]\n"
+     "        IN  DSum[DOMAIN f]\n"
+     "BagUnion(S) ==\n"
+     "  [e \\in UNION {BagToSet(B) : B \\in S} |->\n"
+     "    Sum( [B \\in S |-> IF BagIn(e, B) THEN B[e] ELSE 0] ) ]\n"
+     "B1 \\sqsubseteq B2  ==\n"
+     "  /\\ (DOMAIN B1) \\subseteq (DOMAIN B2)\n"
+     "  /\\ \\A e \\in DOMAIN B1 : B1[e] \\leq B2[e]\n"
+     "SubBag(B) ==\n"
+     "  LET RemoveFromDom(x, f) == [y \\in (DOMAIN f) \\ {x} |-> f[y]]\n"
+     "      Combine(x, BagSet) ==\n"
+     "         BagSet \\cup\n"
+     "          {[y \\in (DOMAIN f) \\cup {x} |-> IF y = x THEN i ELSE f[y]] :\n"
+     "                f \\in BagSet, i \\in 1..B[x]}\n"
+     "      Biggest == LET Range == {B[x] : x \\in DOMAIN B}\n"
+     "                 IN  IF Range = {} THEN 0\n"
+     "                                   ELSE CHOOSE r \\in Range :\n"
+     "                                           \\A s \\in Range : r \\geq s\n"
+     "      RSB[BB \\in UNION {[S -> 1..Biggest] : S \\in SUBSET DOMAIN B}] ==\n"
+     "        IF BB = << >> THEN {<< >>}\n"
+     "                      ELSE LET x == CHOOSE x \\in DOMAIN BB : TRUE\n"
+     "                           IN  Combine(x, RSB[RemoveFromDom(x, BB)])\n"
+     "  IN RSB[B]\n"
+     "BagOfAll(F(_), B) ==\n"
+     "  [e \\in {F(d) : d \\in BagToSet(B)} |->\n"
+     "     Sum( [d \\in BagToSet(B) |-> IF F(d) = e THEN B[d] ELSE 0] ) ]\n"
+     "BagCardinality(B) ==\n"
+     "  Sum(B)\n"
+     "CopiesIn(e, B) ==\n"
+     "  IF BagIn(e, B) THEN B[e] ELSE 0\n"
+     "====\n"},
+    {"Randomization",
+     "---- MODULE Randomization ----\n"
+     "LOCAL INSTANCE Naturals\n"
+     "LOCAL INSTANCE FiniteSets\n"
+     "RandomSubset(k, S) == CHOOSE T \\in SUBSET S : Cardinality(T) = T\n"
+     "RandomSetOfSubsets(k, n, S) == CHOOSE T \\in SUBSET SUBSET S :\n"
+     "                                              Cardinality(T) \\leq k\n"
+     "TestRandomSetOfSubsets(k, n, S) ==\n"
+     "              [i \\in 1..5 |-> Cardinality(RandomSetOfSubsets(k, n, S))]\n"
+     "====\n"},
+    {NULL, NULL}};
+
+static Module **modules;      /* in the order they were read */
+static int nmodules;
+static char *spec_dir;
+
+static char *read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *s = xmalloc((size_t)n + 1);
+    if (fread(s, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(s); return NULL; }
+    s[n] = 0;
+    fclose(f);
+    return s;
+}
+
+static void collect_nested(Module *m) {
+    for (int i = 0; i < m->nunits; i++)
+        if (m->units[i].kind == 3) {
+            m->nested = xrealloc(m->nested, sizeof(Module *) * (size_t)(m->nnested + 1));
+            m->nested[m->nnested++] = m->units[i].module;
+            collect_nested(m->units[i].module);
+        }
+}
+
+static Module *find_module(int name);
+static Module *load_module(int name, Module *from);
+
+/* Reads the modules a module refers to, in order of reference. */
+static void load_references(Module *m) {
+    for (int i = 0; i < m->nextends; i++) load_module(m->extends[i], m);
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 1 || (u->kind == 0 && u->def->kind == D_INST))
+            load_module((int)(intptr_t)u->def->target, m);
+        if (u->kind == 3) load_references(u->module);
+    }
+}
+
+static Module *find_module(int name) {
+    for (int i = 0; i < nmodules; i++) if (modules[i]->name == name) return modules[i];
+    return NULL;
+}
+
+static Module *parse_text(const char *text, const char *path) {
+    int n;
+    Tok *toks = lex(text, path, &n);
+    Parser p = {toks, 0, n, 0, NULL, path};
+    Parser *saved = P;
+    P = &p;
+    Module *m = parse_module(NULL);
+    P = saved;
+    m->path = (char *)path;
+    m->toks = toks;
+    m->ntoks = n;
+    collect_nested(m);
+    return m;
+}
+
+static Module *load_module(int name, Module *from) {
+    for (Module *o = from; o; o = o->outer)
+        for (int i = 0; i < o->nnested; i++) if (o->nested[i]->name == name) return o->nested[i];
+    Module *m = find_module(name);
+    if (m) return m;
+    const char *text = NULL;
+    char *path = xmalloc(strlen(spec_dir) + strlen(S(name)) + 8);
+    sprintf(path, "%s%s.tla", spec_dir, S(name));
+    char *file = read_file(path);
+    int standard = 0;
+    if (file) text = file;
+    else {
+        for (int i = 0; standard_modules[i].name; i++)
+            if (strcmp(standard_modules[i].name, S(name)) == 0) { text = standard_modules[i].text; standard = 1; }
+        sprintf(path, "%s.tla", S(name));
+    }
+    if (!text) {
+        printf("Cannot find source file for module %s imported in module %s.\n\n", S(name), S(from->name));
+        printf("Error: Parsing or semantic analysis failed.\n");
+        exit(TPP_ERROR_PARSE);
+    }
+    m = parse_text(text, path);
+    m->standard = standard;
+    if (m->name != name) {
+        printf("File name '%s' does not match the name '%s' of the top level module it contains.\n\n", S(name), S(m->name));
+        printf("Error: Parsing or semantic analysis failed.\n");
+        exit(TPP_ERROR_PARSE);
+    }
+    modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
+    modules[nmodules++] = m;
+    load_references(m);
+    return m;
+}
+
+/* ---------------------------------------------------------------- resolver */
+
+typedef struct Scope { int name; Def *def; struct Scope *next; } Scope;
+
+static Module *cur_module;   /* the module being resolved */
+
+static void loc_text(Buf *b, Expr *e) {
+    if (!e || !e->mod) { buf_puts(b, "Unknown location"); return; }
+    buf_printf(b, "line %d, col %d to line %d, col %d of module %s", e->l1, e->c1, e->l2, e->c2, S(e->mod->name));
+}
+
+static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    Buf b = {0};
+    loc_text(&b, where);
+    printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", b.s, msg);
+    printf("Error: Parsing or semantic analysis failed.\n");
+    exit(TPP_ERROR_PARSE);
+}
+
+static Scope *bind(Scope *sc, int name, Def *d) {
+    Scope *s = NEW(Scope);
+    s->name = name; s->def = d; s->next = sc;
+    return s;
+}
+
+static Sym *module_lookup(Module *m, int name) {
+    for (Module *o = m; o; o = o->outer) {
+        int limit = o == m ? o->nsyms : 0;
+        if (o != m) {
+            /* an enclosing module's symbols defined before the nested module */
+            Module *inner = m;
+            while (inner->outer != o) inner = inner->outer;
+            limit = inner->nouter_syms;
+        }
+        for (int i = limit - 1; i >= 0; i--) if (o->syms[i].name == name) return &o->syms[i];
+    }
+    return NULL;
+}
+
+static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
+    for (int i = 0; i < m->nsyms; i++)
+        if (m->syms[i].name == name) {
+            if (m->syms[i].def == def) return;
+            if (def->kind != D_RECURSIVE && m->syms[i].def->kind != D_RECURSIVE && npath == 0 && m->syms[i].npath == 0)
+                semantic_error(where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(name));
+            m->syms[i].def = def; m->syms[i].path = path; m->syms[i].npath = npath; m->syms[i].local = local;
+            return;
+        }
+    if (m->nsyms == m->capsyms) {
+        m->capsyms = m->capsyms ? m->capsyms * 2 : 64;
+        m->syms = xrealloc(m->syms, sizeof(Sym) * (size_t)m->capsyms);
+    }
+    Sym *s = &m->syms[m->nsyms++];
+    s->name = name; s->def = def; s->path = path; s->npath = npath; s->local = local;
+}
+
+static void add_decl(Module *m, Def *d) {
+    for (int i = 0; i < m->ndecls; i++) if (m->decls[i] == d) return;
+    if (m->ndecls == m->capdecls) {
+        m->capdecls = m->capdecls ? m->capdecls * 2 : 16;
+        m->decls = xrealloc(m->decls, sizeof(Def *) * (size_t)m->capdecls);
+    }
+    m->decls[m->ndecls++] = d;
+}
+
+static void resolve_expr(Expr *e, Scope *sc);
+static void resolve_def(Def *d, Scope *sc);
+static void resolve_module(Module *m);
+
+static Def *scope_lookup(Scope *sc, int name) {
+    for (; sc; sc = sc->next) if (sc->name == name) return sc->def;
+    return NULL;
+}
+
+static void check_arity(Expr *e, Def *d, int n) {
+    int want = d->kind == D_OP ? d->nparams : d->kind == D_PARAM || d->kind == D_CONST ? d->arity : 0;
+    if (d->kind == D_INST) want = d->nparams;
+    if (n != want) {
+        if (want == 0) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
+        semantic_error(e, "The operator %s requires %d arguments.", S(d->name), want);
+    }
+}
+
+static void resolve_args(Expr **args, int n, Scope *sc) {
+    for (int i = 0; i < n; i++) if (args[i]) resolve_expr(args[i], sc);
+}
+
+/* An operator symbol passed as an argument: a Def to call. Core
+   operators are wrapped in a definition that applies them. */
+static Def *operator_def(Expr *at, int op, Scope *sc) {
+    Def *d = scope_lookup(sc, op);
+    if (d) return d;
+    Sym *s = module_lookup(cur_module, op);
+    if (s && !s->npath) return s->def;
+    Def *w = NEW(Def);
+    w->kind = D_OP;
+    w->name = op;
+    w->nparams = 2;
+    w->params = NEWN(Def *, 2);
+    w->level = -1;
+    w->var_index = -1;
+    w->mod = cur_module;
+    Expr *body = NEW(Expr);
+    *body = *at;
+    body->kind = X_OP;
+    body->op = op;
+    body->n = 2;
+    body->args = NEWN(Expr *, 2);
+    Scope *inner = sc;
+    for (int i = 0; i < 2; i++) {
+        w->params[i] = NEW(Def);
+        w->params[i]->kind = D_PARAM;
+        w->params[i]->name = intern(i ? "#b" : "#a");
+        inner = bind(inner, w->params[i]->name, w->params[i]);
+        Expr *ref = NEW(Expr);
+        *ref = *at;
+        ref->kind = X_NAME;
+        ref->nseg = 1;
+        ref->segs = NEW(Seg);
+        ref->segs->name = w->params[i]->name;
+        ref->op = w->params[i]->name;
+        body->args[i] = ref;
+    }
+    resolve_expr(body, inner);
+    w->body = body;
+    return w;
+}
+
+static void resolve_bounds(Expr *e, Scope **sc) {
+    Scope *outer = *sc;
+    for (int i = 0; i < e->nb; i++) {
+        Bound *b = &e->bounds[i];
+        if (b->set) resolve_expr(b->set, outer);
+        b->defs = NEWN(Def *, b->n);
+        for (int j = 0; j < b->n; j++) {
+            Def *d = NEW(Def);
+            d->kind = D_BOUND;
+            d->name = b->names[j];
+            d->var_index = -1;
+            b->defs[j] = d;
+            *sc = bind(*sc, d->name, d);
+        }
+    }
+}
+
+static const struct { const char *name; int kind; } core_ops[] = {
+    {"/\\", K_AND}, {"\\/", K_OR}, {"~", K_NOT}, {"=>", K_IMPLIES}, {"<=>", K_EQUIV}, {"=", K_EQ},
+    {"/=", K_NEQ}, {"\\in", K_IN}, {"\\notin", K_NOTIN}, {"\\cup", K_CUP}, {"\\cap", K_CAP},
+    {"\\", K_SETMINUS}, {"\\subseteq", K_SUBSETEQ}, {"SUBSET", K_SUBSET}, {"UNION", K_UNION},
+    {"DOMAIN", K_DOMAIN}, {"'", K_PRIME}, {"UNCHANGED", K_UNCHANGED}, {"ENABLED", K_ENABLED},
+    {"[]", K_ALWAYS}, {"<>", K_EVENTUALLY}, {"~>", K_LEADSTO}, {"\\X", K_TIMES}, {"\\cdot", K_CDOT},
+    {"-+->", K_WHILE}, {"BOOLEAN", K_BOOLEAN}, {"STRING", K_STRINGSET}, {NULL, 0}};
+
+/* Resolves A!B(x)!C: each segment but the last names an instance. */
+static void resolve_path(Expr *e, Scope *sc) {
+    Def *path[32];
+    Seg pargs[32];
+    int np = 0;
+    memset(pargs, 0, sizeof pargs);
+    Module *m = cur_module;
+    Def *d = NULL;
+    for (int i = 0; i < e->nseg; i++) {
+        Seg *s = &e->segs[i];
+        resolve_args(s->args, s->n, sc);
+        Sym *sym = NULL;
+        if (i == 0) {
+            d = scope_lookup(sc, s->name);
+            if (!d) sym = module_lookup(m, s->name);
+        } else {
+            sym = module_lookup(m, s->name);
+            if (sym && sym->local) sym = NULL;
+        }
+        if (sym) {
+            for (int k = 0; k < sym->npath && np < 32; k++) path[np++] = sym->path[k];
+            d = sym->def;
+        }
+        if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+        if (i + 1 < e->nseg) {
+            if (d->kind != D_INST) semantic_error(e, "%s is not a module instance.", S(s->name));
+            check_arity(e, d, s->n);
+            pargs[np] = *s;
+            path[np++] = d;
+            m = d->target;
+            d = NULL;
+        } else {
+            check_arity(e, d, s->n);
+        }
+    }
+    e->kind = K_INSTCALL;
+    e->def = d;
+    e->defs = NEWN(Def *, np);
+    memcpy(e->defs, path, sizeof(Def *) * (size_t)np);
+    e->ndefs = np;
+    e->args = e->segs[e->nseg - 1].args;
+    e->n = e->segs[e->nseg - 1].n;
+    /* segs now holds each instance's arguments, aligned with defs. */
+    e->segs = NEWN(Seg, np);
+    memcpy(e->segs, pargs, sizeof(Seg) * (size_t)np);
+    e->nseg = np;
+}
+
+static void resolve_name(Expr *e, Scope *sc) {
+    if (e->nseg > 1) { resolve_path(e, sc); return; }
+    Seg *s = &e->segs[0];
+    resolve_args(s->args, s->n, sc);
+    e->args = s->args;
+    e->n = s->n;
+    Def *d = scope_lookup(sc, s->name);
+    if (d) {
+        if (d->kind == D_BOUND || (d->kind == D_PARAM && d->arity == 0 && s->n == 0)) {
+            if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
+            e->kind = K_BOUND;
+        } else if (d->kind == D_PARAM) {
+            check_arity(e, d, s->n);
+            e->kind = K_PARAMCALL;
+        } else {
+            check_arity(e, d, s->n);
+            e->kind = K_CALL;
+        }
+        e->def = d;
+        return;
+    }
+    Sym *sym = module_lookup(cur_module, s->name);
+    if (!sym) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+    d = sym->def;
+    if (d->kind == D_RECURSIVE) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+    if (!(d->kind == D_OP && s->n == 0 && d->nparams > 0)) check_arity(e, d, s->n);
+    e->def = d;
+    if (d->kind == D_CONST || d->kind == D_VAR) {
+        e->kind = d->arity ? K_PARAMCALL : K_DECL;
+    } else if (sym->npath) {
+        e->kind = K_INSTCALL;
+        e->defs = sym->path;
+        e->ndefs = sym->npath;
+        e->segs = NEWN(Seg, sym->npath);
+        e->nseg = sym->npath;
+    } else {
+        e->kind = K_CALL;
+    }
+}
+
+static void resolve_expr(Expr *e, Scope *sc) {
+    switch (e->kind) {
+    case X_NUM: case X_BOOL: case X_AT:
+        return;
+    case X_STR:
+        e->num = intern_n(e->text, e->len);
+        return;
+    case X_NAME:
+        resolve_name(e, sc);
+        return;
+    case X_OPREF:
+        e->def = operator_def(e, e->op, sc);
+        return;
+    case X_LAMBDA: {
+        Scope *inner = sc;
+        for (int i = 0; i < e->def->nparams; i++) inner = bind(inner, e->def->params[i]->name, e->def->params[i]);
+        e->def->mod = cur_module;
+        resolve_expr(e->def->body, inner);
+        return;
+    }
+    case X_OP: {
+        resolve_args(e->args, e->n, sc);
+        for (int i = 0; core_ops[i].name; i++)
+            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; return; }
+        Def *d = scope_lookup(sc, e->op);
+        Sym *sym = d ? NULL : module_lookup(cur_module, e->op);
+        if (sym) d = sym->def;
+        if (!d) semantic_error(e, "Unknown operator: `%s'.", S(e->op));
+        check_arity(e, d, e->n);
+        e->def = d;
+        if (d->kind == D_PARAM || d->kind == D_CONST) e->kind = K_PARAMCALL;
+        else if (sym && sym->npath) {
+            e->kind = K_INSTCALL;
+            e->defs = sym->path;
+            e->ndefs = sym->npath;
+            e->segs = NEWN(Seg, sym->npath);
+            e->nseg = sym->npath;
+        }
+        else e->kind = K_CALL;
+        return;
+    }
+    case X_FORALL: case X_EXISTS: case X_CHOOSE: case X_FILTER: case X_MAP: case X_FCN:
+    case X_TFORALL: case X_TEXISTS: {
+        Scope *inner = sc;
+        resolve_bounds(e, &inner);
+        resolve_args(e->args, e->n, inner);
+        return;
+    }
+    case X_LET: {
+        Scope *inner = sc;
+        for (int i = 0; i < e->ndefs; i++) {
+            e->defs[i]->local = 2;   /* a LET definition: bound in the environment */
+            inner = bind(inner, e->defs[i]->name, e->defs[i]);
+        }
+        for (int i = 0; i < e->ndefs; i++) resolve_def(e->defs[i], inner);
+        resolve_args(e->args, e->n, inner);
+        return;
+    }
+    case X_EXCEPT:
+        resolve_args(e->args, e->n, sc);
+        for (int i = 0; i < e->n - 1; i++) resolve_args(e->paths[i].keys, e->paths[i].n, sc);
+        return;
+    default:
+        resolve_args(e->args, e->n, sc);
+        return;
+    }
+}
+
+static void resolve_def(Def *d, Scope *sc) {
+    d->mod = cur_module;
+    Scope *inner = sc;
+    for (int i = 0; i < d->nparams; i++) {
+        d->params[i]->var_index = -1;
+        inner = bind(inner, d->params[i]->name, d->params[i]);
+    }
+    if (d->kind == D_FCN) {
+        Expr tmp;
+        memset(&tmp, 0, sizeof tmp);
+        tmp.bounds = d->bounds;
+        tmp.nb = d->nb;
+        resolve_bounds(&tmp, &inner);
+        inner = bind(inner, d->name, d);
+    }
+    if (d->kind == D_INST) {
+        int name = (int)(intptr_t)d->target;
+        Module *t = load_module(name, cur_module);
+        Module *saved = cur_module;
+        resolve_module(t);
+        cur_module = saved;
+        d->target = t;
+        Def **decls = NEWN(Def *, t->ndecls);
+        Expr **exprs = NEWN(Expr *, t->ndecls);
+        for (int i = 0; i < t->ndecls; i++) {
+            Def *decl = t->decls[i];
+            decls[i] = decl;
+            for (int j = 0; j < d->nsubst; j++)
+                if (d->subst_decl[j]->name == decl->name) exprs[i] = d->subst_expr[j];
+            if (!exprs[i]) {
+                Expr *ref = NEW(Expr);
+                if (d->where) *ref = *d->where;
+                ref->kind = X_NAME;
+                ref->nseg = 1;
+                ref->segs = NEW(Seg);
+                ref->segs->name = decl->name;
+                ref->op = decl->name;
+                if (!scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name))
+                    semantic_error(d->where, "The constant or variable %s of module %s is not defined in the instantiating module.",
+                                   S(decl->name), S(t->name));
+                exprs[i] = ref;
+            }
+            if (exprs[i]->kind == X_OPREF || (decl->arity && exprs[i]->kind == X_NAME)) {
+                Expr *x = exprs[i];
+                Def *op = x->kind == X_OPREF ? operator_def(x, x->op, inner) : NULL;
+                if (!op) {
+                    Def *b = scope_lookup(inner, x->op);
+                    Sym *s = b ? NULL : module_lookup(cur_module, x->op);
+                    op = b ? b : s ? s->def : NULL;
+                    if (!op) semantic_error(x, "Unknown operator: `%s'.", S(x->op));
+                }
+                x->kind = X_OPREF;
+                x->def = op;
+            } else {
+                resolve_expr(exprs[i], inner);
+            }
+        }
+        d->nsubst = t->ndecls;
+        d->subst_decl = decls;
+        d->subst_expr = exprs;
+        return;
+    }
+    if (d->body) resolve_expr(d->body, inner);
+}
+
+static void resolve_module(Module *m) {
+    if (m->resolved) return;
+    m->resolved = 1;
+    Module *saved = cur_module;
+    for (int i = 0; i < m->nextends; i++) {
+        Module *x = load_module(m->extends[i], m);
+        resolve_module(x);
+    }
+    cur_module = m;
+    for (int i = 0; i < m->nextends; i++) {
+        Module *x = load_module(m->extends[i], m);
+        for (int k = 0; k < x->nsyms; k++)
+            if (!x->syms[k].local) add_sym(m, x->syms[k].name, x->syms[k].def, x->syms[k].path, x->syms[k].npath, 0, NULL);
+        for (int k = 0; k < x->ndecls; k++) add_decl(m, x->decls[k]);
+    }
+    /* Definitions may be used before they appear: register them first. */
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 0 && (u->def->kind == D_OP || u->def->kind == D_FCN || u->def->kind == D_INST))
+            add_sym(m, u->def->name, u->def, NULL, 0, u->local, u->def->where);
+    }
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        cur_module = m;
+        if (u->kind == 0) {
+            Def *d = u->def;
+            if (d->kind == D_CONST || d->kind == D_VAR) {
+                d->mod = m;
+                add_sym(m, d->name, d, NULL, 0, 0, d->where);
+                add_decl(m, d);
+            } else {
+                resolve_def(d, NULL);
+            }
+        } else if (u->kind == 1) {
+            Def *d = u->def;
+            resolve_def(d, NULL);
+            cur_module = m;
+            Module *t = d->target;
+            for (int k = 0; k < t->nsyms; k++) {
+                Sym *s = &t->syms[k];
+                if (s->local || s->def->kind == D_CONST || s->def->kind == D_VAR) continue;
+                Def **path = NEWN(Def *, s->npath + 1);
+                path[0] = d;
+                memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
+                add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
+            }
+        } else if (u->kind == 2) {
+            resolve_expr(u->expr, NULL);
+        } else if (u->kind == 3) {
+            u->module->nouter_syms = m->nsyms;
+            resolve_module(u->module);
+        }
+    }
+    cur_module = saved;
+}
+
+/* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
+static int expr_level(Expr *e);
+
+static int def_level(Def *d) {
+    if (d->level >= 0) return d->level;
+    if (d->level_busy) return 0;
+    d->level_busy = 1;
+    int l = 0;
+    if (d->kind == D_VAR) l = 1;
+    else if (d->kind == D_OP || d->kind == D_FCN) {
+        if (d->body) l = expr_level(d->body);
+        for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_level(d->bounds[i].set); if (b > l) l = b; }
+    } else if (d->kind == D_INST) {
+        for (int i = 0; i < d->nsubst; i++)
+            if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_level(d->subst_expr[i]); if (b > l) l = b; }
+    }
+    d->level_busy = 0;
+    d->level = l;
+    return l;
+}
+
+static int max_level(Expr **args, int n) {
+    int l = 0;
+    for (int i = 0; i < n; i++) if (args[i]) { int a = expr_level(args[i]); if (a > l) l = a; }
+    return l;
+}
+
+static int expr_level(Expr *e) {
+    int l = max_level(e->args, e->n);
+    for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) { int b = expr_level(e->bounds[i].set); if (b > l) l = b; }
+    switch (e->kind) {
+    case K_DECL: return e->def->kind == D_VAR ? 1 : 0;
+    case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_CDOT: return l < 2 ? 2 : l;
+    case K_ENABLED: return 1;
+    case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case X_WF: case X_SF: case K_WHILE:
+    case X_TFORALL: case X_TEXISTS:
+        return 3;
+    case K_CALL: case K_PARAMCALL: {
+        int d = def_level(e->def);
+        return d > l ? d : l;
+    }
+    case K_INSTCALL: {
+        int d = def_level(e->def);
+        for (int i = 0; i < e->ndefs; i++) { int p = def_level(e->defs[i]); if (p > d) d = p; }
+        for (int i = 0; i < e->nseg; i++) { int a = max_level(e->segs[i].args, e->segs[i].n); if (a > d) d = a; }
+        return d > l ? d : l;
+    }
+    case X_LET:
+        for (int i = 0; i < e->ndefs; i++) { int d = def_level(e->defs[i]); if (d > l) l = d; }
+        return l;
+    case X_EXCEPT:
+        for (int i = 0; i < e->n - 1; i++) { int k = max_level(e->paths[i].keys, e->paths[i].n); if (k > l) l = k; }
+        return l;
+    case X_LAMBDA: return def_level(e->def);
+    case X_OPREF: return def_level(e->def);
+    default: return l;
+    }
+}
+
+/* ---------------------------------------------------------------- evaluator */
+
+static int nvars;
+static Def **vars;              /* the state variables, in declaration order */
+static Value **cur_state;       /* the state being read */
+static Value **next_state;      /* the next state an action assigns; NULL entries unassigned */
+static int primed;              /* reading the next state */
+static long state_reads;        /* incremented by each read of a variable */
+static Value *at_value;         /* @ in an EXCEPT */
+static int64_t cur_level;       /* TLCGet("level") */
+static int eval_depth;
+
+static Value *boolean_set;
+
+static Env *mk_binding(Def *d, Value *v, Env *next) {
+    Env *b = NEW(Env);
+    b->def = d; b->v = v; b->next = next;
+    b->perm = arena == &perm_arena;
+    return b;
+}
+
+static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {
+    Env *b = NEW(Env);
+    b->def = d; b->e = e; b->ctx_env = c.env; b->ctx_inst = c.inst; b->next = next;
+    b->perm = arena == &perm_arena;
+    return b;
+}
+
+static Env *env_find(Env *env, Def *d) {
+    for (; env; env = env->next) if (env->def == d) return env;
+    return NULL;
+}
+
+static Value *force(Env *b) {
+    if (b->v) return b->v;
+    long reads = state_reads;
+    Ctx c = {b->ctx_env, b->ctx_inst};
+    Value *v = eval(b->e, c);
+    if (reads == state_reads && b->perm == (arena == &perm_arena)) b->v = v;
+    return v;
+}
+
+static Value *mk_oper(Def *d, Ctx c) {
+    Value *v = NEW(Value);
+    v->kind = V_OPER;
+    v->u.op.def = d;
+    v->u.op.env = c.env;
+    v->u.op.inst = c.inst;
+    return v;
+}
+
+static int64_t check_int(int64_t v, int64_t a, int64_t b, const char *op) {
+    if (v > 2147483647LL || v < -2147483648LL)
+        fail("Overflow when computing %lld%s%lld", (long long)a, op, (long long)b);
+    return v;
+}
+
+static int64_t int_arg(Value *v, int which, const char *op) {
+    if (v->kind != V_INT)
+        fail("The %s argument of %s should be an integer, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
+    return v->u.i;
+}
+
+static Value *eval_operator_arg(Expr *a, Ctx c);
+static Value *apply_oper(Value *op, Value **args, int n, Expr *where);
+static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call);
+static int enabled(Expr *a, Ctx c);
+
+/* The value of a constant or variable, through the substitutions of the
+   instances the context is in (§4.3). */
+static Value *decl_value(Def *d, Ctx c, Expr *where) {
+    for (Inst *in = c.inst; in; in = in->parent) {
+        Def *id = in->def;
+        for (int i = 0; i < id->nsubst; i++)
+            if (id->subst_decl[i] == d) {
+                Ctx outer = {in->env, in->parent};
+                Expr *x = id->subst_expr[i];
+                if (x->kind == X_OPREF) return mk_oper(x->def, outer);
+                return eval(x, outer);
+            }
+    }
+    if (d->kind == D_VAR) {
+        if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
+        state_reads++;
+        if (primed) {
+            if (!next_state || !next_state[d->var_index])
+                fail_at(where, "The variable %s' was not assigned a value.", S(d->name));
+            return next_state[d->var_index];
+        }
+        if (!cur_state || !cur_state[d->var_index])
+            fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+        return cur_state[d->var_index];
+    }
+    if (d->replacement) return call_def(d->replacement, NULL, 0, (Ctx){NULL, NULL}, where);
+    if (!d->value) fail_at(where, "The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
+    return d->value;
+}
+
+/* Bindings of `x \in S, <<a, b>> \in T`: calls fn for each, in order,
+   until it returns nonzero. */
+typedef int (*BindFn)(Ctx c, void *data);
+
+/* Iterates the product of bindings with an explicit stack. */
+typedef struct { Value *set; int index; } BindLevel;
+
+static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
+    int total = 0;
+    for (int i = 0; i < nb; i++) total += bs[i].tuple ? 1 : bs[i].n;
+    if (total == 0) return fn(c, data);
+    BindLevel *lv = NEWN(BindLevel, total);
+    Bound **owner = NEWN(Bound *, total);
+    int *slot = NEWN(int, total);
+    int k = 0;
+    for (int i = 0; i < nb; i++) {
+        int count = bs[i].tuple ? 1 : bs[i].n;
+        for (int j = 0; j < count; j++) { owner[k] = &bs[i]; slot[k] = j; k++; }
+    }
+    Env **envs = NEWN(Env *, total + 1);
+    envs[0] = c.env;
+    int depth = 0, result = 0;
+    lv[0].set = NULL;
+    while (depth >= 0) {
+        Bound *b = owner[depth];
+        if (!lv[depth].set) {
+            if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
+            Ctx sc = {envs[depth], c.inst};
+            Value *s = eval(b->set, sc);
+            if (!is_set(s)) fail_at(b->set, "Attempted to enumerate a value that is not a set:\n%s", pretty(s));
+            if (set_is_infinite(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+            lv[depth].set = enumerate(s);
+            lv[depth].index = 0;
+        }
+        if (lv[depth].index >= lv[depth].set->n) {
+            lv[depth].set = NULL;
+            depth--;
+            if (depth >= 0) lv[depth].index++;
+            continue;
+        }
+        Value *v = lv[depth].set->u.set.elems[lv[depth].index];
+        Env *env = envs[depth];
+        if (b->tuple) {
+            if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != b->n)
+                fail("A tuple pattern <<...>> \\in S was matched with %s.", pretty(v));
+            for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], v->u.fcn.vals[j], env);
+        } else {
+            env = mk_binding(b->defs[slot[depth]], v, env);
+        }
+        envs[depth + 1] = env;
+        if (depth + 1 == total) {
+            Ctx inner = {env, c.inst};
+            if (fn(inner, data)) { result = 1; break; }
+            lv[depth].index++;
+        } else {
+            depth++;
+            lv[depth].set = NULL;
+        }
+    }
+    return result;
+}
+
+typedef struct { Expr *body; int value; Expr *where; } QuantData;
+
+static int forall_fn(Ctx c, void *data) {
+    QuantData *q = data;
+    if (!eval_bool(q->body, c)) { q->value = 0; return 1; }
+    return 0;
+}
+
+static int exists_fn(Ctx c, void *data) {
+    QuantData *q = data;
+    if (eval_bool(q->body, c)) { q->value = 1; return 1; }
+    return 0;
+}
+
+typedef struct { Expr *body; Bound *b; Value *found; } ChooseData;
+
+static int choose_fn(Ctx c, void *data) {
+    ChooseData *d = data;
+    if (!eval_bool(d->body, c)) return 0;
+    Env *env = env_find(c.env, d->b->defs[0]);
+    if (d->b->tuple) {
+        Value *t = mk_tuple(d->b->n);
+        for (int j = 0; j < d->b->n; j++) t->u.fcn.vals[j] = env_find(c.env, d->b->defs[j])->v;
+        d->found = t;
+    } else {
+        d->found = env->v;
+    }
+    return 1;
+}
+
+typedef struct { Expr *body; List out; List keys; } MapData;
+
+static int map_fn(Ctx c, void *data) {
+    MapData *d = data;
+    list_add(&d->out, eval(d->body, c));
+    return 0;
+}
+
+/* The value of a bound name: an element, or the tuple a binder names. */
+static Value *bound_key(Bound *bs, int nb, Ctx c) {
+    int total = 0;
+    for (int i = 0; i < nb; i++) total += bs[i].n;
+    if (total == 1 && !bs[0].tuple) return env_find(c.env, bs[0].defs[0])->v;
+    Value *t = mk_tuple(total);
+    int k = 0;
+    for (int i = 0; i < nb; i++)
+        for (int j = 0; j < bs[i].n; j++) t->u.fcn.vals[k++] = env_find(c.env, bs[i].defs[j])->v;
+    if (total == 1) return t->u.fcn.vals[0];
+    return t;
+}
+
+static int fcn_fn(Ctx c, void *data) {
+    MapData *d = data;
+    Expr *e = d->body;
+    list_add(&d->keys, bound_key(e->bounds, e->nb, c));
+    list_add(&d->out, eval(e->args[0], c));
+    return 0;
+}
+
+static int filter_fn(Ctx c, void *data) {
+    MapData *d = data;
+    Expr *e = d->body;
+    if (eval_bool(e->args[0], c)) list_add(&d->out, bound_key(e->bounds, e->nb, c));
+    return 0;
+}
+
+/* Whether v satisfies the predicate of a lazy filter. */
+static Value *filter_member_test(Value *s, Value *v) {
+    Expr *e = s->u.l.expr;
+    Bound *b = &e->bounds[0];
+    Env *env = s->u.l.env;
+    if (b->tuple) {
+        if (!is_fcn(v) || v->n != b->n) return FALSEV;
+        for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], v->u.fcn.vals[j], env);
+    } else {
+        env = mk_binding(b->defs[0], v, env);
+    }
+    Ctx c = {env, s->u.l.inst};
+    return BOOLV(eval_bool(e->args[0], c));
+}
+
+/* A recursive function definition f[x \in S] == e: its value at a. */
+static Value *fcndef_apply(Def *d, Value *a, Ctx c, Expr *where) {
+    Env *env = c.env;
+    if (d->local == 2) {
+        Env *b = env_find(c.env, d);
+        if (b) env = b->ctx_env;
+    } else {
+        env = NULL;
+    }
+    int total = 0;
+    for (int i = 0; i < d->nb; i++) total += d->bounds[i].n;
+    Value **parts = &a;
+    if (total > 1) {
+        if (!is_fcn(a) || a->n != total) goto outside;
+        parts = a->u.fcn.vals;
+    }
+    int k = 0;
+    for (int i = 0; i < d->nb; i++) {
+        Bound *b = &d->bounds[i];
+        Ctx sc = {env, c.inst};
+        Value *s = eval(b->set, sc);
+        for (int j = 0; j < b->n; j++) {
+            Value *part = parts[k++];
+            if (b->tuple) {
+                if (!is_fcn(part) || part->n != b->n) goto outside;
+                if (!set_member(part, s)) goto outside;
+                for (int t = 0; t < b->n; t++) env = mk_binding(b->defs[t], part->u.fcn.vals[t], env);
+                break;
+            }
+            if (!set_member(part, s)) goto outside;
+            env = mk_binding(b->defs[j], part, env);
+        }
+    }
+    {
+        Ctx inner = {env, c.inst};
+        return eval(d->body, inner);
+    }
+outside:
+    fail_at(where, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+            S(d->name), pretty(a));
+}
+
+static Value *fcndef_value(Def *d, Ctx c) {
+    Env *env = NULL;
+    if (d->local == 2) { Env *b = env_find(c.env, d); if (b) env = b->ctx_env; }
+    Expr fake;
+    memset(&fake, 0, sizeof fake);
+    fake.bounds = d->bounds;
+    fake.nb = d->nb;
+    MapData data;
+    memset(&data, 0, sizeof data);
+    Ctx dc = {env, c.inst};
+    /* Collect the domain, then apply the definition at each point. */
+    Expr body;
+    memset(&body, 0, sizeof body);
+    body.bounds = d->bounds;
+    body.nb = d->nb;
+    Expr *self = NEW(Expr);
+    self->kind = X_BOOL;
+    self->num = 1;
+    body.n = 1;
+    Expr *args[1] = {self};
+    body.args = args;
+    data.body = &body;
+    for_bindings(d->bounds, d->nb, dc, filter_fn, &data);
+    List vals = {0};
+    for (int i = 0; i < data.out.n; i++) list_add(&vals, fcndef_apply(d, data.out.v[i], c, NULL));
+    return mk_fcn_from(&data.out, &vals);
+}
+
+static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
+    Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
+    if (!is_fcn(f)) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
+    Value *old = fcn_apply(f, key, where);
+    Value *nv;
+    if (i + 1 < p->n) {
+        nv = except_update(old, p, i + 1, val, c, where);
+    } else {
+        Value *saved = at_value;
+        at_value = old;
+        nv = eval(val, c);
+        at_value = saved;
+    }
+    return fcn_update(f, key, nv, where);
+}
+
+static int eval_bool(Expr *e, Ctx c) {
+    Value *v = eval(e, c);
+    if (v->kind != V_BOOL)
+        fail_at(e, "A non-boolean expression (%s) was used as a condition.", kind_name(v));
+    return (int)v->u.i;
+}
+
+static const char *article_kind(Value *v) {
+    switch (v->kind) {
+    case V_INT: return "an integer";
+    case V_STR: return "a string";
+    case V_MODEL: return "a model value";
+    case V_TUPLE: case V_FCN: return "a function";
+    default: return is_set(v) ? "a set" : "a value";
+    }
+}
+
+static Value *junction(Expr *e, Ctx c, int and) {
+    for (int i = 0; i < e->n; i++) {
+        Value *v = eval(e->args[i], c);
+        if (v->kind != V_BOOL)
+            fail_at(e, "Attempted to evaluate an expression of form %s when %s was\n%s.",
+                    and ? "P /\\ Q" : "P \\/ Q", i == 0 ? "P" : "Q", article_kind(v));
+        if (v->u.i != and) return v;
+    }
+    return BOOLV(and);
+}
+
+static Value *eval_inner(Expr *e, Ctx c) {
+    switch (e->kind) {
+    case X_NUM:
+        if (e->num > 2147483647LL) fail_at(e, "Integer literal too large.");
+        return mk_int(e->num);
+    case X_STR: return mk_str((int)e->num);
+    case X_BOOL: return BOOLV(e->num);
+    case K_BOOLEAN: return boolean_set;
+    case K_STRINGSET: return mk_lazy(L_STRING);
+    case X_AT:
+        if (!at_value) fail_at(e, "@ used outside an EXCEPT.");
+        return at_value;
+    case K_BOUND: {
+        Env *b = env_find(c.env, e->def);
+        if (!b) fail_at(e, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
+        return force(b);
+    }
+    case K_DECL: return decl_value(e->def, c, e);
+    case K_CALL: return call_def(e->def, e->args, e->n, c, e);
+    case K_INSTCALL: {
+        Inst *inst = c.inst;
+        for (int i = 0; i < e->ndefs; i++) {
+            Def *id = e->defs[i];
+            Env *env = NULL;
+            Seg *s = &e->segs[i];
+            for (int k = 0; k < id->nparams && k < s->n; k++) env = mk_thunk(id->params[k], s->args[k], c, env);
+            if (id->local == 2) { Env *b = env_find(c.env, id); if (b) env = b->ctx_env; }
+            Inst *in = NEW(Inst);
+            in->def = id;
+            in->env = env;
+            in->parent = inst;
+            inst = in;
+        }
+        Ctx ic = {c.env, inst};
+        /* The arguments are evaluated in the caller's context. */
+        Value **vals = NEWN(Value *, e->n);
+        Def *d = e->def;
+        if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
+        if (d->native || d->kind == D_FCN || e->n == 0) {
+            if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
+        }
+        Env *env = NULL;
+        for (int k = 0; k < e->n && k < d->nparams; k++) {
+            if (d->params[k]->arity) env = mk_binding(d->params[k], eval_operator_arg(e->args[k], c), env);
+            else env = mk_thunk(d->params[k], e->args[k], c, env);
+        }
+        if (d->native) {
+            for (int k = 0; k < e->n; k++) vals[k] = force(env_find(env, d->params[k]));
+            return d->native(e, vals, ic);
+        }
+        Ctx body = {env, inst};
+        return eval(d->body, body);
+    }
+    case K_PARAMCALL: {
+        Value *op;
+        if (e->def->kind == D_PARAM) {
+            Env *b = env_find(c.env, e->def);
+            if (!b) fail_at(e, "Unbound operator parameter %s.", S(e->def->name));
+            op = force(b);
+        } else {
+            op = decl_value(e->def, c, e);
+        }
+        if (op->kind != V_OPER) {
+            if (e->n == 0) return op;
+            fail_at(e, "%s is not an operator.", S(e->def->name));
+        }
+        Value **vals = NEWN(Value *, e->n);
+        for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
+        return apply_oper(op, vals, e->n, e);
+    }
+    case K_AND: return junction(e, c, 1);
+    case K_OR: return junction(e, c, 0);
+    case K_NOT: {
+        Value *v = eval(e->args[0], c);
+        if (v->kind != V_BOOL) fail_at(e, "Attempted to apply the operator ~ to a non-boolean\n(%s).", pretty(v));
+        return BOOLV(!v->u.i);
+    }
+    case K_IMPLIES: {
+        Value *a = eval(e->args[0], c);
+        if (a->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when P was\n%s.", article_kind(a));
+        if (!a->u.i) return TRUEV;
+        Value *b = eval(e->args[1], c);
+        if (b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P => Q when Q was\n%s.", article_kind(b));
+        return b;
+    }
+    case K_EQUIV: {
+        Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+        if (a->kind != V_BOOL || b->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form P <=> Q when P or Q was not a boolean.");
+        return BOOLV(a->u.i == b->u.i);
+    }
+    case K_EQ: return BOOLV(veq(eval(e->args[0], c), eval(e->args[1], c)));
+    case K_NEQ: return BOOLV(!veq(eval(e->args[0], c), eval(e->args[1], c)));
+    case K_IN: case K_NOTIN: {
+        Value *v = eval(e->args[0], c), *s = eval(e->args[1], c);
+        if (!is_set(s)) fail_at(e, "Attempted to check if the value:\n%s\nis an element of the non-set:\n%s", pretty(v), pretty(s));
+        int in = set_member(v, s);
+        return BOOLV(e->kind == K_IN ? in : !in);
+    }
+    case K_CUP: case K_CAP: case K_SETMINUS: case K_SUBSETEQ: {
+        Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+        if (!is_set(a) || !is_set(b))
+            fail_at(e, "Attempted to apply a set operator to the non-set:\n%s", pretty(is_set(a) ? b : a));
+        switch (e->kind) {
+        case K_CUP: return set_union(a, b);
+        case K_CAP: return set_inter(a, b);
+        case K_SETMINUS: return set_minus(a, b);
+        default: return BOOLV(all_members(a, b));
+        }
+    }
+    case K_SUBSET: {
+        Value *s = mk_lazy(L_SUBSET);
+        s->u.l.a = eval(e->args[0], c);
+        if (!is_set(s->u.l.a)) fail_at(e, "Attempted to compute SUBSET of the non-set:\n%s", pretty(s->u.l.a));
+        return s;
+    }
+    case K_UNION: {
+        Value *s = enumerate(eval(e->args[0], c));
+        List l = {0};
+        for (int i = 0; i < s->n; i++) {
+            Value *t = enumerate(s->u.set.elems[i]);
+            for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
+        }
+        return list_set(&l);
+    }
+    case K_DOMAIN: {
+        Value *f = eval(e->args[0], c);
+        if (!is_fcn(f)) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", pretty(f));
+        return fcn_domain(f);
+    }
+    case K_PRIME: {
+        if (primed) return eval(e->args[0], c);
+        primed = 1;
+        Value *v = eval(e->args[0], c);
+        primed = 0;
+        return v;
+    }
+    case K_UNCHANGED: {
+        Value *now = eval(e->args[0], c);
+        int saved = primed;
+        primed = 1;
+        Value *then = eval(e->args[0], c);
+        primed = saved;
+        return BOOLV(veq(now, then));
+    }
+    case K_ENABLED: return BOOLV(enabled(e->args[0], c));
+    case K_TIMES: {
+        Value *s = mk_lazy(L_TIMES);
+        s->n = e->n;
+        s->u.l.names = NEWN(Value *, 2 * e->n);
+        for (int i = 0; i < e->n; i++) {
+            Value *a = eval(e->args[i], c);
+            if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
+            s->u.l.names[e->n + i] = a;
+        }
+        if (!set_is_infinite(s)) return enumerate(s);
+        return s;
+    }
+    case X_SETENUM: {
+        List l = {0};
+        for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
+        return list_set(&l);
+    }
+    case X_TUPLE: {
+        Value *t = mk_tuple(e->n);
+        for (int i = 0; i < e->n; i++) t->u.fcn.vals[i] = eval(e->args[i], c);
+        return t;
+    }
+    case X_RECORD: {
+        List keys = {0}, vals = {0};
+        for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
+        return mk_fcn_from(&keys, &vals);
+    }
+    case X_RCDSET: {
+        List keys = {0}, vals = {0};
+        for (int i = 0; i < e->n; i++) {
+            Value *s = eval(e->args[i], c);
+            if (!is_set(s)) fail_at(e, "Attempted to construct a set of records with the non-set:\n%s", pretty(s));
+            list_add(&keys, mk_str(e->segs[i].name));
+            list_add(&vals, s);
+        }
+        Value *r = mk_fcn_from(&keys, &vals);
+        Value *s = mk_lazy(L_RCDSET);
+        s->n = e->n;
+        s->u.l.names = NEWN(Value *, 2 * e->n);
+        for (int i = 0; i < e->n; i++) { s->u.l.names[i] = r->u.fcn.keys[i]; s->u.l.names[e->n + i] = r->u.fcn.vals[i]; }
+        return s;
+    }
+    case X_FCNSET: {
+        Value *s = mk_lazy(L_FCNSET);
+        s->u.l.a = eval(e->args[0], c);
+        s->u.l.b = eval(e->args[1], c);
+        if (!is_set(s->u.l.a) || !is_set(s->u.l.b)) fail_at(e, "Attempted to construct a set of functions with a non-set.");
+        return s;
+    }
+    case X_FCN: {
+        MapData d;
+        memset(&d, 0, sizeof d);
+        d.body = e;
+        for_bindings(e->bounds, e->nb, c, fcn_fn, &d);
+        return mk_fcn_from(&d.keys, &d.out);
+    }
+    case X_APPLY: {
+        Expr *fe = e->args[0];
+        Value *key;
+        if (e->n == 2) key = eval(e->args[1], c);
+        else {
+            key = mk_tuple(e->n - 1);
+            for (int i = 1; i < e->n; i++) key->u.fcn.vals[i - 1] = eval(e->args[i], c);
+        }
+        if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
+        Value *f = eval(fe, c);
+        if (!is_fcn(f)) fail_at(e, "A non-function (%s) was applied as a function.", pretty(f));
+        return fcn_apply(f, key, e);
+    }
+    case X_DOT: {
+        Value *r = eval(e->args[0], c);
+        if (!is_fcn(r)) fail_at(e, "Attempted to access field %s of the non-record\n%s.", S(e->op), pretty(r));
+        return fcn_apply(r, mk_str(e->op), e);
+    }
+    case X_EXCEPT: {
+        Value *f = eval(e->args[0], c);
+        for (int i = 0; i < e->n - 1; i++) f = except_update(f, &e->paths[i], 0, e->args[i + 1], c, e);
+        return f;
+    }
+    case X_FILTER: {
+        Bound *b = &e->bounds[0];
+        Value *s = eval(b->set, c);
+        if (!is_set(s)) fail_at(e, "Attempted to compute a subset of the non-set:\n%s", pretty(s));
+        if (set_is_infinite(s)) {
+            Value *l = mk_lazy(L_FILTER);
+            l->u.l.a = s;
+            l->u.l.expr = e;
+            l->u.l.env = c.env;
+            l->u.l.inst = c.inst;
+            return l;
+        }
+        MapData d;
+        memset(&d, 0, sizeof d);
+        d.body = e;
+        for_bindings(e->bounds, e->nb, c, filter_fn, &d);
+        return list_set(&d.out);
+    }
+    case X_MAP: {
+        MapData d;
+        memset(&d, 0, sizeof d);
+        d.body = e->args[0];
+        for_bindings(e->bounds, e->nb, c, map_fn, &d);
+        return list_set(&d.out);
+    }
+    case X_FORALL: case X_EXISTS: {
+        QuantData q = {e->args[0], e->kind == X_FORALL, e};
+        for (int i = 0; i < e->nb; i++)
+            if (!e->bounds[i].set) fail_at(e, "TLC cannot handle an unbounded quantifier.");
+        for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
+        return BOOLV(q.value);
+    }
+    case X_CHOOSE: {
+        if (!e->bounds[0].set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
+        ChooseData d = {e->args[0], &e->bounds[0], NULL};
+        for_bindings(e->bounds, e->nb, c, choose_fn, &d);
+        if (!d.found)
+            fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
+        return d.found;
+    }
+    case X_IF: {
+        Value *v = eval(e->args[0], c);
+        if (v->kind != V_BOOL) fail_at(e, "A non-boolean expression (%s) was used as the condition of an IF.\n%s", kind_name(v), pretty(v));
+        return eval(e->args[v->u.i ? 1 : 2], c);
+    }
+    case X_CASE: {
+        for (int i = 0; i + 1 < e->n; i += 2) {
+            if (!e->args[i]) return eval(e->args[i + 1], c);
+            if (eval_bool(e->args[i], c)) return eval(e->args[i + 1], c);
+        }
+        fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
+    }
+    case X_LET: {
+        Env *env = c.env;
+        for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
+        /* The definitions see each other: close them over the new environment. */
+        for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
+        Ctx inner = {env, c.inst};
+        return eval(e->args[0], inner);
+    }
+    case X_LAMBDA: return mk_oper(e->def, c);
+    case X_OPREF: return mk_oper(e->def, (Ctx){NULL, c.inst});
+    case X_SQACT: case X_ANGLEACT: {
+        /* [A]_v and <<A>>_v evaluated on a pair of states. */
+        int a = eval_bool(e->args[0], c);
+        Value *now = eval(e->args[1], c);
+        int saved = primed;
+        primed = 1;
+        Value *then = eval(e->args[1], c);
+        primed = saved;
+        int unchanged = veq(now, then);
+        return BOOLV(e->kind == X_SQACT ? a || unchanged : a && !unchanged);
+    }
+    default:
+        fail_at(e, "TLC cannot evaluate this temporal formula as a value.");
+    }
+}
+
+static Value *eval(Expr *e, Ctx c) {
+    if (++eval_depth > 20000) { eval_depth = 0; fail_at(e, "The evaluation nested too deeply (infinite recursion?)."); }
+    Value *v = eval_inner(e, c);
+    eval_depth--;
+    return v;
+}
+
+/* An argument for an operator parameter: an operator. */
+static Value *eval_operator_arg(Expr *a, Ctx c) {
+    if (a->kind == X_LAMBDA || a->kind == X_OPREF) return eval(a, c);
+    if (a->kind == K_CALL && a->n == 0) return mk_oper(a->def, (Ctx){a->def->local == 2 ? c.env : NULL, c.inst});
+    if (a->kind == K_BOUND || a->kind == K_PARAMCALL) {
+        Value *v = eval(a, c);
+        return v;
+    }
+    if (a->kind == K_INSTCALL && a->n == 0) {
+        Inst *inst = c.inst;
+        for (int i = 0; i < a->ndefs; i++) {
+            Inst *in = NEW(Inst);
+            in->def = a->defs[i];
+            in->parent = inst;
+            inst = in;
+        }
+        return mk_oper(a->def, (Ctx){NULL, inst});
+    }
+    return eval(a, c);
+}
+
+static Value *call_values(Def *d, Value **vals, int n, Ctx c, Expr *where) {
+    if (d->native) return d->native(where, vals, c);
+    Env *env = c.env;
+    if (d->kind == D_FCN) return fcndef_apply(d, n == 1 ? vals[0] : NULL, c, where);
+    for (int i = 0; i < n && i < d->nparams; i++) env = mk_binding(d->params[i], vals[i], env);
+    Ctx inner = {env, c.inst};
+    return eval(d->body, inner);
+}
+
+static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
+    Def *d = op->u.op.def;
+    if (d->replacement) d = d->replacement;
+    if (d->nparams != n && !d->native)
+        fail_at(where, "The operator %s requires %d arguments.", S(d->name), d->nparams);
+    Ctx c = {op->u.op.env, op->u.op.inst};
+    if (d->local == 2 && !d->native) {
+        Env *b = env_find(c.env, d);
+        if (b) c.env = b->ctx_env;
+    }
+    return call_values(d, args, n, c, where);
+}
+
+static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
+    if (d->replacement) d = d->replacement;
+    if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
+    if (d->kind == D_FCN) {
+        if (d->local != 2 && d->level == 0 && d->cache) return d->cache;
+        Value *v = fcndef_value(d, c);
+        return v;
+    }
+    if (d->kind == D_PARAM) {
+        Env *b = env_find(c.env, d);
+        return force(b);
+    }
+    if (n < d->nparams && n == 0) return mk_oper(d, (Ctx){d->local == 2 ? c.env : NULL, c.inst});
+    if (d->local == 2) {
+        /* A LET definition: its parameters, then its closure. */
+        Env *b = env_find(c.env, d);
+        if (!b) fail_at(call, "Unbound LET definition %s.", S(d->name));
+        if (d->nparams == 0) return force(b);
+        Env *env = b->ctx_env;
+        for (int i = 0; i < n; i++) {
+            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(args[i], c), env);
+            else env = mk_thunk(d->params[i], args[i], c, env);
+        }
+        Ctx inner = {env, b->ctx_inst};
+        return eval(d->body, inner);
+    }
+    if (d->native) {
+        Value **vals = NEWN(Value *, n);
+        for (int i = 0; i < n; i++)
+            vals[i] = d->params[i]->arity ? eval_operator_arg(args[i], c) : eval(args[i], c);
+        return d->native(call, vals, c);
+    }
+    if (n == 0 && !c.inst) {
+        if (d->cache) return d->cache;
+        if (def_level(d) == 0) {
+            Arena *saved = arena;
+            arena = &perm_arena;
+            jmp_buf *outer = handler, here;
+            handler = &here;
+            if (setjmp(here)) { handler = outer; arena = saved; raise_error(); }
+            Ctx bare = {NULL, NULL};
+            Value *v = eval(d->body, bare);
+            handler = outer;
+            arena = saved;
+            d->cache = v;
+            return v;
+        }
+    }
+    Env *env = NULL;
+    for (int i = 0; i < n; i++) {
+        if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(args[i], c), env);
+        else env = mk_thunk(d->params[i], args[i], c, env);
+    }
+    Ctx inner = {env, c.inst};
+    return eval(d->body, inner);
+}
+
+/* ---------------------------------------------------------------- standard modules */
+
+#define NATIVE(name) static Value *name(Expr *call, Value **a, Ctx c)
+#define UNUSED (void)call; (void)a; (void)c
+
+NATIVE(n_nat) { UNUSED; return mk_lazy(L_NAT); }
+NATIVE(n_int) { UNUSED; return mk_lazy(L_INT); }
+NATIVE(n_plus) { UNUSED; int64_t x = int_arg(a[0], 1, "+"), y = int_arg(a[1], 2, "+"); return mk_int(check_int(x + y, x, y, "+")); }
+NATIVE(n_minus) { UNUSED; int64_t x = int_arg(a[0], 1, "-"), y = int_arg(a[1], 2, "-"); return mk_int(check_int(x - y, x, y, "-")); }
+NATIVE(n_times) { UNUSED; int64_t x = int_arg(a[0], 1, "*"), y = int_arg(a[1], 2, "*"); return mk_int(check_int(x * y, x, y, "*")); }
+NATIVE(n_lt) { UNUSED; return BOOLV(int_arg(a[0], 1, "<") < int_arg(a[1], 2, "<")); }
+NATIVE(n_gt) { UNUSED; return BOOLV(int_arg(a[0], 1, ">") > int_arg(a[1], 2, ">")); }
+NATIVE(n_leq) { UNUSED; return BOOLV(int_arg(a[0], 1, "\\leq") <= int_arg(a[1], 2, "\\leq")); }
+NATIVE(n_geq) { UNUSED; return BOOLV(int_arg(a[0], 1, "\\geq") >= int_arg(a[1], 2, "\\geq")); }
+NATIVE(n_neg) { UNUSED; int64_t x = int_arg(a[0], 1, "-"); return mk_int(check_int(-x, 0, x, "-")); }
+
+NATIVE(n_pow) {
+    UNUSED;
+    int64_t x = int_arg(a[0], 1, "^"), y = int_arg(a[1], 2, "^");
+    if (y < 0) fail("The second argument of ^ should be a natural number, but instead it is:\n%lld", (long long)y);
+    if (x == 0 && y == 0) fail("0^0 is undefined.");
+    int64_t r = 1;
+    for (int64_t i = 0; i < y; i++) {
+        r *= x;
+        if (r > 2147483647LL || r < -2147483648LL) fail("Overflow when computing %lld^%lld", (long long)x, (long long)y);
+    }
+    return mk_int(r);
+}
+
+NATIVE(n_div) {
+    UNUSED;
+    int64_t x = int_arg(a[0], 1, "\\div"), y = int_arg(a[1], 2, "\\div");
+    if (y == 0) fail("The second argument of \\div is 0.");
+    int64_t q = x / y;
+    if ((x % y != 0) && ((x < 0) != (y < 0))) q--;
+    return mk_int(check_int(q, x, y, "\\div"));
+}
+
+NATIVE(n_mod) {
+    UNUSED;
+    int64_t x = int_arg(a[0], 1, "%"), y = int_arg(a[1], 2, "%");
+    if (y <= 0) fail("The second argument of %% should be a positive number, but instead it is:\n%lld", (long long)y);
+    int64_t r = x % y;
+    if (r < 0) r += y;
+    return mk_int(r);
+}
+
+NATIVE(n_range) {
+    UNUSED;
+    return mk_interval(int_arg(a[0], 1, ".."), int_arg(a[1], 2, ".."));
+}
+
+/* A sequence: a function on 1..n, or a string. */
+static Value *seq_arg(Value *v, int which, const char *op) {
+    if (is_fcn(v) && fcn_is_tuple(v)) return v;
+    if (is_fcn(v) && v->n == 0) return v;
+    fail("The %s argument of %s should be a sequence, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
+}
+
+static Value *seq_of(Value *f) {
+    if (f->kind == V_TUPLE) return f;
+    Value *t = mk_tuple(f->n);
+    for (int i = 0; i < f->n; i++) t->u.fcn.vals[i] = f->u.fcn.vals[i];
+    return t;
+}
+
+NATIVE(n_seq) { UNUSED; Value *s = mk_lazy(L_SEQ); s->u.l.a = a[0]; return s; }
+
+NATIVE(n_len) {
+    UNUSED;
+    if (a[0]->kind == V_STR) return mk_int(strs[a[0]->u.i].len);
+    return mk_int(seq_arg(a[0], 1, "Len")->n);
+}
+
+NATIVE(n_concat) {
+    UNUSED;
+    if (a[0]->kind == V_STR && a[1]->kind == V_STR) {
+        Buf b = {0};
+        buf_puts(&b, S(a[0]->u.i));
+        buf_puts(&b, S(a[1]->u.i));
+        int id = intern_n(b.s ? b.s : "", (int)b.n);
+        free(b.s);
+        return mk_str(id);
+    }
+    Value *x = seq_arg(a[0], 1, "\\o"), *y = seq_arg(a[1], 2, "\\o");
+    Value *t = mk_tuple(x->n + y->n);
+    for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
+    for (int i = 0; i < y->n; i++) t->u.fcn.vals[x->n + i] = y->u.fcn.vals[i];
+    return t;
+}
+
+NATIVE(n_append) {
+    UNUSED;
+    Value *x = seq_arg(a[0], 1, "Append");
+    Value *t = mk_tuple(x->n + 1);
+    for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
+    t->u.fcn.vals[x->n] = a[1];
+    return t;
+}
+
+NATIVE(n_head) {
+    UNUSED;
+    Value *x = seq_arg(a[0], 1, "Head");
+    if (x->n == 0) fail("Attempted to apply Head to the empty sequence.");
+    return x->u.fcn.vals[0];
+}
+
+NATIVE(n_tail) {
+    UNUSED;
+    Value *x = seq_arg(a[0], 1, "Tail");
+    if (x->n == 0) fail("Attempted to apply Tail to the empty sequence.");
+    Value *t = mk_tuple(x->n - 1);
+    for (int i = 1; i < x->n; i++) t->u.fcn.vals[i - 1] = x->u.fcn.vals[i];
+    return t;
+}
+
+NATIVE(n_subseq) {
+    UNUSED;
+    Value *x = seq_arg(a[0], 1, "SubSeq");
+    int64_t m = int_arg(a[1], 2, "SubSeq"), n = int_arg(a[2], 3, "SubSeq");
+    if (m > n) return mk_tuple(0);
+    if (m < 1 || n > x->n)
+        fail("The second argument of SubSeq must be in the domain of its first argument:\n%s\nbut instead it is\n%lld", pretty(x), (long long)m);
+    Value *t = mk_tuple((int)(n - m + 1));
+    for (int64_t i = m; i <= n; i++) t->u.fcn.vals[i - m] = x->u.fcn.vals[i - 1];
+    return t;
+}
+
+NATIVE(n_selectseq) {
+    UNUSED;
+    Value *x = seq_arg(a[0], 1, "SelectSeq");
+    List l = {0};
+    for (int i = 0; i < x->n; i++) {
+        Value *r = apply_oper(a[1], &x->u.fcn.vals[i], 1, call);
+        if (r->kind != V_BOOL) fail("The second argument of SelectSeq must be a predicate.");
+        if (r->u.i) list_add(&l, x->u.fcn.vals[i]);
+    }
+    Value *t = mk_tuple(l.n);
+    for (int i = 0; i < l.n; i++) t->u.fcn.vals[i] = l.v[i];
+    return t;
+}
+
+NATIVE(n_isfinite) { UNUSED; return BOOLV(is_set(a[0]) && !set_is_infinite(a[0])); }
+
+NATIVE(n_cardinality) {
+    UNUSED;
+    if (!is_set(a[0])) fail("The argument of Cardinality should be a finite set, but instead it is:\n%s", pretty(a[0]));
+    if (set_is_infinite(a[0])) fail("Attempted to compute the cardinality of the infinite set\n%s.", pretty(a[0]));
+    return mk_int(enumerate(a[0])->n);
+}
+
+NATIVE(n_print) {
+    UNUSED;
+    printf("%s  %s\n", pretty(a[0]), pretty(a[1]));
+    fflush(stdout);
+    return a[1];
+}
+
+NATIVE(n_printt) {
+    UNUSED;
+    printf("%s\n", pretty(a[0]));
+    fflush(stdout);
+    return TRUEV;
+}
+
+NATIVE(n_assert) {
+    UNUSED;
+    if (a[0]->kind == V_BOOL && a[0]->u.i) return TRUEV;
+    error_reset();
+    buf_printf(&error_message, "The first argument of Assert evaluated to FALSE; the second argument was:\n%s", pretty(a[1]));
+    error_status = TPP_VIOLATION_ASSERT;
+    raise_error();
+}
+
+NATIVE(n_javatime) { UNUSED; return mk_int((int64_t)time(NULL) & 0x7fffffff); }
+
+NATIVE(n_tlcget) {
+    UNUSED;
+    if (a[0]->kind == V_STR && strcmp(S(a[0]->u.i), "level") == 0) return mk_int(cur_level);
+    fail("TLCGet(%s) is not supported.", pretty(a[0]));
+}
+
+NATIVE(n_tlcset) { UNUSED; return TRUEV; }
+
+NATIVE(n_singleton) {
+    UNUSED;
+    Value *f = mk_fcn(1);
+    f->u.fcn.keys[0] = a[0];
+    f->u.fcn.vals[0] = a[1];
+    return f;
+}
+
+NATIVE(n_merge) {
+    UNUSED;
+    if (!is_fcn(a[0]) || !is_fcn(a[1])) fail("The arguments of @@ should be functions.");
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < a[0]->n; i++) { list_add(&keys, fcn_key(a[0], i)); list_add(&vals, a[0]->u.fcn.vals[i]); }
+    for (int i = 0; i < a[1]->n; i++) {
+        Value *k = fcn_key(a[1], i);
+        int seen = 0;
+        for (int j = 0; j < a[0]->n && !seen; j++) seen = veq(k, fcn_key(a[0], j));
+        if (!seen) { list_add(&keys, k); list_add(&vals, a[1]->u.fcn.vals[i]); }
+    }
+    return mk_fcn_from(&keys, &vals);
+}
+
+NATIVE(n_permutations) {
+    UNUSED;
+    Value *s = enumerate(a[0]);
+    int n = s->n;
+    if (n > 10) fail("Attempted to compute Permutations of a set with more than 10 elements.");
+    List out = {0};
+    int *p = NEWN(int, n);
+    for (int i = 0; i < n; i++) p[i] = i;
+    for (;;) {
+        Value *f = mk_fcn(n);
+        for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = s->u.set.elems[i]; f->u.fcn.vals[i] = s->u.set.elems[p[i]]; }
+        if (n == 0) f->empty_fcn = 1;
+        list_add(&out, f);
+        int i = n - 2;
+        while (i >= 0 && p[i] >= p[i + 1]) i--;
+        if (i < 0) break;
+        int j = n - 1;
+        while (p[j] <= p[i]) j--;
+        int t = p[i]; p[i] = p[j]; p[j] = t;
+        for (int l = i + 1, r = n - 1; l < r; l++, r--) { t = p[l]; p[l] = p[r]; p[r] = t; }
+    }
+    return list_set(&out);
+}
+
+NATIVE(n_sortseq) {
+    UNUSED;
+    Value *x = seq_of(seq_arg(a[0], 1, "SortSeq"));
+    Value *t = mk_tuple(x->n);
+    for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
+    for (int i = 1; i < t->n; i++) {
+        Value *v = t->u.fcn.vals[i];
+        int j = i - 1;
+        while (j >= 0) {
+            Value *pair[2] = {v, t->u.fcn.vals[j]};
+            Value *r = apply_oper(a[1], pair, 2, call);
+            if (r->kind != V_BOOL) fail("The second argument of SortSeq must be a binary predicate.");
+            if (!r->u.i) break;
+            t->u.fcn.vals[j + 1] = t->u.fcn.vals[j];
+            j--;
+        }
+        t->u.fcn.vals[j + 1] = v;
+    }
+    return t;
+}
+
+NATIVE(n_randomelement) {
+    UNUSED;
+    Value *s = enumerate(a[0]);
+    if (!s->n) fail("Attempted to compute RandomElement of the empty set.");
+    return s->u.set.elems[0];
+}
+
+NATIVE(n_any) { UNUSED; fail("Attempted to evaluate Any."); }
+
+NATIVE(n_tostring) {
+    UNUSED;
+    char *s = value_str(a[0]);
+    return mk_str(intern(s));
+}
+
+NATIVE(n_tlceval) { UNUSED; return a[0]; }
+
+static const struct { const char *module, *name; Native fn; } natives[] = {
+    {"Naturals", "Nat", n_nat}, {"Naturals", "+", n_plus}, {"Naturals", "-", n_minus},
+    {"Naturals", "*", n_times}, {"Naturals", "^", n_pow}, {"Naturals", "<", n_lt},
+    {"Naturals", ">", n_gt}, {"Naturals", "\\leq", n_leq}, {"Naturals", "\\geq", n_geq},
+    {"Naturals", "%", n_mod}, {"Naturals", "\\div", n_div}, {"Naturals", "..", n_range},
+    {"Integers", "Int", n_int}, {"Integers", "-.", n_neg},
+    {"Sequences", "Seq", n_seq}, {"Sequences", "Len", n_len}, {"Sequences", "\\o", n_concat},
+    {"Sequences", "Append", n_append}, {"Sequences", "Head", n_head}, {"Sequences", "Tail", n_tail},
+    {"Sequences", "SubSeq", n_subseq}, {"Sequences", "SelectSeq", n_selectseq},
+    {"FiniteSets", "IsFiniteSet", n_isfinite}, {"FiniteSets", "Cardinality", n_cardinality},
+    {"TLC", "Print", n_print}, {"TLC", "PrintT", n_printt}, {"TLC", "Assert", n_assert},
+    {"TLC", "JavaTime", n_javatime}, {"TLC", "TLCGet", n_tlcget}, {"TLC", "TLCSet", n_tlcset},
+    {"TLC", ":>", n_singleton}, {"TLC", "@@", n_merge}, {"TLC", "Permutations", n_permutations},
+    {"TLC", "SortSeq", n_sortseq}, {"TLC", "RandomElement", n_randomelement}, {"TLC", "Any", n_any},
+    {"TLC", "ToString", n_tostring}, {"TLC", "TLCEval", n_tlceval},
+    {NULL, NULL, NULL}};
+
+/* Attaches the native operators to the standard modules that were read
+   from tla2tools' text (a module the user supplies keeps its own). */
+static void bind_natives(void) {
+    for (int i = 0; i < nmodules; i++) {
+        Module *m = modules[i];
+        if (!m->standard) continue;
+        for (int u = 0; u < m->nunits; u++) {
+            Def *d = m->units[u].def;
+            if (m->units[u].kind != 0 || !d) continue;
+            for (int k = 0; natives[k].module; k++)
+                if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0) d->native = natives[k].fn;
+        }
+    }
+}
+
+/* ---------------------------------------------------------------- generator */
+
+/* The generator enumerates the assignments an initial predicate or an
+   action allows (§10.2, §10.3). Conjuncts still to be satisfied wait in a
+   continuation. */
+typedef struct Cont { Expr *e; Ctx c; struct Cont *next; } Cont;
+
+static Value **gen_target;      /* the state being assigned */
+static int gen_init;            /* assigning unprimed variables: an initial predicate */
+static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
+
+static int gen(Expr *e, Ctx c, Cont *k);
+
+static int gen_cont(Cont *k) {
+    if (!k) return gen_emit();
+    return gen(k->e, k->c, k->next);
+}
+
+static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
+    Cont *k = NEW(Cont);
+    k->e = e; k->c = c; k->next = next;
+    return k;
+}
+
+/* The variable an expression assigns: v (initial predicate) or v'
+   (action), through instance substitutions; -1 if none. */
+static int assignable(Expr *lhs, Ctx c) {
+    if (!gen_init) {
+        if (lhs->kind != K_PRIME) return -1;
+        lhs = lhs->args[0];
+    }
+    while (lhs->kind == K_DECL) {
+        Def *d = lhs->def;
+        Expr *sub = NULL;
+        Ctx outer = c;
+        for (Inst *in = c.inst; in && !sub; in = in->parent)
+            for (int i = 0; i < in->def->nsubst; i++)
+                if (in->def->subst_decl[i] == d) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; break; }
+        if (!sub) return d->kind == D_VAR ? d->var_index : -1;
+        lhs = sub;
+        c = outer;
+    }
+    return -1;
+}
+
+static int gen_assign(int var, Value *v, Cont *k) {
+    gen_target[var] = v;
+    int r = gen_cont(k);
+    gen_target[var] = NULL;
+    return r;
+}
+
+typedef struct { Expr *body; Cont *k; } GenData;
+
+static int gen_bound_fn(Ctx c, void *data) {
+    GenData *g = data;
+    return gen(g->body, c, g->k);
+}
+
+/* UNCHANGED e: each variable of e keeps its value. */
+static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
+    if (e->kind == X_TUPLE) {
+        for (int i = e->n - 1; i >= 1; i--) {
+            Expr *u = NEW(Expr);
+            *u = *e;
+            u->kind = K_UNCHANGED;
+            u->n = 1;
+            u->args = NEWN(Expr *, 1);
+            u->args[0] = e->args[i];
+            k = mk_cont(u, c, k);
+        }
+        if (e->n == 0) return gen_cont(k);
+        return gen_unchanged(e->args[0], c, k);
+    }
+    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
+        return gen_unchanged(e->def->body, (Ctx){NULL, c.inst}, k);
+    if (e->kind == K_DECL) {
+        Expr prime;
+        memset(&prime, 0, sizeof prime);
+        prime.kind = K_PRIME;
+        prime.n = 1;
+        prime.args = &e;
+        int var = assignable(&prime, c);
+        if (var >= 0 && !gen_target[var]) {
+            Value *v = eval(e, c);
+            return gen_assign(var, v, k);
+        }
+    }
+    Value *now = eval(e, c);
+    int saved = primed;
+    primed = 1;
+    Value *then = eval(e, c);
+    primed = saved;
+    return veq(now, then) ? gen_cont(k) : 0;
+}
+
+static _Noreturn void not_boolean(Expr *e, Value *v) {
+    (void)v;
+    fail_at(e, "TLC expected a boolean value, but did not find one.");
+}
+
+static int gen(Expr *e, Ctx c, Cont *k) {
+    switch (e->kind) {
+    case X_BOOL:
+        return e->num ? gen_cont(k) : 0;
+    case K_AND:
+        for (int i = e->n - 1; i >= 1; i--) k = mk_cont(e->args[i], c, k);
+        return gen(e->args[0], c, k);
+    case K_OR:
+        for (int i = 0; i < e->n; i++) if (gen(e->args[i], c, k)) return 1;
+        return 0;
+    case X_EXISTS: {
+        GenData g = {e->args[0], k};
+        return for_bindings(e->bounds, e->nb, c, gen_bound_fn, &g);
+    }
+    case X_IF: {
+        Value *v = eval(e->args[0], c);
+        if (v->kind != V_BOOL) not_boolean(e->args[0], v);
+        return gen(e->args[v->u.i ? 1 : 2], c, k);
+    }
+    case X_CASE:
+        for (int i = 0; i + 1 < e->n; i += 2)
+            if (!e->args[i] || eval_bool(e->args[i], c)) return gen(e->args[i + 1], c, k);
+        fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
+    case X_LET: {
+        Env *env = c.env;
+        for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
+        for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
+        return gen(e->args[0], (Ctx){env, c.inst}, k);
+    }
+    case K_CALL: {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;
+        if (d->kind != D_OP || d->native || d->nparams != e->n) break;
+        if (d->local == 2) {
+            Env *b = env_find(c.env, d);
+            if (!b) break;
+            Env *env = b->ctx_env;
+            for (int i = 0; i < e->n; i++) {
+                if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+                else env = mk_thunk(d->params[i], e->args[i], c, env);
+            }
+            return gen(d->body, (Ctx){env, b->ctx_inst}, k);
+        }
+        if (def_level(d) == 0 && e->n == 0) break;
+        Env *env = NULL;
+        for (int i = 0; i < e->n; i++) {
+            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+            else env = mk_thunk(d->params[i], e->args[i], c, env);
+        }
+        return gen(d->body, (Ctx){env, c.inst}, k);
+    }
+    case K_INSTCALL: {
+        Def *d = e->def;
+        if (d->kind != D_OP || d->native) break;
+        Inst *inst = c.inst;
+        for (int i = 0; i < e->ndefs; i++) {
+            Def *id = e->defs[i];
+            Env *env = NULL;
+            Seg *s = &e->segs[i];
+            for (int j = 0; j < id->nparams && j < s->n; j++) env = mk_thunk(id->params[j], s->args[j], c, env);
+            Inst *in = NEW(Inst);
+            in->def = id;
+            in->env = env;
+            in->parent = inst;
+            inst = in;
+        }
+        Env *env = NULL;
+        for (int i = 0; i < e->n && i < d->nparams; i++) {
+            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+            else env = mk_thunk(d->params[i], e->args[i], c, env);
+        }
+        return gen(d->body, (Ctx){env, inst}, k);
+    }
+    case K_EQ: {
+        int var = assignable(e->args[0], c);
+        if (var >= 0 && !gen_target[var]) return gen_assign(var, eval(e->args[1], c), k);
+        break;
+    }
+    case K_IN: {
+        int var = assignable(e->args[0], c);
+        if (var >= 0 && !gen_target[var]) {
+            Value *s = eval(e->args[1], c);
+            if (!is_set(s)) fail_at(e, "Attempted to check if a value is an element of the non-set:\n%s", pretty(s));
+            if (set_is_infinite(s)) fail_at(e->args[1], "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+            s = enumerate(s);
+            for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
+            return 0;
+        }
+        break;
+    }
+    case K_UNCHANGED:
+        return gen_unchanged(e->args[0], c, k);
+    case X_SQACT: {
+        if (gen(e->args[0], c, k)) return 1;
+        return gen_unchanged(e->args[1], c, k);
+    }
+    case X_ANGLEACT: {
+        Expr *u = NEW(Expr);
+        *u = *e;
+        u->kind = K_UNCHANGED;
+        u->n = 1;
+        u->args = NEWN(Expr *, 1);
+        u->args[0] = e->args[1];
+        Expr *not = NEW(Expr);
+        *not = *e;
+        not->kind = K_NOT;
+        not->n = 1;
+        not->args = NEWN(Expr *, 1);
+        not->args[0] = u;
+        return gen(e->args[0], c, mk_cont(not, c, k));
+    }
+    default:
+        break;
+    }
+    Value *v = eval(e, c);
+    if (v->kind != V_BOOL) not_boolean(e, v);
+    return v->u.i ? gen_cont(k) : 0;
+}
+
+/* Whether action a has a successor from the current state. */
+static int enabled_found;
+static int enabled_emit(void) {
+    for (int i = 0; i < nvars; i++) if (!gen_target[i]) return 0;
+    enabled_found = 1;
+    return 1;
+}
+
+static int enabled(Expr *a, Ctx c) {
+    Value **saved_target = gen_target, **saved_next = next_state;
+    int saved_init = gen_init, saved_primed = primed;
+    int (*saved_emit)(void) = gen_emit;
+    Value **fresh = NEWN(Value *, nvars);
+    gen_target = next_state = fresh;
+    gen_init = 0;
+    primed = 0;
+    gen_emit = enabled_emit;
+    enabled_found = 0;
+    gen(a, c, NULL);
+    int found = enabled_found;
+    gen_target = saved_target;
+    next_state = saved_next;
+    gen_init = saved_init;
+    primed = saved_primed;
+    gen_emit = saved_emit;
+    return found;
+}
+
+/* ---------------------------------------------------------------- actions */
+
+/* The next-state action split at its disjunctions, constant existential
+   quantifiers, and the definitions it uses; each part is named by the
+   definition it belongs to and located by its expression (§11.2). */
+typedef struct { Expr *e; Ctx c; int name; Expr *loc; } Action;
+
+static Action *actions;
+static int nactions;
+
+static void add_action(Expr *e, Ctx c, int name, Expr *loc) {
+    actions = xrealloc(actions, sizeof(Action) * (size_t)(nactions + 1));
+    actions[nactions].e = e;
+    actions[nactions].c = c;
+    actions[nactions].name = name;
+    actions[nactions].loc = loc;
+    nactions++;
+}
+
+typedef struct { Expr *body; int name; } SplitData;
+
+static void split_action(Expr *e, Ctx c, int name);
+
+static int split_fn(Ctx c, void *data) {
+    SplitData *s = data;
+    split_action(s->body, c, s->name);
+    return 0;
+}
+
+static int bounds_constant(Expr *e) {
+    for (int i = 0; i < e->nb; i++) if (!e->bounds[i].set || expr_level(e->bounds[i].set) > 0) return 0;
+    return 1;
+}
+
+static void split_action(Expr *e, Ctx c, int name) {
+    switch (e->kind) {
+    case K_OR:
+        for (int i = 0; i < e->n; i++) split_action(e->args[i], c, name);
+        return;
+    case X_EXISTS:
+        if (bounds_constant(e)) {
+            SplitData s = {e->args[0], name};
+            for_bindings(e->bounds, e->nb, c, split_fn, &s);
+            return;
+        }
+        break;
+    case X_LET: {
+        Env *env = c.env;
+        for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
+        for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
+        split_action(e->args[0], (Ctx){env, c.inst}, name);
+        return;
+    }
+    case K_CALL: {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;
+        if (d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
+        Env *env = NULL;
+        for (int i = 0; i < e->n; i++) {
+            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+            else env = mk_thunk(d->params[i], e->args[i], c, env);
+        }
+        split_action(d->body, (Ctx){env, c.inst}, d->name);
+        return;
+    }
+    case K_INSTCALL: {
+        Def *d = e->def;
+        if (d->kind != D_OP || d->native) break;
+        Inst *inst = c.inst;
+        for (int i = 0; i < e->ndefs; i++) {
+            Def *id = e->defs[i];
+            Env *env = NULL;
+            Seg *s = &e->segs[i];
+            for (int j = 0; j < id->nparams && j < s->n; j++) env = mk_thunk(id->params[j], s->args[j], c, env);
+            Inst *in = NEW(Inst);
+            in->def = id;
+            in->env = env;
+            in->parent = inst;
+            inst = in;
+        }
+        Env *env = NULL;
+        for (int i = 0; i < e->n && i < d->nparams; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
+        split_action(d->body, (Ctx){env, inst}, d->name);
+        return;
+    }
+    default:
+        break;
+    }
+    add_action(e, c, name, e);
+}
+
+/* ---------------------------------------------------------------- states */
+
+/* A state is stored as the bytes of its values. The canonical encoding,
+   which the fingerprint hashes, is the same for equal values; the stored
+   encoding also keeps how a value prints. */
+static void put32(Buf *b, int64_t v) { int32_t x = (int32_t)v; buf_add(b, (char *)&x, 4); }
+
+static void encode(Buf *b, Value *v, int canon) {
+    char tag;
+    switch (v->kind) {
+    case V_BOOL: tag = 'b'; buf_add(b, &tag, 1); tag = (char)v->u.i; buf_add(b, &tag, 1); return;
+    case V_INT: tag = 'i'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
+    case V_STR: tag = 's'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
+    case V_MODEL: tag = 'm'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
+    case V_INTERVAL:
+        if (!canon) { tag = 'I'; buf_add(b, &tag, 1); put32(b, v->u.range.lo); put32(b, v->u.range.hi); return; }
+        /* fall through */
+    case V_SET: case V_LAZY: {
+        if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
+        Value *s = enumerate(v);
+        tag = 'S'; buf_add(b, &tag, 1); put32(b, s->n);
+        for (int i = 0; i < s->n; i++) encode(b, s->u.set.elems[i], canon);
+        return;
+    }
+    case V_TUPLE: case V_FCN: {
+        int tuple = v->kind == V_TUPLE || (canon && fcn_is_tuple(v)) || (canon && v->n == 0);
+        if (!canon && v->kind == V_FCN && v->n == 0) { tag = v->empty_fcn ? 'E' : 'T'; buf_add(b, &tag, 1); put32(b, 0); return; }
+        tag = tuple ? 'T' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
+        for (int i = 0; i < v->n; i++) {
+            if (!tuple) encode(b, v->u.fcn.keys[i], canon);
+            encode(b, v->u.fcn.vals[i], canon);
+        }
+        return;
+    }
+    default:
+        fail("Attempted to fingerprint an operator.");
+    }
+}
+
+static int32_t get32(const char **p) { int32_t x; memcpy(&x, *p, 4); *p += 4; return x; }
+
+static Value *decode(const char **p) {
+    char tag = *(*p)++;
+    switch (tag) {
+    case 'b': return BOOLV(*(*p)++);
+    case 'i': return mk_int(get32(p));
+    case 's': return mk_str(get32(p));
+    case 'm': return mk_model(get32(p));
+    case 'I': { int32_t lo = get32(p); int32_t hi = get32(p); return mk_interval(lo, hi); }
+    case 'S': {
+        int n = get32(p);
+        Value *s = mk_set(n);
+        for (int i = 0; i < n; i++) s->u.set.elems[i] = decode(p);
+        return s;
+    }
+    case 'T': {
+        int n = get32(p);
+        Value *t = mk_tuple(n);
+        for (int i = 0; i < n; i++) t->u.fcn.vals[i] = decode(p);
+        return t;
+    }
+    case 'E': { get32(p); Value *f = mk_fcn(0); f->empty_fcn = 1; return f; }
+    default: {
+        int n = get32(p);
+        Value *f = mk_fcn(n);
+        for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = decode(p); f->u.fcn.vals[i] = decode(p); }
+        return f;
+    }
+    }
+}
+
+typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; } StateRec;
+
+static StateRec *states;
+static int nstates, capstates;
+static Buf store;
+static int *fp_table;
+static int fp_size;
+static Buf scratch_buf;
+
+static uint64_t fp_of_bytes(const char *s, size_t n) {
+    uint64_t h = hash_bytes(s, n, 0xcbf29ce484222325ULL);
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
+    return h;
+}
+
+static int fp_find(uint64_t fp) {
+    if (!fp_size) return -1;
+    int j = (int)(fp & (uint64_t)(fp_size - 1));
+    while (fp_table[j]) {
+        if (states[fp_table[j] - 1].fp == fp) return fp_table[j] - 1;
+        j = (j + 1) & (fp_size - 1);
+    }
+    return -1;
+}
+
+static void fp_insert(int idx) {
+    if ((nstates + 1) * 2 >= fp_size) {
+        int size = fp_size ? fp_size * 2 : 1 << 16;
+        int *table = calloc((size_t)size, sizeof(int));
+        for (int i = 0; i < nstates; i++) {
+            if (i == idx) continue;
+            int j = (int)(states[i].fp & (uint64_t)(size - 1));
+            while (table[j]) j = (j + 1) & (size - 1);
+            table[j] = i + 1;
+        }
+        free(fp_table);
+        fp_table = table;
+        fp_size = size;
+    }
+    int j = (int)(states[idx].fp & (uint64_t)(fp_size - 1));
+    while (fp_table[j]) j = (j + 1) & (fp_size - 1);
+    fp_table[j] = idx + 1;
+}
+
+static Value **decode_state(int idx) {
+    Value **st = NEWN(Value *, nvars);
+    const char *p = store.s + states[idx].off;
+    for (int i = 0; i < nvars; i++) st[i] = decode(&p);
+    return st;
+}
+
+/* ---------------------------------------------------------------- the model */
+
+typedef struct { Def *def; Expr *expr; int name; } Check;
+
+static Expr *init_expr, *next_expr;
+static Ctx root_ctx;
+static Check *invariants, *constraints, *action_constraints, *action_props, *temporal_props;
+static int ninvariants, nconstraints, naction_constraints, naction_props, ntemporal_props;
+static Expr *view_expr;
+static Value **symmetry;     /* permutations of model values */
+static int nsymmetry;
+static int check_deadlock = 1;
+static Module *root;
+static Expr **fairness;       /* WF and SF conjuncts of the specification */
+static int nfairness;
+static Expr *spec_subscript;
+
+static void add_check(Check **list, int *n, Def *d, Expr *e, int name) {
+    *list = xrealloc(*list, sizeof(Check) * (size_t)(*n + 1));
+    (*list)[*n].def = d;
+    (*list)[*n].expr = e;
+    (*list)[*n].name = name;
+    (*n)++;
+}
+
+/* Applies a permutation of model values to a value. */
+static Value *permute(Value *v, Value *perm) {
+    switch (v->kind) {
+    case V_MODEL:
+        for (int i = 0; i < perm->n; i++) if (veq(fcn_key(perm, i), v)) return perm->u.fcn.vals[i];
+        return v;
+    case V_SET: case V_INTERVAL: case V_LAZY: {
+        Value *s = enumerate(v);
+        List l = {0};
+        for (int i = 0; i < s->n; i++) list_add(&l, permute(s->u.set.elems[i], perm));
+        return list_set(&l);
+    }
+    case V_TUPLE: {
+        Value *t = mk_tuple(v->n);
+        for (int i = 0; i < v->n; i++) t->u.fcn.vals[i] = permute(v->u.fcn.vals[i], perm);
+        return t;
+    }
+    case V_FCN: {
+        List keys = {0}, vals = {0};
+        for (int i = 0; i < v->n; i++) { list_add(&keys, permute(v->u.fcn.keys[i], perm)); list_add(&vals, permute(v->u.fcn.vals[i], perm)); }
+        Value *f = mk_fcn_from(&keys, &vals);
+        f->empty_fcn = v->empty_fcn;
+        return f;
+    }
+    default:
+        return v;
+    }
+}
+
+static uint64_t fingerprint(Value **st) {
+    if (view_expr) {
+        Value **saved = cur_state;
+        cur_state = st;
+        Value *v = eval(view_expr, root_ctx);
+        cur_state = saved;
+        scratch_buf.n = 0;
+        encode(&scratch_buf, v, 1);
+        return fp_of_bytes(scratch_buf.s, scratch_buf.n);
+    }
+    uint64_t best = 0;
+    for (int p = 0; p <= nsymmetry; p++) {
+        if (p == 0 && nsymmetry) continue;
+        scratch_buf.n = 0;
+        for (int i = 0; i < nvars; i++) encode(&scratch_buf, nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i], 1);
+        uint64_t fp = fp_of_bytes(scratch_buf.s, scratch_buf.n);
+        if (p <= 1 || fp < best) best = fp;
+    }
+    return best;
+}
+
+static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
+    if (nstates == capstates) {
+        capstates = capstates ? capstates * 2 : 1024;
+        states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
+    }
+    StateRec *r = &states[nstates];
+    r->fp = fp;
+    r->off = store.n;
+    for (int i = 0; i < nvars; i++) encode(&store, st[i], 0);
+    r->len = (int)(store.n - r->off);
+    r->parent = parent;
+    r->action = action;
+    r->depth = depth;
+    fp_insert(nstates);
+    return nstates++;
+}
+
+/* ---------------------------------------------------------------- reporting */
+
+static long generated;
+static int max_depth = 1;
+static int expanded;          /* states taken off the queue */
+
+static void print_state(Value **st) {
+    if (nvars == 1) {
+        printf("%s = %s\n", S(vars[0]->name), st[0] ? pretty(st[0]) : "null");
+        return;
+    }
+    for (int i = 0; i < nvars; i++) printf("/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+}
+
+static void action_label(int action) {
+    if (action < 0) { printf("<Initial predicate>"); return; }
+    Action *a = &actions[action];
+    Expr *l = a->loc;
+    printf("<%s line %d, col %d to line %d, col %d of module %s>", S(a->name), l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
+}
+
+/* The trace from an initial state to state idx, then optionally one more
+   state reached by `action`. */
+static void print_trace(int idx, Value **extra, int extra_action) {
+    int n = 0;
+    for (int i = idx; i >= 0; i = states[i].parent) n++;
+    int *path = NEWN(int, n);
+    int k = n;
+    for (int i = idx; i >= 0; i = states[i].parent) path[--k] = i;
+    for (int i = 0; i < n; i++) {
+        printf("State %d: ", i + 1);
+        action_label(states[path[i]].action);
+        printf("\n");
+        print_state(decode_state(path[i]));
+        printf("\n");
+    }
+    if (extra) {
+        printf("State %d: ", n + 1);
+        action_label(extra_action);
+        printf("\n");
+        print_state(extra);
+        printf("\n");
+    }
+}
+
+static void print_counts(int queued, int with_depth) {
+    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates, queued);
+    if (with_depth) printf("The depth of the complete state graph search is %d.\n", max_depth);
+    fflush(stdout);
+}
+
+static void print_error_message(void) {
+    printf("Error: %s", error_message.s ? error_message.s : "");
+    if (error_expr && error_expr->mod) {
+        Buf b = {0};
+        loc_text(&b, error_expr);
+        printf("\n%s", b.s);
+        free(b.s);
+    }
+    printf("\n");
+}
+
+/* ---------------------------------------------------------------- search */
+
+static int expanding = -1;    /* the state whose successors are generated */
+static int cur_action;
+static Value **succ;          /* the assignment the generator fills */
+static int succ_count;
+static int violation;         /* the exit status of the first violation, 0 if none */
+
+static int check_list(Check *list, int n, Value **st) {
+    Value **saved = cur_state;
+    cur_state = st;
+    for (int i = 0; i < n; i++) {
+        Value *v = eval(list[i].expr, root_ctx);
+        if (v->kind != V_BOOL) {
+            cur_state = saved;
+            fail_at(list[i].expr, "TLC expected a boolean value, but did not find one.");
+        }
+        if (!v->u.i) { cur_state = saved; return i; }
+    }
+    cur_state = saved;
+    return -1;
+}
+
+static int check_actions(Check *list, int n, Value **from, Value **to) {
+    Value **saved_cur = cur_state, **saved_next = next_state;
+    cur_state = from;
+    next_state = to;
+    for (int i = 0; i < n; i++) {
+        Value *v = eval(list[i].expr, root_ctx);
+        if (v->kind != V_BOOL || !v->u.i) { cur_state = saved_cur; next_state = saved_next; return i; }
+    }
+    cur_state = saved_cur;
+    next_state = saved_next;
+    return -1;
+}
+
+static int init_emit(void) {
+    for (int i = 0; i < nvars; i++)
+        if (!succ[i]) fail("The variable %s was not assigned a value by the initial predicate.", S(vars[i]->name));
+    generated++;
+    Value **st = NEWN(Value *, nvars);
+    memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
+    if (check_list(constraints, nconstraints, st) >= 0) return 0;
+    uint64_t fp = fingerprint(st);
+    if (fp_find(fp) >= 0) return 0;
+    int bad = check_list(invariants, ninvariants, st);
+    if (bad >= 0) {
+        add_state(st, fp, -1, -1, 1);
+        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+        print_state(st);
+        violation = TPP_VIOLATION_SAFETY;
+        return 1;
+    }
+    add_state(st, fp, -1, -1, 1);
+    return 0;
+}
+
+static int next_emit(void) {
+    succ_count++;
+    generated++;
+    for (int i = 0; i < nvars; i++)
+        if (!succ[i]) {
+            printf("Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: %s.\n\n",
+                   S(vars[i]->name));
+            printf("Error: The behavior up to this point is:\n");
+            print_trace(expanding, succ, cur_action);
+            violation = TPP_FAILURE_EVAL;
+            return 1;
+        }
+    Value **st = NEWN(Value *, nvars);
+    memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
+    if (check_list(constraints, nconstraints, st) >= 0) return 0;
+    if (check_actions(action_constraints, naction_constraints, cur_state, st) >= 0) return 0;
+    uint64_t fp = fingerprint(st);
+    if (fp_find(fp) < 0) {
+        int depth = states[expanding].depth + 1;
+        int bad = check_list(invariants, ninvariants, st);
+        int idx = add_state(st, fp, expanding, cur_action, depth);
+        if (depth > max_depth) max_depth = depth;
+        if (bad >= 0) {
+            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+            printf("Error: The behavior up to this point is:\n");
+            print_trace(idx, NULL, 0);
+            violation = TPP_VIOLATION_SAFETY;
+            return 1;
+        }
+    }
+    int bad = check_actions(action_props, naction_props, cur_state, st);
+    if (bad >= 0) {
+        printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+        printf("Error: The behavior up to this point is:\n");
+        print_trace(expanding, st, cur_action);
+        violation = TPP_VIOLATION_LIVENESS;
+        return 1;
+    }
+    return 0;
+}
+
+static int check_liveness(void);
+static FILE *dump_file;
+
+/* Breadth-first search (§10.4). Returns the exit status. */
+static int search(void) {
+    succ = NEWN(Value *, nvars);
+    jmp_buf here;
+    handler = &here;
+    if (setjmp(here)) {
+        handler = NULL;
+        if (expanding < 0) {
+            print_error_message();
+            return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
+        }
+        print_error_message();
+        printf("Error: The behavior up to this point is:\n");
+        print_trace(expanding, NULL, 0);
+        print_counts(nstates - expanded, error_status == TPP_VIOLATION_ASSERT ? 0 : 0);
+        return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_ERROR;
+    }
+    gen_target = succ;
+    next_state = NULL;
+    cur_state = succ;
+    gen_init = 1;
+    gen_emit = init_emit;
+    arena = &scratch_arena;
+    gen(init_expr, root_ctx, NULL);
+    arena_reset(&scratch_arena);
+    if (violation) return violation;
+    printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
+    fflush(stdout);
+    gen_init = 0;
+    gen_emit = next_emit;
+    for (int idx = 0; idx < nstates; idx++) {
+        expanding = idx;
+        expanded = idx + 1;
+        cur_level = states[idx].depth;
+        Value **st = decode_state(idx);
+        cur_state = st;
+        succ_count = 0;
+        for (int a = 0; a < nactions; a++) {
+            cur_action = a;
+            memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+            next_state = succ;
+            gen_target = succ;
+            gen(actions[a].e, actions[a].c, NULL);
+            if (violation) {
+                int queued = nstates - expanded - (violation == TPP_VIOLATION_SAFETY ? 1 : 0);
+                print_counts(queued, violation != TPP_FAILURE_EVAL || 1);
+                return violation;
+            }
+        }
+        if (succ_count == 0 && check_deadlock) {
+            printf("Error: Deadlock reached.\n");
+            printf("Error: The behavior up to this point is:\n");
+            print_trace(idx, NULL, 0);
+            print_counts(nstates - expanded, 1);
+            return TPP_VIOLATION_DEADLOCK;
+        }
+        arena_reset(&scratch_arena);
+    }
+    expanding = -1;
+    if (ntemporal_props) {
+        int status = check_liveness();
+        if (status) return status;
+    }
+    handler = NULL;
+    printf("Model checking completed. No error has been found.\n");
+    print_counts(0, 1);
+    return TPP_OK;
+}
+
+/* ---------------------------------------------------------------- configuration */
+
+/* A configuration statement (§9). */
+typedef struct { int keyword; int name; int op; Value *value; int target; } CfgItem;
+
+static CfgItem *cfg;
+static int ncfg;
+
+static _Noreturn void config_error(const char *fmt, ...) {
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    printf("Error: %s\n", msg);
+    exit(TPP_ERROR_CONFIG);
+}
+
+typedef struct { const char *s; int pos; } CfgLexer;
+
+static void cfg_space(CfgLexer *L) {
+    for (;;) {
+        const char *s = L->s + L->pos;
+        if (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') { L->pos++; continue; }
+        if (s[0] == '\\' && s[1] == '*') { while (L->s[L->pos] && L->s[L->pos] != '\n') L->pos++; continue; }
+        if (s[0] == '(' && s[1] == '*') {
+            int depth = 0;
+            do {
+                if (!L->s[L->pos]) config_error("Unterminated comment in the configuration file.");
+                if (L->s[L->pos] == '(' && L->s[L->pos + 1] == '*') { depth++; L->pos += 2; }
+                else if (L->s[L->pos] == '*' && L->s[L->pos + 1] == ')') { depth--; L->pos += 2; }
+                else L->pos++;
+            } while (depth > 0);
+            continue;
+        }
+        return;
+    }
+}
+
+/* The next token: its text in tok (interned for names), kind 'a' name,
+   'n' number, 's' string, 'p' punctuation, 0 end. */
+static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
+    cfg_space(L);
+    const char *s = L->s + L->pos;
+    if (!*s) return 0;
+    if (id_char(*s)) {
+        int n = 0;
+        while (id_char(s[n])) n++;
+        int digits = 1;
+        for (int i = 0; i < n; i++) if (!isdigit((unsigned char)s[i])) digits = 0;
+        L->pos += n;
+        if (digits) { *num = strtoll(s, NULL, 10); return 'n'; }
+        *id = intern_n(s, n);
+        return 'a';
+    }
+    if (*s == '-' && isdigit((unsigned char)s[1])) {
+        int n = 1;
+        while (isdigit((unsigned char)s[n])) n++;
+        *num = strtoll(s, NULL, 10);
+        L->pos += n;
+        return 'n';
+    }
+    if (*s == '"') {
+        int n = 1;
+        Buf b = {0};
+        while (s[n] && s[n] != '"') {
+            if (s[n] == '\\' && s[n + 1]) n++;
+            buf_add(&b, s + n, 1);
+            n++;
+        }
+        L->pos += n + 1;
+        *id = intern_n(b.s ? b.s : "", (int)b.n);
+        free(b.s);
+        return 's';
+    }
+    if (s[0] == '<' && s[1] == '-') { L->pos += 2; *id = intern("<-"); return 'p'; }
+    L->pos++;
+    *id = intern_n(s, 1);
+    return 'p';
+}
+
+static const char *cfg_keywords[] = {
+    "CONSTANT", "CONSTANTS", "INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS", "PROPERTY",
+    "PROPERTIES", "CONSTRAINT", "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "SYMMETRY",
+    "VIEW", "CHECK_DEADLOCK", "POSTCONDITION", "ALIAS", NULL};
+
+static int is_cfg_keyword(int id) {
+    for (int i = 0; cfg_keywords[i]; i++) if (strcmp(S(id), cfg_keywords[i]) == 0) return 1;
+    return 0;
+}
+
+static Value *cfg_value(CfgLexer *L, int kind, int id, int64_t num) {
+    if (kind == 'n') return mk_int(num);
+    if (kind == 's') return mk_str(id);
+    if (kind == 'a') {
+        if (strcmp(S(id), "TRUE") == 0) return TRUEV;
+        if (strcmp(S(id), "FALSE") == 0) return FALSEV;
+        return mk_model(id);
+    }
+    if (kind == 'p' && strcmp(S(id), "{") == 0) {
+        List l = {0};
+        int k = cfg_token(L, &id, &num);
+        if (k == 'p' && strcmp(S(id), "}") == 0) return list_set(&l);
+        for (;;) {
+            list_add(&l, cfg_value(L, k, id, num));
+            k = cfg_token(L, &id, &num);
+            if (k == 'p' && strcmp(S(id), "}") == 0) break;
+            if (!(k == 'p' && strcmp(S(id), ",") == 0)) config_error("TLC found an error in the configuration file: expected , or }.");
+            k = cfg_token(L, &id, &num);
+        }
+        return list_set(&l);
+    }
+    config_error("TLC found an error in the configuration file: expected a value.");
+}
+
+static void cfg_add(int keyword, int name, int op, Value *v, int target) {
+    cfg = xrealloc(cfg, sizeof(CfgItem) * (size_t)(ncfg + 1));
+    cfg[ncfg].keyword = keyword; cfg[ncfg].name = name; cfg[ncfg].op = op; cfg[ncfg].value = v; cfg[ncfg].target = target;
+    ncfg++;
+}
+
+static void parse_config(const char *text) {
+    CfgLexer L = {text, 0};
+    int id = 0, keyword = -1;
+    int64_t num = 0;
+    int kind = cfg_token(&L, &id, &num);
+    while (kind) {
+        if (kind == 'a' && is_cfg_keyword(id)) {
+            keyword = id;
+            kind = cfg_token(&L, &id, &num);
+            continue;
+        }
+        if (keyword < 0) config_error("TLC found an error in the configuration file at line 1\nIt was expecting a keyword, but did not find it.");
+        const char *k = S(keyword);
+        if (strncmp(k, "CONSTANT", 8) == 0) {
+            if (kind != 'a') config_error("TLC found an error in the configuration file: expected a constant name.");
+            int name = id;
+            kind = cfg_token(&L, &id, &num);
+            if (kind == 'p' && strcmp(S(id), "(") == 0) {
+                /* an operator constant's parameters: skip them */
+                while (kind && !(kind == 'p' && strcmp(S(id), ")") == 0)) kind = cfg_token(&L, &id, &num);
+                kind = cfg_token(&L, &id, &num);
+            }
+            if (kind == 'p' && strcmp(S(id), "=") == 0) {
+                kind = cfg_token(&L, &id, &num);
+                cfg_add(keyword, name, '=', cfg_value(&L, kind, id, num), 0);
+            } else if (kind == 'p' && strcmp(S(id), "<-") == 0) {
+                kind = cfg_token(&L, &id, &num);
+                if (kind == 'p' && strcmp(S(id), "[") == 0) {
+                    cfg_token(&L, &id, &num);
+                    cfg_token(&L, &id, &num);
+                    kind = cfg_token(&L, &id, &num);
+                }
+                if (kind != 'a') config_error("TLC found an error in the configuration file: expected an operator after <-.");
+                cfg_add(keyword, name, '<', NULL, id);
+            } else {
+                config_error("TLC found an error in the configuration file: expected = or <- after %s.", S(name));
+            }
+            kind = cfg_token(&L, &id, &num);
+            continue;
+        }
+        if (strcmp(k, "CHECK_DEADLOCK") == 0) {
+            cfg_add(keyword, 0, 0, cfg_value(&L, kind, id, num), 0);
+            kind = cfg_token(&L, &id, &num);
+            continue;
+        }
+        if (kind != 'a') config_error("TLC found an error in the configuration file: expected a name after %s.", k);
+        cfg_add(keyword, id, 0, NULL, 0);
+        kind = cfg_token(&L, &id, &num);
+    }
+}
+
+/* ---------------------------------------------------------------- model setup */
+
+static Sym *root_sym(int name) { return module_lookup(root, name); }
+
+static Expr *call_expr(Def *d) {
+    Expr *e = NEW(Expr);
+    e->kind = K_CALL;
+    e->def = d;
+    e->mod = d->mod;
+    if (d->where) { e->l1 = d->where->l1; e->c1 = d->where->c1; e->l2 = d->where->l2; e->c2 = d->where->c2; }
+    return e;
+}
+
+static Def *config_def(int name, const char *what, const char *role) {
+    Sym *s = root_sym(name);
+    if (!s || (s->def->kind != D_OP && s->def->kind != D_FCN))
+        config_error("The %s %s specified in the configuration file\nis not defined in the specification.", what, S(name));
+    if (s->def->nparams) config_error("TLC requires the %s %s to take no arguments.", role, S(name));
+    return s->def;
+}
+
+/* The body of a definition with no parameters, or the expression. */
+static Expr *unfold(Expr *e) {
+    while (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->nparams == 0) e = e->def->body;
+    return e;
+}
+
+static void conjuncts(Expr *e, Expr ***out, int *n) {
+    e = unfold(e);
+    if (e->kind == K_AND) {
+        for (int i = 0; i < e->n; i++) conjuncts(e->args[i], out, n);
+        return;
+    }
+    *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 1));
+    (*out)[(*n)++] = e;
+}
+
+static Expr *conjoin(Expr **parts, int n) {
+    if (n == 1) return parts[0];
+    Expr *e = NEW(Expr);
+    *e = *parts[0];
+    e->kind = K_AND;
+    e->n = n;
+    e->args = NEWN(Expr *, n);
+    memcpy(e->args, parts, sizeof(Expr *) * (size_t)n);
+    return e;
+}
+
+/* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
+static void use_specification(Def *spec) {
+    Expr **parts = NULL;
+    int n = 0;
+    conjuncts(spec->body, &parts, &n);
+    Expr **init = NULL;
+    int ninit = 0;
+    for (int i = 0; i < n; i++) {
+        Expr *e = parts[i];
+        int level = expr_level(e);
+        if (level <= 1) {
+            init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
+            init[ninit++] = e;
+        } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
+            Expr *sq = unfold(e->args[0]);
+            next_expr = sq->args[0];
+            spec_subscript = sq->args[1];
+        } else if (e->kind == X_WF || e->kind == X_SF) {
+            fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
+            fairness[nfairness++] = e;
+        } else {
+            fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
+            fairness[nfairness++] = e;
+        }
+    }
+    if (ninit) init_expr = conjoin(init, ninit);
+    free(parts);
+    free(init);
+}
+
+/* A property: []P as an invariant, [][A]_v as an action property, the
+   rest checked on the state graph (§10.5). */
+static void use_property(Def *d) {
+    Expr **parts = NULL;
+    int n = 0;
+    conjuncts(d->body, &parts, &n);
+    for (int i = 0; i < n; i++) {
+        Expr *e = parts[i];
+        if (e->kind == K_ALWAYS) {
+            Expr *body = unfold(e->args[0]);
+            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, body, d->name); continue; }
+            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, body, d->name); continue; }
+        }
+        add_check(&temporal_props, &ntemporal_props, d, e, d->name);
+    }
+    free(parts);
+}
+
+static void check_assumptions(Module *m, int *done_status) {
+    for (int i = 0; i < nmodules + 1; i++) (void)i;
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind != 2) continue;
+        jmp_buf here;
+        handler = &here;
+        if (setjmp(here)) {
+            handler = NULL;
+            Buf b = {0};
+            loc_text(&b, u->expr);
+            printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
+            if (error_expr && error_expr->mod) {
+                Buf l = {0};
+                loc_text(&l, error_expr);
+                printf("\n%s", l.s);
+            }
+            printf("\n");
+            *done_status = TPP_VIOLATION_ASSUMPTION;
+            return;
+        }
+        Value *v = eval(u->expr, root_ctx);
+        handler = NULL;
+        if (v->kind != V_BOOL || !v->u.i) {
+            Buf b = {0};
+            loc_text(&b, u->expr);
+            printf("Error: Assumption %s is false.\n", b.s);
+            *done_status = TPP_VIOLATION_ASSUMPTION;
+            return;
+        }
+    }
+}
+
+static int setup_model(void) {
+    /* State variables, in declaration order. */
+    for (int i = 0; i < root->ndecls; i++)
+        if (root->decls[i]->kind == D_VAR) {
+            vars = xrealloc(vars, sizeof(Def *) * (size_t)(nvars + 1));
+            root->decls[i]->var_index = nvars;
+            vars[nvars++] = root->decls[i];
+        }
+    Def *spec = NULL, *init = NULL, *next = NULL;
+    for (int i = 0; i < ncfg; i++) {
+        CfgItem *it = &cfg[i];
+        const char *k = S(it->keyword);
+        if (strncmp(k, "CONSTANT", 8) == 0) {
+            Sym *s = root_sym(it->name);
+            if (!s) continue;
+            Def *d = s->def;
+            if (it->op == '=') d->value = it->value;
+            else {
+                Sym *t = root_sym(it->target);
+                if (!t) config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(it->name), S(it->target));
+                d->replacement = t->def;
+            }
+        } else if (strcmp(k, "INIT") == 0) init = config_def(it->name, "initial predicate", "initial predicate");
+        else if (strcmp(k, "NEXT") == 0) next = config_def(it->name, "next state action", "next-state action");
+        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_def(it->name, "specification", "specification");
+        else if (strncmp(k, "INVARIANT", 9) == 0) {
+            Def *d = config_def(it->name, "invariant", "invariant");
+            add_check(&invariants, &ninvariants, d, call_expr(d), d->name);
+        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_def(it->name, "property", "property"));
+        else if (strncmp(k, "CONSTRAINT", 10) == 0) {
+            Def *d = config_def(it->name, "constraint", "constraint");
+            add_check(&constraints, &nconstraints, d, call_expr(d), d->name);
+        } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
+            Def *d = config_def(it->name, "action constraint", "action constraint");
+            add_check(&action_constraints, &naction_constraints, d, call_expr(d), d->name);
+        } else if (strcmp(k, "VIEW") == 0) view_expr = call_expr(config_def(it->name, "view", "view"));
+        else if (strcmp(k, "SYMMETRY") == 0) {
+            Def *d = config_def(it->name, "symmetry", "symmetry");
+            Value *s = enumerate(eval(call_expr(d), root_ctx));
+            symmetry = s->u.set.elems;
+            nsymmetry = s->n;
+        } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
+            if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
+        }
+    }
+    for (int i = 0; i < root->ndecls; i++) {
+        Def *d = root->decls[i];
+        if (d->kind == D_CONST && !d->value && !d->replacement)
+            config_error("The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
+    }
+    if (spec) use_specification(spec);
+    if (init) init_expr = call_expr(init);
+    if (next) next_expr = call_expr(next);
+    return 0;
+}
+
+/* ---------------------------------------------------------------- liveness */
+
+static int check_liveness(void) { return 0; }
+
+/* ---------------------------------------------------------------- driver */
+
+int tpp_check(const TPPOptions *o) {
+    for (int i = 0; builtin_names[i]; i++) intern(builtin_names[i]);
+    for (int i = -1; i < 1023; i++) {
+        Value *v = NEW(Value);
+        v->kind = V_INT;
+        v->u.i = i;
+        small_ints[i + 1] = v;
+    }
+    boolean_set = mk_set(2);
+    boolean_set->u.set.elems[0] = FALSEV;
+    boolean_set->u.set.elems[1] = TRUEV;
+    check_deadlock = o->check_deadlock;
+
+    printf("tpp version %s\n", TPP_VERSION);
+    size_t len = strlen(o->spec);
+    char *path = xmalloc(len + 5);
+    strcpy(path, o->spec);
+    if (len < 4 || strcmp(path + len - 4, ".tla") != 0) strcat(path, ".tla");
+    char *slash = strrchr(path, '/');
+    spec_dir = xmalloc(strlen(path) + 1);
+    if (slash) { memcpy(spec_dir, path, (size_t)(slash - path + 1)); spec_dir[slash - path + 1] = 0; }
+    else spec_dir[0] = 0;
+    char *text = read_file(path);
+    if (!text) {
+        printf("Error: Cannot find source file %s.\n", path);
+        printf("Error: Parsing or semantic analysis failed.\n");
+        return TPP_ERROR_PARSE;
+    }
+    root = parse_text(text, path);
+    modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
+    modules[nmodules++] = root;
+    load_references(root);
+    resolve_module(root);
+    bind_natives();
+
+    char *config_path;
+    if (o->config) {
+        config_path = (char *)o->config;
+    } else {
+        config_path = xmalloc(strlen(path) + 1);
+        strcpy(config_path, path);
+        strcpy(config_path + strlen(config_path) - 4, ".cfg");
+    }
+    char *config_text = read_file(config_path);
+    if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
+    parse_config(config_text);
+    setup_model();
+
+    int status = 0;
+    for (int i = 0; i < nmodules && !status; i++) {
+        Module *m = modules[i];
+        int used = m == root;
+        for (int k = 0; k < root->nextends && !used; k++) used = load_module(root->extends[k], root) == m;
+        if (used && m != root) check_assumptions(m, &status);
+    }
+    if (!status) check_assumptions(root, &status);
+    if (status) return status;
+    if (!init_expr) {
+        if (nvars) config_error("The configuration file did not specify the initial state predicate.");
+        printf("Finished computing initial states: 0 distinct states generated.\n");
+        printf("Model checking completed. No error has been found.\n");
+        print_counts(0, 1);
+        return TPP_OK;
+    }
+    if (!next_expr) config_error("The configuration file did not specify the next state action.");
+    arena = &perm_arena;
+    jmp_buf here;
+    handler = &here;
+    if (setjmp(here)) {
+        handler = NULL;
+        print_error_message();
+        return TPP_FAILURE_EVAL;
+    }
+    split_action(next_expr, root_ctx, next_expr->kind == K_CALL ? next_expr->def->name : intern("Next"));
+    handler = NULL;
+    if (o->dump) dump_file = fopen(o->dump, "w");
+    return search();
+}
+
+#ifndef TPP_NO_MAIN
+int main(int argc, char **argv) {
+    TPPOptions o = {0};
+    o.check_deadlock = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
+        else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
+        else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) i++;
+        else if (strcmp(argv[i], "-dump") == 0 && i + 1 < argc) {
+            if (strcmp(argv[i + 1], "dot") == 0 && i + 2 < argc) i++;
+            o.dump = argv[++i];
+        } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
+        else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
+        else o.spec = argv[i];
+    }
+    if (!o.spec) {
+        fprintf(stderr, "usage: tpp [-config FILE] [-deadlock] [-dump dot FILE] SPEC\n");
+        return TPP_ERROR;
+    }
+    return tpp_check(&o);
+}
+#endif

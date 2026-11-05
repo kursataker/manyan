@@ -95,6 +95,8 @@ def main():
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    if "/" in args.engine:
+        args.engine = str(Path(args.engine).resolve())
     tests = sorted(p for p in SPEC.rglob("*.tla") if ".files" not in str(p) and args.only in str(p))
 
     def check(path):
