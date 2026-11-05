@@ -1,7 +1,14 @@
 CC = cc
 CFLAGS = -O2 -std=c11 -Wall -Wextra -Wpedantic
 LDLIBS = -lm
+# AddressSanitizer hangs at startup on recent macOS; there, Guard Malloc
+# catches overruns and use-after-free instead.
+ifeq ($(shell uname),Darwin)
+SANITIZERS = undefined
+SANITIZE_ENV = DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib
+else
 SANITIZERS = address,undefined
+endif
 PREFIX ?= /usr/local
 OBJDIR = .obj
 
@@ -43,8 +50,9 @@ $(TLA_JAR):
 	mv $@.tmp $@
 
 sanitize:
-	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) tpp.c $(LDLIBS) -o $(OBJDIR)/tpp-sanitize
-	python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
+	mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all tpp.c $(LDLIBS) -o $(OBJDIR)/tpp-sanitize
+	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
 
 bench: tpp $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"

@@ -1,0 +1,20 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 5, col 9 to line 5, col 27 of module eventually_always>
+x = 1
+
+State 3: <Next line 5, col 9 to line 5, col 27 of module eventually_always>
+x = 2
+
+State 4: <Next line 5, col 9 to line 5, col 27 of module eventually_always>
+x = 3
+
+State 5: Stuttering
+4 states generated, 4 distinct states found, 0 states left on queue.
+exit 13

@@ -30,7 +30,7 @@ NOISE = re.compile(
     r"Finished checking temporal properties|Implied-temporal checking|Finished in|"
     r"The average outdegree|  Estimates of the probability|  because two distinct states|"
     r"  calculated \(optimistic\)|  based on the actual fingerprints|Checking \d+ branches of temporal properties|"
-    r"Warning: Please run the Java VM)")
+    r"Warning: Please run the Java VM|GuardMalloc\[)")
 
 
 def normalize(output, directory):

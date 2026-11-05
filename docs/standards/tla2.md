@@ -462,6 +462,9 @@ A trace is the shortest path from an initial state to the bad state. A
 liveness counterexample is a path to a cycle (a lasso) on which the
 property fails and the fairness conditions hold.
 
+When several lassos qualify, TLC's choice is not specified (it can differ
+between runs), so a conforming test admits exactly one.
+
 ## 11 Output
 
 ### 11.1 Normalized output

@@ -4523,7 +4523,7 @@ static Value *decode(const char **p) {
     }
 }
 
-typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; } StateRec;
+typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; int *edges; int nedges, capedges; } StateRec;
 
 static StateRec *states;
 static int nstates, capstates;
@@ -4662,6 +4662,8 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
     r->parent = parent;
     r->action = action;
     r->depth = depth;
+    r->edges = NULL;
+    r->nedges = r->capedges = 0;
     fp_insert(nstates);
     return nstates++;
 }
@@ -4772,6 +4774,19 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
     return -1;
 }
 
+/* An edge of the state graph, kept for liveness checking: target and action. */
+static void add_edge(int from, int to, int action) {
+    StateRec *r = &states[from];
+    for (int i = 0; i < r->nedges; i++) if (r->edges[2 * i] == to) return;
+    if (r->nedges == r->capedges) {
+        r->capedges = r->capedges ? r->capedges * 2 : 4;
+        r->edges = xrealloc(r->edges, sizeof(int) * 2 * (size_t)r->capedges);
+    }
+    r->edges[2 * r->nedges] = to;
+    r->edges[2 * r->nedges + 1] = action;
+    r->nedges++;
+}
+
 static int init_emit(void) {
     for (int i = 0; i < nvars; i++)
         if (!succ[i]) fail("The variable %s was not assigned a value by the initial predicate.", S(vars[i]->name));
@@ -4809,10 +4824,13 @@ static int next_emit(void) {
     if (check_list(constraints, nconstraints, st) >= 0) return 0;
     if (check_actions(action_constraints, naction_constraints, cur_state, st) >= 0) return 0;
     uint64_t fp = fingerprint(st);
-    if (fp_find(fp) < 0) {
+    int found = fp_find(fp);
+    if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
+    if (found < 0) {
         int depth = states[expanding].depth + 1;
         int bad = check_list(invariants, ninvariants, st);
         int idx = add_state(st, fp, expanding, cur_action, depth);
+        if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (depth > max_depth) max_depth = depth;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
@@ -5305,9 +5323,719 @@ static int setup_model(void) {
     return 0;
 }
 
+
 /* ---------------------------------------------------------------- liveness */
 
-static int check_liveness(void) { return 0; }
+/* A behavior violates a property when it satisfies the property's
+   negation (§10.5). The negation, in negation normal form over state and
+   action predicates, is expanded into a tableau; its product with the
+   state graph, where every state may stutter, is searched for a strongly
+   connected component that the tableau accepts and the fairness
+   conditions allow (§10.6). */
+
+enum { TF_ATOM, TF_AND, TF_OR, TF_ALWAYS, TF_EVENTUALLY, TF_TRUE, TF_FALSE };
+
+typedef struct TF {
+    int op;
+    struct TF *a, *b;
+    Expr *atom;        /* TF_ATOM: a predicate, negated when neg */
+    Ctx c;
+    int neg, action;   /* action: the predicate relates a state to its successor */
+    int index;         /* TF_EVENTUALLY: its acceptance set; TF_ATOM: its cache slot */
+} TF;
+
+static TF **eventualities;
+static int neventualities;
+static TF **atoms;
+static int natoms;
+
+static TF *tf_new(int op, TF *a, TF *b) {
+    TF *t = NEW(TF);
+    t->op = op; t->a = a; t->b = b;
+    if (op == TF_EVENTUALLY) {
+        t->index = neventualities;
+        eventualities = xrealloc(eventualities, sizeof(TF *) * (size_t)(neventualities + 1));
+        eventualities[neventualities++] = t;
+    }
+    return t;
+}
+
+static TF *tf_atom(Expr *e, Ctx c, int neg) {
+    TF *t = tf_new(TF_ATOM, NULL, NULL);
+    t->atom = e; t->c = c; t->neg = neg;
+    t->action = expr_level(e) >= 2;
+    t->index = natoms;
+    atoms = xrealloc(atoms, sizeof(TF *) * (size_t)(natoms + 1));
+    atoms[natoms++] = t;
+    return t;
+}
+
+static Expr *synth(int kind, Expr *at, int n, Expr *a, Expr *b) {
+    Expr *e = NEW(Expr);
+    *e = *at;
+    e->kind = (short)kind;
+    e->n = n;
+    e->args = NEWN(Expr *, 2);
+    e->args[0] = a;
+    e->args[1] = b;
+    e->nb = 0;
+    return e;
+}
+
+static TF *to_tf(Expr *e, Ctx c, int neg);
+
+typedef struct { Expr *body; TF *acc; int op; } TfData;
+
+static int tf_bound_fn(Ctx c, void *data) {
+    TfData *d = data;
+    TF *t = to_tf(d->body, c, 0);
+    d->acc = d->acc ? tf_new(d->op, d->acc, t) : t;
+    return 0;
+}
+
+/* The formula e (negated when neg) in negation normal form. */
+static TF *to_tf(Expr *e, Ctx c, int neg) {
+    if (expr_level(e) <= 2) {
+        if (e->kind == X_BOOL) return tf_new((e->num != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
+        return tf_atom(e, c, neg);
+    }
+    switch (e->kind) {
+    case K_CALL: {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;
+        if (d->kind != D_OP || d->native) break;
+        Env *env = d->local == 2 ? env_find(c.env, d)->ctx_env : NULL;
+        for (int i = 0; i < e->n; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
+        return to_tf(d->body, (Ctx){env, c.inst}, neg);
+    }
+    case K_AND: case K_OR: {
+        int op = (e->kind == K_AND) != neg ? TF_AND : TF_OR;
+        TF *t = to_tf(e->args[0], c, neg);
+        for (int i = 1; i < e->n; i++) t = tf_new(op, t, to_tf(e->args[i], c, neg));
+        return t;
+    }
+    case K_NOT: return to_tf(e->args[0], c, !neg);
+    case K_IMPLIES: {
+        TF *a = to_tf(e->args[0], c, !neg), *b = to_tf(e->args[1], c, neg);
+        return tf_new(neg ? TF_AND : TF_OR, a, b);
+    }
+    case K_EQUIV: {
+        TF *both = tf_new(TF_AND, to_tf(e->args[0], c, 0), to_tf(e->args[1], c, neg));
+        TF *neither = tf_new(TF_AND, to_tf(e->args[0], c, 1), to_tf(e->args[1], c, !neg));
+        return tf_new(TF_OR, both, neither);
+    }
+    case K_ALWAYS: return tf_new(neg ? TF_EVENTUALLY : TF_ALWAYS, to_tf(e->args[0], c, neg), NULL);
+    case K_EVENTUALLY: return tf_new(neg ? TF_ALWAYS : TF_EVENTUALLY, to_tf(e->args[0], c, neg), NULL);
+    case K_LEADSTO: {
+        /* P ~> Q is [](~P \/ <>Q). */
+        Expr *ev = synth(K_EVENTUALLY, e, 1, e->args[1], NULL);
+        Expr *body = synth(K_IMPLIES, e, 2, e->args[0], ev);
+        return to_tf(synth(K_ALWAYS, e, 1, body, NULL), c, neg);
+    }
+    case X_WF: case X_SF: {
+        /* WF: []<>~ENABLED <<A>>_v \/ []<><<A>>_v; SF: <>[]~ENABLED <<A>>_v \/ []<><<A>>_v. */
+        Expr *angle = synth(X_ANGLEACT, e, 2, e->args[1], e->args[0]);
+        Expr *en = synth(K_ENABLED, e, 1, angle, NULL);
+        TF *step = tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(angle, c, 0), NULL), NULL);
+        TF *off = e->kind == X_WF ? tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 1), NULL), NULL)
+                                  : tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 1), NULL), NULL);
+        TF *fair = tf_new(TF_OR, off, step);
+        if (!neg) return fair;
+        /* ~WF: <>[]ENABLED /\ <>[]~step; ~SF: []<>ENABLED /\ <>[]~step. */
+        TF *nostep = tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(angle, c, 1), NULL), NULL);
+        TF *on = e->kind == X_WF ? tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 0), NULL), NULL)
+                                 : tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 0), NULL), NULL);
+        return tf_new(TF_AND, on, nostep);
+    }
+    case X_FORALL: case X_EXISTS: {
+        TfData d = {e->args[0], NULL, (e->kind == X_FORALL) != neg ? TF_AND : TF_OR};
+        Expr *body = e->args[0];
+        if (neg) body = synth(K_NOT, e, 1, body, NULL);
+        d.body = body;
+        for_bindings(e->bounds, e->nb, c, tf_bound_fn, &d);
+        return d.acc ? d.acc : tf_new(d.op == TF_AND ? TF_TRUE : TF_FALSE, NULL, NULL);
+    }
+    default: break;
+    }
+    fail_at(e, "TLC cannot handle this temporal formula.");
+}
+
+/* A tableau node: the literals that hold now, the formulas that must hold
+   from the next state on, and the eventualities it defers. */
+typedef struct { TF **lits; int nlits; TF **next; int nnext; uint64_t pending; int *succ; int nsucc; int expanded; } TNode;
+
+static TNode *tnodes;
+static int ntnodes;
+
+typedef struct { TF **v; int n; } TFList;
+
+static void tfl_add(TFList *l, TF *t) {
+    for (int i = 0; i < l->n; i++) if (l->v[i] == t) return;
+    TF **grown = NEWN(TF *, l->n + 1);
+    if (l->n) memcpy(grown, l->v, sizeof(TF *) * (size_t)l->n);
+    grown[l->n++] = t;
+    l->v = grown;
+}
+
+static int tfl_same(TF **a, int na, TF **b, int nb) {
+    if (na != nb) return 0;
+    for (int i = 0; i < na; i++) {
+        int found = 0;
+        for (int j = 0; j < nb && !found; j++) found = a[i] == b[j];
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+static int tnode_add(TFList lits, TFList next, uint64_t pending) {
+    for (int i = 0; i < lits.n; i++)
+        for (int j = 0; j < lits.n; j++)
+            if (lits.v[i]->atom == lits.v[j]->atom && lits.v[i]->c.env == lits.v[j]->c.env && lits.v[i]->neg != lits.v[j]->neg) return -1;
+    for (int i = 0; i < ntnodes; i++)
+        if (tnodes[i].pending == pending && tfl_same(tnodes[i].lits, tnodes[i].nlits, lits.v, lits.n) &&
+            tfl_same(tnodes[i].next, tnodes[i].nnext, next.v, next.n)) return i;
+    tnodes = xrealloc(tnodes, sizeof(TNode) * (size_t)(ntnodes + 1));
+    TNode *t = &tnodes[ntnodes];
+    memset(t, 0, sizeof *t);
+    t->lits = lits.v; t->nlits = lits.n; t->next = next.v; t->nnext = next.n; t->pending = pending;
+    return ntnodes++;
+}
+
+/* Expands the formulas in todo into tableau nodes, adding their indices to out. */
+static void expand(TFList todo, TFList lits, TFList next, uint64_t pending, List *out) {
+    if (todo.n == 0) {
+        int i = tnode_add(lits, next, pending);
+        if (i >= 0) list_add(out, mk_int(i));
+        return;
+    }
+    TF *f = todo.v[todo.n - 1];
+    TFList rest = {todo.v, todo.n - 1};
+    switch (f->op) {
+    case TF_TRUE: expand(rest, lits, next, pending, out); return;
+    case TF_FALSE: return;
+    case TF_ATOM: { TFList l = lits; tfl_add(&l, f); expand(rest, l, next, pending, out); return; }
+    case TF_AND: { TFList r = rest; tfl_add(&r, f->a); tfl_add(&r, f->b); expand(r, lits, next, pending, out); return; }
+    case TF_OR: {
+        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, pending, out);
+        TFList r2 = rest; tfl_add(&r2, f->b); expand(r2, lits, next, pending, out);
+        return;
+    }
+    case TF_ALWAYS: { TFList r = rest; tfl_add(&r, f->a); TFList n = next; tfl_add(&n, f); expand(r, lits, n, pending, out); return; }
+    case TF_EVENTUALLY: {
+        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, pending, out);
+        TFList n = next; tfl_add(&n, f); expand(rest, lits, n, pending | (1ULL << (f->index & 63)), out);
+        return;
+    }
+    }
+}
+
+static void tnode_expand(int i) {
+    if (tnodes[i].expanded) return;
+    tnodes[i].expanded = 1;
+    List out = {0};
+    TFList todo = {tnodes[i].next, tnodes[i].nnext}, none = {0};
+    expand(todo, none, none, 0, &out);
+    tnodes[i].succ = NEWN(int, out.n);
+    for (int k = 0; k < out.n; k++) tnodes[i].succ[k] = (int)out.v[k]->u.i;
+    tnodes[i].nsucc = out.n;
+}
+
+/* Cached values of atoms in states and on edges. */
+static signed char *state_atom_cache;   /* nstates * natoms: 0 unknown, 1 false, 2 true */
+static Value ***decoded;
+
+static Value **state_values(int s) {
+    if (!decoded[s]) {
+        Arena *saved = arena;
+        arena = &perm_arena;
+        decoded[s] = decode_state(s);
+        arena = saved;
+    }
+    return decoded[s];
+}
+
+static int atom_holds(TF *t, int s, int to) {
+    Value **saved_cur = cur_state, **saved_next = next_state;
+    int v;
+    if (!t->action) {
+        signed char *slot = &state_atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index];
+        if (!*slot) {
+            cur_state = state_values(s);
+            next_state = NULL;
+            *slot = (signed char)(eval_bool(t->atom, t->c) ? 2 : 1);
+        }
+        v = *slot == 2;
+    } else {
+        cur_state = state_values(s);
+        next_state = state_values(to);
+        v = eval_bool(t->atom, t->c);
+    }
+    cur_state = saved_cur;
+    next_state = saved_next;
+    return v != t->neg;
+}
+
+static int tnode_admits(int n, int s) {
+    for (int i = 0; i < tnodes[n].nlits; i++) {
+        TF *t = tnodes[n].lits[i];
+        if (!t->action && !atom_holds(t, s, s)) return 0;
+    }
+    return 1;
+}
+
+static int tnode_step(int n, int s, int to) {
+    for (int i = 0; i < tnodes[n].nlits; i++) {
+        TF *t = tnodes[n].lits[i];
+        if (t->action && !atom_holds(t, s, to)) return 0;
+    }
+    return 1;
+}
+
+/* The product graph: nodes are (state, tableau node). */
+typedef struct { int state, tnode; int *succ, *act; int nsucc; int index, low, onstack, mark; } PNode;
+
+static PNode *pnodes;
+static int npnodes, cappnodes;
+static int *pnode_table;
+static int pnode_size;
+
+static int pnode_find(int s, int t, int create) {
+    if (!pnode_size || (npnodes + 1) * 2 > pnode_size) {
+        int size = pnode_size ? pnode_size * 2 : 1024;
+        int *table = calloc((size_t)size, sizeof(int));
+        for (int i = 0; i < npnodes; i++) {
+            uint64_t h = ((uint64_t)pnodes[i].state * 1000003u + (uint64_t)pnodes[i].tnode) * 0x9e3779b97f4a7c15ULL;
+            int j = (int)(h >> 40) & (size - 1);
+            while (table[j]) j = (j + 1) & (size - 1);
+            table[j] = i + 1;
+        }
+        free(pnode_table);
+        pnode_table = table;
+        pnode_size = size;
+    }
+    uint64_t h = ((uint64_t)s * 1000003u + (uint64_t)t) * 0x9e3779b97f4a7c15ULL;
+    int j = (int)(h >> 40) & (pnode_size - 1);
+    while (pnode_table[j]) {
+        PNode *p = &pnodes[pnode_table[j] - 1];
+        if (p->state == s && p->tnode == t) return pnode_table[j] - 1;
+        j = (j + 1) & (pnode_size - 1);
+    }
+    if (!create) return -1;
+    if (npnodes == cappnodes) {
+        cappnodes = cappnodes ? cappnodes * 2 : 1024;
+        pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)cappnodes);
+    }
+    PNode *p = &pnodes[npnodes];
+    memset(p, 0, sizeof *p);
+    p->state = s; p->tnode = t; p->index = -1;
+    pnode_table[j] = npnodes + 1;
+    return npnodes++;
+}
+
+#define STUTTER (-2)
+
+/* The successors of a product node: each edge of the state graph and the
+   stuttering step, with each successor of the tableau node. */
+static void pnode_successors(int p) {
+    int s = pnodes[p].state, t = pnodes[p].tnode;
+    tnode_expand(t);
+    List to = {0}, act = {0};
+    StateRec *r = &states[s];
+    for (int e = 0; e <= r->nedges; e++) {
+        int target = e < r->nedges ? r->edges[2 * e] : s;
+        int action = e < r->nedges ? r->edges[2 * e + 1] : STUTTER;
+        if (e == r->nedges) {
+            int self = 0;
+            for (int k = 0; k < r->nedges; k++) self |= r->edges[2 * k] == s;
+            if (self) continue;
+        }
+        if (!tnode_step(t, s, target)) continue;
+        for (int k = 0; k < tnodes[t].nsucc; k++) {
+            int u = tnodes[t].succ[k];
+            if (!tnode_admits(u, target)) continue;
+            int q = pnode_find(target, u, 1);
+            list_add(&to, mk_int(q));
+            list_add(&act, mk_int(action));
+        }
+    }
+    PNode *pn = &pnodes[p];
+    pn->succ = xmalloc(sizeof(int) * (size_t)(to.n + 1));
+    pn->act = xmalloc(sizeof(int) * (size_t)(to.n + 1));
+    for (int i = 0; i < to.n; i++) { pn->succ[i] = (int)to.v[i]->u.i; pn->act[i] = (int)act.v[i]->u.i; }
+    pn->nsucc = to.n;
+}
+
+/* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
+   predicate on states and a step predicate on edges. */
+typedef struct { int strong; Expr *enabled, *step; Ctx c; } Fair;
+
+static Fair *fairs;
+static int nfairs;
+
+static int fair_enabled(Fair *f, int s) {
+    Value **saved = cur_state;
+    cur_state = state_values(s);
+    int v = eval_bool(f->enabled, f->c);
+    cur_state = saved;
+    return v;
+}
+
+static int fair_step(Fair *f, int s, int to) {
+    if (to == STUTTER) return 0;
+    Value **saved_cur = cur_state, **saved_next = next_state;
+    cur_state = state_values(s);
+    next_state = state_values(to);
+    int v = eval_bool(f->step, f->c);
+    cur_state = saved_cur;
+    next_state = saved_next;
+    return v;
+}
+
+static void collect_fairness(Expr *e, Ctx c);
+
+static int fairness_bound_fn(Ctx c, void *body) {
+    collect_fairness(body, c);
+    return 0;
+}
+
+static void collect_fairness(Expr *e, Ctx c) {
+    e = unfold(e);
+    if (e->kind == K_AND) { for (int i = 0; i < e->n; i++) collect_fairness(e->args[i], c); return; }
+    if (e->kind == X_FORALL) { for_bindings(e->bounds, e->nb, c, fairness_bound_fn, e->args[0]); return; }
+    if (e->kind == X_WF || e->kind == X_SF) {
+        Expr *angle = synth(X_ANGLEACT, e, 2, e->args[1], e->args[0]);
+        fairs = xrealloc(fairs, sizeof(Fair) * (size_t)(nfairs + 1));
+        fairs[nfairs].strong = e->kind == X_SF;
+        fairs[nfairs].enabled = synth(K_ENABLED, e, 1, angle, NULL);
+        fairs[nfairs].step = angle;
+        fairs[nfairs].c = c;
+        nfairs++;
+        return;
+    }
+    if (e->kind == K_CALL && e->def->kind == D_OP && !e->def->native) {
+        Env *env = NULL;
+        for (int i = 0; i < e->n; i++) env = mk_thunk(e->def->params[i], e->args[i], c, env);
+        collect_fairness(e->def->body, (Ctx){env, c.inst});
+        return;
+    }
+    fail_at(e, "TLC cannot handle the fairness condition.");
+}
+
+static int accept_component(int *nodes, int n);
+
+/* Tarjan's algorithm over the product nodes reachable from roots whose
+   mark equals `mark`; each component goes to accept_component in
+   completion order. Returns the first accepted node or -1. */
+/* The product grows as it is explored; the stacks hold at most every node. */
+static void grow_stacks(int **stack, int **cstack, int **cedge, int *cap) {
+    if (*cap > npnodes) return;
+    *cap = npnodes * 2 + 16;
+    *stack = xrealloc(*stack, sizeof(int) * (size_t)*cap);
+    *cstack = xrealloc(*cstack, sizeof(int) * (size_t)*cap);
+    *cedge = xrealloc(*cedge, sizeof(int) * (size_t)*cap);
+}
+
+static int scc_search(int *roots, int nroots, int mark) {
+    int index = 0, found = -1, sp = 0, cap = 0;
+    int *stack = NULL, *cstack = NULL, *cedge = NULL;
+    for (int r = 0; r < nroots && found < 0; r++) {
+        int root = roots[r];
+        if (pnodes[root].index >= 0 || pnodes[root].mark != mark) continue;
+        grow_stacks(&stack, &cstack, &cedge, &cap);
+        int cp = 0;
+        cstack[cp] = root; cedge[cp] = 0; cp++;
+        pnodes[root].index = pnodes[root].low = index++;
+        stack[sp++] = root;
+        pnodes[root].onstack = 1;
+        while (cp > 0 && found < 0) {
+            int v = cstack[cp - 1];
+            if (!pnodes[v].succ) pnode_successors(v);
+            grow_stacks(&stack, &cstack, &cedge, &cap);
+            if (cedge[cp - 1] < pnodes[v].nsucc) {
+                int w = pnodes[v].succ[cedge[cp - 1]++];
+                if (pnodes[w].mark != mark) continue;
+                if (pnodes[w].index < 0) {
+                    pnodes[w].index = pnodes[w].low = index++;
+                    stack[sp++] = w;
+                    pnodes[w].onstack = 1;
+                    cstack[cp] = w; cedge[cp] = 0; cp++;
+                } else if (pnodes[w].onstack && pnodes[w].index < pnodes[v].low) {
+                    pnodes[v].low = pnodes[w].index;
+                }
+                continue;
+            }
+            cp--;
+            if (cp > 0) {
+                int u = cstack[cp - 1];
+                if (pnodes[v].low < pnodes[u].low) pnodes[u].low = pnodes[v].low;
+            }
+            if (pnodes[v].low == pnodes[v].index) {
+                int start = sp;
+                do start--; while (stack[start] != v);
+                int n = sp - start;
+                int *comp = xmalloc(sizeof(int) * (size_t)n);
+                memcpy(comp, stack + start, sizeof(int) * (size_t)n);
+                for (int i = 0; i < n; i++) pnodes[comp[i]].onstack = 0;
+                sp = start;
+                found = accept_component(comp, n);
+                free(comp);
+            }
+        }
+    }
+    free(stack); free(cstack); free(cedge);
+    return found;
+}
+
+static int in_set(int *nodes, int n, int x) {
+    for (int i = 0; i < n; i++) if (nodes[i] == x) return 1;
+    return 0;
+}
+
+static int *accepted;   /* the accepted component */
+static int naccepted;
+
+static int accept_component(int *nodes, int n) {
+    /* A component must have an edge inside it. */
+    int internal = 0;
+    for (int i = 0; i < n && !internal; i++)
+        for (int k = 0; k < pnodes[nodes[i]].nsucc && !internal; k++) internal = in_set(nodes, n, pnodes[nodes[i]].succ[k]);
+    if (!internal) return -1;
+    for (int e = 0; e < neventualities; e++) {
+        int ok = 0;
+        for (int i = 0; i < n && !ok; i++) ok = !(tnodes[pnodes[nodes[i]].tnode].pending & (1ULL << (e & 63)));
+        if (!ok) return -1;
+    }
+    for (int f = 0; f < nfairs; f++) {
+        Fair *fr = &fairs[f];
+        int step = 0, disabled = 0, enabled_any = 0;
+        for (int i = 0; i < n && !step; i++)
+            for (int k = 0; k < pnodes[nodes[i]].nsucc && !step; k++)
+                if (in_set(nodes, n, pnodes[nodes[i]].succ[k]))
+                    step = fair_step(fr, pnodes[nodes[i]].state, pnodes[nodes[i]].act[k] == STUTTER ? STUTTER : pnodes[pnodes[nodes[i]].succ[k]].state);
+        if (step) continue;
+        for (int i = 0; i < n; i++) {
+            if (fair_enabled(fr, pnodes[nodes[i]].state)) enabled_any = 1;
+            else disabled = 1;
+        }
+        if (!fr->strong) { if (disabled) continue; return -1; }
+        if (!enabled_any) continue;
+        /* Strong fairness: drop the states where the action is enabled and
+           look for components among the rest. */
+        int mark = f + 1;
+        int *roots = xmalloc(sizeof(int) * (size_t)n);
+        int nroots = 0;
+        for (int i = 0; i < n; i++)
+            if (!fair_enabled(fr, pnodes[nodes[i]].state)) { pnodes[nodes[i]].mark = mark; roots[nroots++] = nodes[i]; }
+        int found = -1;
+        if (nroots) {
+            /* The outer search is done with these nodes; search them afresh. */
+            int *saved = xmalloc(sizeof(int) * (size_t)nroots);
+            for (int i = 0; i < nroots; i++) { saved[i] = pnodes[roots[i]].index; pnodes[roots[i]].index = -1; }
+            found = scc_search(roots, nroots, mark);
+            for (int i = 0; i < nroots; i++) pnodes[roots[i]].index = saved[i];
+            free(saved);
+        }
+        for (int i = 0; i < nroots; i++) pnodes[roots[i]].mark = 0;
+        free(roots);
+        return found;
+    }
+    accepted = xmalloc(sizeof(int) * (size_t)n);
+    memcpy(accepted, nodes, sizeof(int) * (size_t)n);
+    naccepted = n;
+    return nodes[0];
+}
+
+/* The shortest path in the product from any of `from` to `to`, within
+   nodes accepted by `allowed` (all if NULL): nodes and the actions of the
+   edges into them. */
+static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed, List *path, List *acts) {
+    int *prev = xmalloc(sizeof(int) * (size_t)npnodes);
+    int *pact = xmalloc(sizeof(int) * (size_t)npnodes);
+    int *queue = xmalloc(sizeof(int) * (size_t)npnodes);
+    for (int i = 0; i < npnodes; i++) prev[i] = -2;
+    int qh = 0, qt = 0;
+    for (int i = 0; i < nfrom; i++) if (prev[from[i]] == -2) { prev[from[i]] = -1; pact[from[i]] = -1; queue[qt++] = from[i]; }
+    int found = 0;
+    while (qh < qt) {
+        int v = queue[qh++];
+        if (v == to) { found = 1; break; }
+        if (!pnodes[v].succ) pnode_successors(v);
+        for (int k = 0; k < pnodes[v].nsucc; k++) {
+            int w = pnodes[v].succ[k];
+            if (w >= npnodes || prev[w] != -2) continue;
+            if (allowed && !in_set(allowed, nallowed, w)) continue;
+            prev[w] = v;
+            pact[w] = pnodes[v].act[k];
+            queue[qt++] = w;
+        }
+    }
+    if (found) {
+        int n = 0;
+        for (int v = to; v >= 0; v = prev[v]) n++;
+        int *rev = xmalloc(sizeof(int) * (size_t)n);
+        int k = n;
+        for (int v = to; v >= 0; v = prev[v]) rev[--k] = v;
+        for (int i = 0; i < n; i++) { list_add(path, mk_int(rev[i])); list_add(acts, mk_int(pact[rev[i]])); }
+        free(rev);
+    }
+    free(prev); free(pact); free(queue);
+    return found;
+}
+
+static void print_live_state(int number, int s, int action) {
+    printf("State %d: ", number);
+    action_label(action);
+    printf("\n");
+    print_state(state_values(s));
+    printf("\n");
+}
+
+/* Prints a lasso through the accepted component: the shortest path to it,
+   then a cycle that meets each eventuality and fairness condition. */
+static void print_counterexample(int *inits, int ninits) {
+    List path = {0}, acts = {0};
+    /* entry: the accepted node nearest an initial node */
+    int entry = -1;
+    {
+        int *prev = xmalloc(sizeof(int) * (size_t)npnodes);
+        int *queue = xmalloc(sizeof(int) * (size_t)npnodes);
+        for (int i = 0; i < npnodes; i++) prev[i] = -2;
+        int qh = 0, qt = 0;
+        for (int i = 0; i < ninits; i++) if (prev[inits[i]] == -2) { prev[inits[i]] = -1; queue[qt++] = inits[i]; }
+        while (qh < qt && entry < 0) {
+            int v = queue[qh++];
+            if (in_set(accepted, naccepted, v)) { entry = v; break; }
+            for (int k = 0; k < pnodes[v].nsucc; k++) {
+                int w = pnodes[v].succ[k];
+                if (prev[w] != -2) continue;
+                prev[w] = v;
+                queue[qt++] = w;
+            }
+        }
+        free(prev); free(queue);
+    }
+    product_path(inits, ninits, entry, NULL, 0, &path, &acts);
+    printf("Error: Temporal properties were violated.\n\n");
+    printf("Error: The following behavior constitutes a counter-example:\n\n");
+    int number = 0;
+    for (int i = 0; i < path.n; i++) {
+        int p = (int)path.v[i]->u.i;
+        int act = (int)acts.v[i]->u.i;
+        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act);
+    }
+    int entry_number = number;
+    /* The cycle: from the entry through each required node or edge, back. */
+    List cyc = {0}, cacts = {0};
+    int cur = entry;
+    for (int e = 0; e < neventualities; e++) {
+        int target = -1;
+        for (int i = 0; i < naccepted && target < 0; i++)
+            if (!(tnodes[pnodes[accepted[i]].tnode].pending & (1ULL << (e & 63)))) target = accepted[i];
+        if (target >= 0 && target != cur) {
+            List p = {0}, a = {0};
+            product_path(&cur, 1, target, accepted, naccepted, &p, &a);
+            for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
+            cur = target;
+        }
+    }
+    for (int f = 0; f < nfairs; f++) {
+        Fair *fr = &fairs[f];
+        int from = -1, to = -1, act = 0;
+        for (int i = 0; i < naccepted && from < 0; i++)
+            for (int k = 0; k < pnodes[accepted[i]].nsucc && from < 0; k++) {
+                int w = pnodes[accepted[i]].succ[k];
+                if (in_set(accepted, naccepted, w) && pnodes[accepted[i]].act[k] != STUTTER &&
+                    fair_step(fr, pnodes[accepted[i]].state, pnodes[w].state)) { from = accepted[i]; to = w; act = pnodes[accepted[i]].act[k]; }
+            }
+        if (from < 0) continue;
+        if (from != cur) {
+            List p = {0}, a = {0};
+            product_path(&cur, 1, from, accepted, naccepted, &p, &a);
+            for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
+        }
+        list_add(&cyc, mk_int(to));
+        list_add(&cacts, mk_int(act));
+        cur = to;
+    }
+    /* Back to the entry. */
+    int stutter_only = 0;
+    if (cur == entry && cyc.n == 0) {
+        int self = -1;
+        for (int k = 0; k < pnodes[entry].nsucc; k++) if (pnodes[entry].succ[k] == entry) self = k;
+        if (self >= 0 && pnodes[entry].act[self] == STUTTER) stutter_only = 1;
+        else {
+            /* leave the entry along any edge inside the component */
+            for (int k = 0; k < pnodes[entry].nsucc; k++)
+                if (in_set(accepted, naccepted, pnodes[entry].succ[k])) {
+                    list_add(&cyc, mk_int(pnodes[entry].succ[k]));
+                    list_add(&cacts, mk_int(pnodes[entry].act[k]));
+                    cur = pnodes[entry].succ[k];
+                    break;
+                }
+        }
+    }
+    if (stutter_only) {
+        printf("State %d: Stuttering\n", number + 1);
+        return;
+    }
+    if (cur != entry) {
+        List p = {0}, a = {0};
+        int *allowed = accepted;
+        product_path(&cur, 1, entry, allowed, naccepted, &p, &a);
+        for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
+    }
+    for (int i = 0; i + 1 < cyc.n; i++) {
+        int p = (int)cyc.v[i]->u.i;
+        print_live_state(++number, pnodes[p].state, (int)cacts.v[i]->u.i);
+    }
+    printf("Back to state %d: ", entry_number);
+    action_label((int)cacts.v[cyc.n - 1]->u.i);
+    printf("\n\n");
+}
+
+static int check_property(TF *negated) {
+    List init = {0};
+    TFList todo = {0}, empty = {0};
+    tfl_add(&todo, negated);
+    expand(todo, empty, empty, 0, &init);
+    List roots = {0};
+    for (int s = 0; s < nstates; s++) {
+        if (states[s].parent != -1) continue;
+        for (int i = 0; i < init.n; i++) {
+            int t = (int)init.v[i]->u.i;
+            if (tnode_admits(t, s)) list_add(&roots, mk_int(pnode_find(s, t, 1)));
+        }
+    }
+    int *r = xmalloc(sizeof(int) * (size_t)(roots.n + 1));
+    for (int i = 0; i < roots.n; i++) r[i] = (int)roots.v[i]->u.i;
+    if (scc_search(r, roots.n, 0) >= 0) {
+        print_counterexample(r, roots.n);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_liveness(void) {
+    arena = &perm_arena;
+    decoded = calloc((size_t)nstates, sizeof(Value **));
+    for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
+    for (int p = 0; p < ntemporal_props; p++) {
+        neventualities = 0;
+        natoms = 0;
+        ntnodes = 0;
+        npnodes = 0;
+        free(pnode_table);
+        pnode_table = NULL;
+        pnode_size = 0;
+        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
+        free(state_atom_cache);
+        state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
+        if (check_property(neg)) {
+            print_counts(0, 0);
+            return TPP_VIOLATION_LIVENESS;
+        }
+    }
+    return 0;
+}
 
 /* ---------------------------------------------------------------- driver */
 
