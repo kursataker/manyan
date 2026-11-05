@@ -606,11 +606,15 @@ checked, against the invariants then the action properties, and one is
 drawn as the next state. A behavior ends at its length, at a state outside
 the constraints, or at a state with no successor, a deadlock unless
 `CHECK_DEADLOCK` is `FALSE`. A temporal property is then checked on the
-behavior: on the graph of its states and steps, in which every state may
-also stutter. TLC builds this graph as the states arrive and, for a
-property it checks with a tableau (such as `P ~> Q`), can miss a lasso of
-the graph or report a different one; which lasso is reported, and for such
-a property whether one is, is not specified.
+behavior, on a graph TLC builds as the states arrive. For a property
+whose only temporal parts are `[]<>P` and `<>[]P`, as with fairness alone,
+the graph has every state and step of the behavior, and every state may
+also stutter. Otherwise TLC checks the property with a tableau, on its
+product with the behavior: a node of the product, a state with a tableau
+node, gets its successors when it is first met at a position of the
+behavior, by the state stuttering or taking the behavior's next step there
+(only stuttering at the last state), and keeps them; a later position of
+the same state adds none. Which lasso is reported is not specified.
 
 A violation prints the behavior up to the bad state, each state labeled
 with the first action that yields it and steps that change nothing left

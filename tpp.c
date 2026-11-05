@@ -7163,6 +7163,9 @@ static void sim_exception(void) {
     print_error_text();
 }
 
+/* A simulated behavior: its states and the actions into them. */
+static int *sim_order, *sim_acts, sim_n;
+
 /* Whether a temporal property fails on the behavior, as TLC checks one:
    each state may stutter or take its step. */
 static int sim_violates(States *trace) {
@@ -7171,15 +7174,22 @@ static int sim_violates(States *trace) {
     store.n = 0;
     if (fp_size) memset(fp_table, 0, sizeof(FpSlot) * (size_t)fp_size);
     int prev = -1;
+    sim_order = xrealloc(sim_order, sizeof(int) * (size_t)(trace->n + 1));
+    sim_acts = xrealloc(sim_acts, sizeof(int) * (size_t)(trace->n + 1));
+    sim_n = trace->n;
     for (int i = 0; i < trace->n; i++) {
         Value **st = trace->a[i];
         uint64_t fp = fingerprint(st);
         int s = fp_find(fp);
         if (s < 0) s = add_state(st, fp, prev, -1, i + 1);
-        if (prev >= 0) add_edge(prev, s, s == prev ? STUTTER : replay(trace->a[i - 1], st));
+        sim_acts[i] = prev < 0 || s == prev ? STUTTER : replay(trace->a[i - 1], st);
+        if (prev >= 0) add_edge(prev, s, sim_acts[i]);
+        sim_order[i] = s;
         prev = s;
     }
-    return live_violated();
+    int violated = live_violated();
+    sim_n = 0;
+    return violated;
 }
 
 static void sim_summary(int64_t seed, int64_t aril) {
@@ -8238,21 +8248,14 @@ static int pnode_find(int s, int t, int create) {
 }
 
 
-/* The successors of a product node: each edge of the state graph and the
-   stuttering step, with each successor of the tableau node. */
-static void pnode_successors(int p) {
+/* The successors of a product node by the steps of its state to targets,
+   with each successor of the tableau node. */
+static void pnode_steps(int p, const int *targets, const int *actions, int n) {
     int s = pnodes[p].state, t = pnodes[p].tnode;
     tnode_expand(t);
     List to = {0}, act = {0};
-    StateRec *r = &states[s];
-    for (int e = 0; e <= r->nedges; e++) {
-        int target = e < r->nedges ? r->edges[2 * e] : s;
-        int action = e < r->nedges ? r->edges[2 * e + 1] : STUTTER;
-        if (e == r->nedges) {
-            int self = 0;
-            for (int k = 0; k < r->nedges; k++) self |= r->edges[2 * k] == s;
-            if (self) continue;
-        }
+    for (int e = 0; e < n; e++) {
+        int target = targets[e], action = actions[e];
         if (!tnode_step(t, s, target)) continue;
         for (int k = 0; k < tnodes[t].nsucc; k++) {
             int u = tnodes[t].succ[k];
@@ -8267,6 +8270,38 @@ static void pnode_successors(int p) {
     pn->act = xmalloc(sizeof(int) * (size_t)(to.n + 1));
     for (int i = 0; i < to.n; i++) { pn->succ[i] = (int)to.v[i]->u.i; pn->act[i] = (int)act.v[i]->u.i; }
     pn->nsucc = to.n;
+}
+
+/* Each edge of the state graph and the stuttering step. */
+static void pnode_successors(int p) {
+    StateRec *r = &states[pnodes[p].state];
+    int *targets = xmalloc(sizeof(int) * (size_t)(r->nedges + 1)), *actions = xmalloc(sizeof(int) * (size_t)(r->nedges + 1));
+    int n = 0, self = 0;
+    for (int e = 0; e < r->nedges; e++) {
+        targets[n] = r->edges[2 * e];
+        actions[n++] = r->edges[2 * e + 1];
+        self |= r->edges[2 * e] == pnodes[p].state;
+    }
+    if (!self) targets[n] = pnodes[p].state, actions[n++] = STUTTER;
+    pnode_steps(p, targets, actions, n);
+    free(targets);
+    free(actions);
+}
+
+/* The product as TLC builds it from a behavior, as its states arrive: a
+   node's successors are those of the first position that expands it, its
+   state stuttering or taking the behavior's next step; the last state
+   only stutters. A node never expanded has none. */
+static void sim_product(void) {
+    for (int i = 0; i < sim_n; i++) {
+        int s = sim_order[i], last = i + 1 == sim_n;
+        int targets[2] = {s, last ? s : sim_order[i + 1]}, actions[2] = {STUTTER, last ? STUTTER : sim_acts[i + 1]};
+        int n = targets[1] == s ? 1 : 2;
+        for (int p = 0; p < npnodes; p++)
+            if (pnodes[p].state == s && !pnodes[p].succ) pnode_steps(p, targets, actions, n);
+    }
+    for (int p = 0; p < npnodes; p++)
+        if (!pnodes[p].succ) { pnodes[p].succ = xmalloc(sizeof(int)); pnodes[p].act = xmalloc(sizeof(int)); pnodes[p].nsucc = 0; }
 }
 
 /* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
@@ -8601,6 +8636,17 @@ static void print_counterexample(int *inits, int ninits) {
     printf("\n\n");
 }
 
+/* Whether TLC checks a formula with a tableau: it has a temporal part
+   other than []<>P and <>[]P. */
+static int tf_tableau(TF *f) {
+    switch (f->op) {
+    case TF_AND: case TF_OR: return tf_tableau(f->a) || tf_tableau(f->b);
+    case TF_ALWAYS: case TF_EVENTUALLY:
+        return f->a->op == f->op || (f->a->op != TF_ALWAYS && f->a->op != TF_EVENTUALLY) || f->a->a->op != TF_ATOM;
+    default: return 0;
+    }
+}
+
 static int check_property(TF *negated) {
     List init = {0};
     TFList todo = {0}, empty = {0};
@@ -8616,6 +8662,7 @@ static int check_property(TF *negated) {
     }
     int *r = xmalloc(sizeof(int) * (size_t)(roots.n + 1));
     for (int i = 0; i < roots.n; i++) r[i] = (int)roots.v[i]->u.i;
+    if (sim_n && tf_tableau(negated)) sim_product();
     if (scc_search(r, roots.n, 0) >= 0) {
         print_counterexample(r, roots.n);
         return 1;
