@@ -1,0 +1,38 @@
+"Computing Inv"  TRUE
+<<"B1", [a |-> 1, b |-> 1, c |-> 1]>>  TRUE
+[a |-> 1]  TRUE
+"Test 0a OK"  TRUE
+"Test 0b OK"  TRUE
+"Test 0c OK"  TRUE
+"Test 0d OK"  TRUE
+"Test 0e OK"  TRUE
+"Test 1aa OK"  TRUE
+"Finished test 1aa"  TRUE
+"Test 1a OK"  TRUE
+"Finished test 1a"  TRUE
+"Test 1b OK"  TRUE
+"Test 1c OK"  TRUE
+"Test 2 OK"  TRUE
+"Test 3 OK"  TRUE
+"Test 4 OK"  TRUE
+"Test 5 OK"  TRUE
+"Test 6 OK"  TRUE
+"Test 7 OK"  TRUE
+"Test 8 OK"  TRUE
+"Test 9 OK"  TRUE
+"Test 10 OK"  TRUE
+"Test 11 OK"  TRUE
+"Test 12 OK"  TRUE
+"Test 13 OK"  TRUE
+"Test 14 OK"  TRUE
+"Test 15 OK"  TRUE
+"Test 16 OK"  TRUE
+"Test 17 OK"  TRUE
+"Test 18 OK"  TRUE
+"Test 19 OK"  TRUE
+"Computing Init"  TRUE
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

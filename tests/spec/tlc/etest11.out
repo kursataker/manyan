@@ -1,0 +1,8 @@
+"Should report error here"  TRUE
+Error: Attempted to check if the value:
+1
+is an element of STRING.
+"Should report error here"  TRUE
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+exit 75

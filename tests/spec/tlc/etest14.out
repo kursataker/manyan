@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 5, col 3 to line 5, col 56 of module etest14 failed.
+Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 5, col 7 to line 5, col 28 of module etest14
+exit 10

@@ -1,0 +1,28 @@
+<<"init", 0>>
+Finished computing initial states: 1 distinct state generated.
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: A non-function (an integer) was applied as a function.
+line 7, col 29 to line 7, col 32 of module next_error_replay
+<<"init", 0>>
+<<"next", 0>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 5, col 9 to line 7, col 32 of module next_error_replay>
+x = 1
+
+<<"next", 1>>
+State 3: <Next line 5, col 9 to line 7, col 32 of module next_error_replay>
+x = 2
+
+<<"next", 2>>
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+exit 75

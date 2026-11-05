@@ -1,0 +1,4 @@
+Error: The configuration file did not specify the initial state predicate.
+Can also be caused by trying to run TLC on a specification from
+a module imported with a parameterized INSTANCE statement.
+exit 151

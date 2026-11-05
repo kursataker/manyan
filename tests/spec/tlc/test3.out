@@ -1,0 +1,29 @@
+"Test 1"  TRUE
+"Test 2"  TRUE
+"Test 3"  TRUE
+"Test 4"  TRUE
+"Test 5"  TRUE
+"Test 6"  TRUE
+"Test 7"  TRUE
+"Test 8"  TRUE
+"Test 9"  TRUE
+"Test 10"  TRUE
+"Test 11"  TRUE
+"Test 12"  TRUE
+"Test 13"  TRUE
+"Test 14"  TRUE
+"Test 15"  TRUE
+"Test 16"  TRUE
+"Test 17"  TRUE
+"Test 18"  TRUE
+"Test 19"  TRUE
+"Test 20"  TRUE
+"Test 21"  TRUE
+"Test 22"  TRUE
+"Tests completed"  TRUE
+"Tests completed"  TRUE
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

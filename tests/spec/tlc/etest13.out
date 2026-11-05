@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 6, col 6 to line 8, col 43 of module etest13 failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.IntValue tlc2.module.FiniteSets.Cardinality(tlc2.value.impl.Value),
+but it produced the following error:
+Overflow when computing the number of elements in:
+[0..2 -> 1..2000]
+exit 10

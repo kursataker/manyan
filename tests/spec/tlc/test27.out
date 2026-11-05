@@ -1,0 +1,6 @@
+<<"Number of distinct states =", 63504>>  TRUE
+Finished computing initial states: 16 distinct states generated.
+Model checking completed. No error has been found.
+1109824 states generated, 63504 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 7.
+exit 0

@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 8, col 9 to line 8, col 59 of module etest15 failed.
+Attempted to compare integer 2 with non-integer:
+<<3>>
+exit 10

@@ -1,0 +1,3 @@
+Error: The configuration file substitutes constant C with non-constant Foo - specifically: In evaluation, the identifier x is either undefined or not an operator.
+line 11, col 8 to line 11, col 8 of module etest7
+exit 151

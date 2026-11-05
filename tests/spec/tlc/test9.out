@@ -1,0 +1,19 @@
+"Test 1 OK"  TRUE
+"Test 2 OK"  TRUE
+"Test 3 OK"  TRUE
+"Test 4 OK"  TRUE
+"Test 5 OK"  TRUE
+"Test 6 OK"  TRUE
+"Test 7 OK"  TRUE
+"Test 8 OK"  TRUE
+"Test 9 OK"  TRUE
+"Test 10 OK"  TRUE
+"Test 11 OK"  TRUE
+"Test 12 OK"  TRUE
+"Test 13 OK"  TRUE
+"Test 14 OK"  TRUE
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

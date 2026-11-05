@@ -1,0 +1,9 @@
+Finished computing initial states: 1 distinct state generated.
+"Test1 OK"  TRUE
+"Test2 OK"  TRUE
+"Test 4 started -- should finish"  TRUE
+"Test 4 completed"  TRUE
+Model checking completed. No error has been found.
+3 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

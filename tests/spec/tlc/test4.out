@@ -1,0 +1,16 @@
+"Should find only one distinct state"  TRUE
+Finished computing initial states: 1 distinct state generated.
+"Test 1"  TRUE
+"Test 2"  TRUE
+"Test 2"  TRUE
+"Test 2"  TRUE
+"Test 2"  TRUE
+"Test 3"  TRUE
+"Test 4"  TRUE
+"Test 5"  TRUE
+"Test 6"  TRUE
+"Test 6"  TRUE
+Model checking completed. No error has been found.
+11 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

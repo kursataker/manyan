@@ -1,0 +1,5 @@
+Finished computing initial states: 21 states generated, with 7 of them distinct.
+Model checking completed. No error has been found.
+28 states generated, 7 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

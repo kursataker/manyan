@@ -1,0 +1,18 @@
+"This test should generate 3 distinct state"  TRUE
+Finished computing initial states: 1 distinct state generated.
+"1"  TRUE
+<<"Generated state", 1, 1>>  TRUE
+<<"Generated state", 2, 1>>  TRUE
+<<"Generated state", 3, 1>>  TRUE
+"1"  TRUE
+<<"Generated state", 1, 1>>  TRUE
+<<"Generated state", 2, 1>>  TRUE
+<<"Generated state", 3, 1>>  TRUE
+"1"  TRUE
+<<"Generated state", 1, 1>>  TRUE
+<<"Generated state", 2, 1>>  TRUE
+<<"Generated state", 3, 1>>  TRUE
+Model checking completed. No error has been found.
+13 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 0

@@ -1,0 +1,5 @@
+<<"init", 0>>
+<<"init", 10>>
+Error: Invariant Inv is violated by the initial state:
+x = 10
+exit 12

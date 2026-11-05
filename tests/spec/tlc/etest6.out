@@ -1,0 +1,14 @@
+"Should complain about undefined value of x."  TRUE
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: In evaluation, the identifier x is either undefined or not an operator.
+line 16, col 23 to line 16, col 23 of module etest6
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = <<1, 2>>
+
+1 states generated, 1 distinct states found, 0 states left on queue.
+exit 75

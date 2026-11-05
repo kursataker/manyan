@@ -1,0 +1,16 @@
+"Test 1 OK"  TRUE
+"Test 2 OK"  TRUE
+"Test 3 OK"  TRUE
+"Test 4 OK"  TRUE
+"Test 5 OK"  TRUE
+"Test 6 OK"  TRUE
+"Test 7 OK"  TRUE
+"Test 8 OK"  TRUE
+"Test 9 OK"  TRUE
+"Test 9 OK"  TRUE
+"Test 10 OK"  TRUE
+"Test 11 OK"  TRUE
+Error: The configuration file did not specify the initial state predicate.
+Can also be caused by trying to run TLC on a specification from
+a module imported with a parameterized INSTANCE statement.
+exit 151

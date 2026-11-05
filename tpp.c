@@ -191,12 +191,14 @@ static jmp_buf *handler;
 static Buf error_message;
 static Expr *error_expr;   /* the expression an evaluation error names, if any */
 static int error_status;   /* the exit status the error implies */
+static int error_module;   /* raised by a standard module's operator: TLC's EvalException */
 
 static void error_reset(void) {
     error_message.n = 0;
     if (error_message.s) error_message.s[0] = 0;
     error_expr = NULL;
     error_status = TPP_ERROR;
+    error_module = 0;
 }
 
 static _Noreturn void raise_error(void) {
@@ -207,17 +209,27 @@ static _Noreturn void raise_error(void) {
     longjmp(*handler, 1);
 }
 
-static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
+static _Noreturn void vfail(Expr *e, int module, const char *fmt, va_list ap) {
     char small[1024];
-    va_list ap;
-    va_start(ap, fmt);
     vsnprintf(small, sizeof small, fmt, ap);
-    va_end(ap);
     error_reset();
     buf_puts(&error_message, small);
     error_expr = e;
-    error_status = TPP_ERROR;
+    error_module = module;
     raise_error();
+}
+
+static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfail(e, 0, fmt, ap);
+}
+
+/* An error in an operator of a standard module, which TLC implements in Java. */
+static _Noreturn void fail_module(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfail(NULL, 1, fmt, ap);
 }
 
 #define fail(...) fail_at(NULL, __VA_ARGS__)
@@ -232,7 +244,7 @@ enum {
 };
 
 enum LazyKind {
-    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_MAP, L_UNION, L_TIMES
+    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES
 };
 
 struct Value {
@@ -325,6 +337,30 @@ static const char *kind_name(Value *v) {
 }
 
 static int is_set(Value *v) { return v->kind == V_SET || v->kind == V_INTERVAL || v->kind == V_LAZY; }
+/* How TLC names the kind of a value in error messages. */
+static const char *kind_string(Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return "a Boolean value";
+    case V_INT: return "an integer";
+    case V_STR: return "a string";
+    case V_MODEL: return "a model value";
+    case V_TUPLE: return "a tuple";
+    case V_FCN: return "a function  of the form (d1 :> e1 @@ ... @@ dN :> eN)";
+    case V_SET: return "a set of the form {e1, ... ,eN}";
+    case V_INTERVAL: return "a set of the form i..j";
+    case V_OPER: return "an operator";
+    default: break;
+    }
+    switch (v->lazy) {
+    case L_SUBSET: return "a set of the form SUBSET S";
+    case L_FCNSET: return "a set of the form [S -> T]";
+    case L_RCDSET: return "a set of the form [d1 : S1, ... , dN : SN]";
+    case L_FILTER: return "a set of the form {x \\in S : expr}";
+    case L_TIMES: return "a cartesian product";
+    default: return "a special set constant";
+    }
+}
+
 static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
 
 /* ---------------------------------------------------------------- printing */
@@ -814,9 +850,12 @@ static int set_member(Value *v, Value *s) {
         return v->u.i >= s->u.range.lo && v->u.i <= s->u.range.hi;
     case V_LAZY:
         switch (s->lazy) {
-        case L_NAT: return v->kind == V_INT && v->u.i >= 0;
-        case L_INT: return v->kind == V_INT;
-        case L_STRING: return v->kind == V_STR;
+        case L_NAT: case L_INT: case L_STRING:
+            if (v->kind == V_MODEL) return 0;
+            if (v->kind != (s->lazy == L_STRING ? V_STR : V_INT))
+                fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v),
+                            s->lazy == L_NAT ? "Nat" : s->lazy == L_INT ? "Int" : "STRING");
+            return s->lazy != L_NAT || v->u.i >= 0;
         case L_SUBSET: return is_set(v) && all_members(v, s->u.l.a);
         case L_SEQ:
             if (!is_fcn(v) || !fcn_is_tuple(v)) return 0;
@@ -895,7 +934,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
             }
         }
     } else {
-        fail_at(where, "A non-function (%s) was applied as a function.", pretty(f));
+        fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
     }
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(f), pretty(a));
@@ -3103,13 +3142,13 @@ static Value *mk_oper(Def *d, Ctx c) {
 
 static int64_t check_int(int64_t v, int64_t a, int64_t b, const char *op) {
     if (v > 2147483647LL || v < -2147483648LL)
-        fail("Overflow when computing %lld%s%lld", (long long)a, op, (long long)b);
+        fail_module("Overflow when computing %lld%s%lld", (long long)a, op, (long long)b);
     return v;
 }
 
 static int64_t int_arg(Value *v, int which, const char *op) {
     if (v->kind != V_INT)
-        fail("The %s argument of %s should be an integer, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
+        fail_module("The %s argument of %s should be an integer, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
     return v->u.i;
 }
 
@@ -3618,7 +3657,7 @@ static Value *eval_inner(Expr *e, Ctx c) {
         }
         if (fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement) return fcndef_apply(fe->def, key, c, e);
         Value *f = eval(fe, c);
-        if (!is_fcn(f)) fail_at(e, "A non-function (%s) was applied as a function.", pretty(f));
+        if (!is_fcn(f)) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
         return fcn_apply(f, key, e);
     }
     case X_DOT: {
@@ -3835,12 +3874,12 @@ NATIVE(n_neg) { UNUSED; int64_t x = int_arg(a[0], 1, "-"); return mk_int(check_i
 NATIVE(n_pow) {
     UNUSED;
     int64_t x = int_arg(a[0], 1, "^"), y = int_arg(a[1], 2, "^");
-    if (y < 0) fail("The second argument of ^ should be a natural number, but instead it is:\n%lld", (long long)y);
-    if (x == 0 && y == 0) fail("0^0 is undefined.");
+    if (y < 0) fail_module("The second argument of ^ should be a natural number, but instead it is:\n%lld", (long long)y);
+    if (x == 0 && y == 0) fail_module("0^0 is undefined.");
     int64_t r = 1;
     for (int64_t i = 0; i < y; i++) {
         r *= x;
-        if (r > 2147483647LL || r < -2147483648LL) fail("Overflow when computing %lld^%lld", (long long)x, (long long)y);
+        if (r > 2147483647LL || r < -2147483648LL) fail_module("Overflow when computing %lld^%lld", (long long)x, (long long)y);
     }
     return mk_int(r);
 }
@@ -3848,7 +3887,7 @@ NATIVE(n_pow) {
 NATIVE(n_div) {
     UNUSED;
     int64_t x = int_arg(a[0], 1, "\\div"), y = int_arg(a[1], 2, "\\div");
-    if (y == 0) fail("The second argument of \\div is 0.");
+    if (y == 0) fail_module("The second argument of \\div is 0.");
     int64_t q = x / y;
     if ((x % y != 0) && ((x < 0) != (y < 0))) q--;
     return mk_int(check_int(q, x, y, "\\div"));
@@ -3857,7 +3896,7 @@ NATIVE(n_div) {
 NATIVE(n_mod) {
     UNUSED;
     int64_t x = int_arg(a[0], 1, "%"), y = int_arg(a[1], 2, "%");
-    if (y <= 0) fail("The second argument of %% should be a positive number, but instead it is:\n%lld", (long long)y);
+    if (y <= 0) fail_module("The second argument of %% should be a positive number, but instead it is:\n%lld", (long long)y);
     int64_t r = x % y;
     if (r < 0) r += y;
     return mk_int(r);
@@ -3872,7 +3911,7 @@ NATIVE(n_range) {
 static Value *seq_arg(Value *v, int which, const char *op) {
     if (is_fcn(v) && fcn_is_tuple(v)) return v;
     if (is_fcn(v) && v->n == 0) return v;
-    fail("The %s argument of %s should be a sequence, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
+    fail_module("The %s argument of %s should be a sequence, but instead it is:\n%s", which == 1 ? "first" : "second", op, pretty(v));
 }
 
 static Value *seq_of(Value *f) {
@@ -3919,14 +3958,14 @@ NATIVE(n_append) {
 NATIVE(n_head) {
     UNUSED;
     Value *x = seq_arg(a[0], 1, "Head");
-    if (x->n == 0) fail("Attempted to apply Head to the empty sequence.");
+    if (x->n == 0) fail_module("Attempted to apply Head to the empty sequence.");
     return x->u.fcn.vals[0];
 }
 
 NATIVE(n_tail) {
     UNUSED;
     Value *x = seq_arg(a[0], 1, "Tail");
-    if (x->n == 0) fail("Attempted to apply Tail to the empty sequence.");
+    if (x->n == 0) fail_module("Attempted to apply Tail to the empty sequence.");
     Value *t = mk_tuple(x->n - 1);
     for (int i = 1; i < x->n; i++) t->u.fcn.vals[i - 1] = x->u.fcn.vals[i];
     return t;
@@ -3938,7 +3977,7 @@ NATIVE(n_subseq) {
     int64_t m = int_arg(a[1], 2, "SubSeq"), n = int_arg(a[2], 3, "SubSeq");
     if (m > n) return mk_tuple(0);
     if (m < 1 || n > x->n)
-        fail("The second argument of SubSeq must be in the domain of its first argument:\n%s\nbut instead it is\n%lld", pretty(x), (long long)m);
+        fail_module("The second argument of SubSeq must be in the domain of its first argument:\n%s\nbut instead it is\n%lld", pretty(x), (long long)m);
     Value *t = mk_tuple((int)(n - m + 1));
     for (int64_t i = m; i <= n; i++) t->u.fcn.vals[i - m] = x->u.fcn.vals[i - 1];
     return t;
@@ -3950,7 +3989,7 @@ NATIVE(n_selectseq) {
     List l = {0};
     for (int i = 0; i < x->n; i++) {
         Value *r = apply_oper(a[1], &x->u.fcn.vals[i], 1, call);
-        if (r->kind != V_BOOL) fail("The second argument of SelectSeq must be a predicate.");
+        if (r->kind != V_BOOL) fail_module("The second argument of SelectSeq must be a predicate.");
         if (r->u.i) list_add(&l, x->u.fcn.vals[i]);
     }
     Value *t = mk_tuple(l.n);
@@ -3962,8 +4001,8 @@ NATIVE(n_isfinite) { UNUSED; return BOOLV(is_set(a[0]) && !set_is_infinite(a[0])
 
 NATIVE(n_cardinality) {
     UNUSED;
-    if (!is_set(a[0])) fail("The argument of Cardinality should be a finite set, but instead it is:\n%s", pretty(a[0]));
-    if (set_is_infinite(a[0])) fail("Attempted to compute the cardinality of the infinite set\n%s.", pretty(a[0]));
+    if (!is_set(a[0])) fail_module("The argument of Cardinality should be a finite set, but instead it is:\n%s", pretty(a[0]));
+    if (set_is_infinite(a[0])) fail_module("Attempted to compute the cardinality of the infinite set\n%s.", pretty(a[0]));
     return mk_int(enumerate(a[0])->n);
 }
 
@@ -3995,7 +4034,7 @@ NATIVE(n_javatime) { UNUSED; return mk_int((int64_t)time(NULL) & 0x7fffffff); }
 NATIVE(n_tlcget) {
     UNUSED;
     if (a[0]->kind == V_STR && strcmp(S(a[0]->u.i), "level") == 0) return mk_int(cur_level);
-    fail("TLCGet(%s) is not supported.", pretty(a[0]));
+    fail_module("TLCGet(%s) is not supported.", pretty(a[0]));
 }
 
 NATIVE(n_tlcset) { UNUSED; return TRUEV; }
@@ -4010,7 +4049,7 @@ NATIVE(n_singleton) {
 
 NATIVE(n_merge) {
     UNUSED;
-    if (!is_fcn(a[0]) || !is_fcn(a[1])) fail("The arguments of @@ should be functions.");
+    if (!is_fcn(a[0]) || !is_fcn(a[1])) fail_module("The arguments of @@ should be functions.");
     List keys = {0}, vals = {0};
     for (int i = 0; i < a[0]->n; i++) { list_add(&keys, fcn_key(a[0], i)); list_add(&vals, a[0]->u.fcn.vals[i]); }
     for (int i = 0; i < a[1]->n; i++) {
@@ -4026,7 +4065,7 @@ NATIVE(n_permutations) {
     UNUSED;
     Value *s = enumerate(a[0]);
     int n = s->n;
-    if (n > 10) fail("Attempted to compute Permutations of a set with more than 10 elements.");
+    if (n > 10) fail_module("Attempted to compute Permutations of a set with more than 10 elements.");
     List out = {0};
     int *p = NEWN(int, n);
     for (int i = 0; i < n; i++) p[i] = i;
@@ -4057,7 +4096,7 @@ NATIVE(n_sortseq) {
         while (j >= 0) {
             Value *pair[2] = {v, t->u.fcn.vals[j]};
             Value *r = apply_oper(a[1], pair, 2, call);
-            if (r->kind != V_BOOL) fail("The second argument of SortSeq must be a binary predicate.");
+            if (r->kind != V_BOOL) fail_module("The second argument of SortSeq must be a binary predicate.");
             if (!r->u.i) break;
             t->u.fcn.vals[j + 1] = t->u.fcn.vals[j];
             j--;
@@ -4070,11 +4109,11 @@ NATIVE(n_sortseq) {
 NATIVE(n_randomelement) {
     UNUSED;
     Value *s = enumerate(a[0]);
-    if (!s->n) fail("Attempted to compute RandomElement of the empty set.");
+    if (!s->n) fail_module("Attempted to compute RandomElement of the empty set.");
     return s->u.set.elems[0];
 }
 
-NATIVE(n_any) { UNUSED; fail("Attempted to evaluate Any."); }
+NATIVE(n_any) { UNUSED; fail_module("Attempted to evaluate Any."); }
 
 NATIVE(n_tostring) {
     UNUSED;
@@ -4129,9 +4168,22 @@ static int (*gen_emit)(void);   /* called with each complete assignment; nonzero
 
 static int gen(Expr *e, Ctx c, Cont *k);
 
+static _Noreturn void not_boolean(Expr *e, Value *v);
+
 static int gen_cont(Cont *k) {
     if (!k) return gen_emit();
-    return gen(k->e, k->c, k->next);
+    int assigned = 1;
+    for (int i = 0; i < nvars && assigned; i++) assigned = gen_target[i] != NULL;
+    if (!assigned) return gen(k->e, k->c, k->next);
+    /* Once every variable has a value, TLC evaluates the remaining
+       conjuncts as formulas: a disjunction stops at its first true
+       disjunct. */
+    for (; k; k = k->next) {
+        Value *v = eval(k->e, k->c);
+        if (v->kind != V_BOOL) not_boolean(k->e, v);
+        if (!v->u.i) return 0;
+    }
+    return gen_emit();
 }
 
 static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
@@ -4689,27 +4741,94 @@ static void action_label(int action) {
     printf("<%s line %d, col %d to line %d, col %d of module %s>", S(a->name), l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
 }
 
-/* The trace from an initial state to state idx, then optionally one more
-   state reached by `action`. */
-static void print_trace(int idx, Value **extra, int extra_action) {
-    int n = 0;
-    for (int i = idx; i >= 0; i = states[i].parent) n++;
-    int *path = NEWN(int, n);
-    int k = n;
-    for (int i = idx; i >= 0; i = states[i].parent) path[--k] = i;
-    for (int i = 0; i < n; i++) {
-        printf("State %d: ", i + 1);
-        action_label(states[path[i]].action);
-        printf("\n");
-        print_state(decode_state(path[i]));
-        printf("\n");
+static int cur_action;
+
+/* TLC rebuilds the states of a trace from their fingerprints by evaluating
+   the spec again: all of Init for the first state, then each action in turn
+   until one yields the next state. Side effects such as Print happen
+   again, so tpp replays the same evaluations for the same output. */
+static Value **replay_target;
+static int replay_found;
+static int replay_checks;     /* also evaluate the invariants, as TLC does replaying Init */
+static int check_list(Check *list, int n, Value **st);
+
+static int replay_emit(void) {
+    if (!replay_found) {
+        int complete = 1;
+        for (int i = 0; i < nvars && complete; i++) complete = gen_target[i] != NULL;
+        replay_found = complete && replay_target && fingerprint(gen_target) == fingerprint(replay_target);
     }
-    if (extra) {
-        printf("State %d: ", n + 1);
-        action_label(extra_action);
-        printf("\n");
-        print_state(extra);
-        printf("\n");
+    if (replay_checks) check_list(invariants, ninvariants, gen_target);
+    return 0;
+}
+
+static void replay(Value **from, Value **to) {
+    Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
+    int (*saved_emit)(void) = gen_emit;
+    int saved_init = gen_init;
+    Value **st = NEWN(Value *, nvars);
+    replay_target = to;
+    replay_found = 0;
+    gen_target = st;
+    gen_emit = replay_emit;
+    if (!from) {
+        gen_init = 1;
+        cur_state = st;
+        next_state = NULL;
+        gen(init_expr, root_ctx, NULL);
+    } else {
+        gen_init = 0;
+        cur_state = from;
+        for (int a = 0; a < nactions && !replay_found; a++) {
+            memset(st, 0, sizeof(Value *) * (size_t)nvars);
+            next_state = st;
+            gen(actions[a].e, actions[a].c, NULL);
+        }
+    }
+    cur_state = saved_cur; next_state = saved_next; gen_target = saved_target;
+    gen_emit = saved_emit; gen_init = saved_init;
+}
+
+/* After an evaluation error TLC evaluates Init, or the next-state action
+   of the state it failed in, again to locate the error: from == NULL
+   replays Init with its checks. The error happens again and ends it. */
+static void replay_error(Value **from) {
+    jmp_buf here, *saved = handler;
+    handler = &here;
+    if (!setjmp(here)) {
+        replay_checks = !from;
+        replay(from, NULL);
+    }
+    replay_checks = 0;
+    handler = saved;
+}
+
+static void print_numbered(int number, int action, Value **st) {
+    printf("State %d: ", number);
+    action_label(action);
+    printf("\n");
+    print_state(st);
+    printf("\n");
+}
+
+/* The behavior from an initial state to state s1, then the state s2
+   reached from it by `action` if s2 is not NULL, as TLC prints it. */
+static void print_trace(int s1, Value **s2, int action) {
+    int n = 0;
+    for (int i = s1; i >= 0; i = states[i].parent) n++;
+    int *path = NEWN(int, n);
+    Value ***st = NEWN(Value **, n);
+    int k = n;
+    for (int i = s1; i >= 0; i = states[i].parent) path[--k] = i;
+    for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
+    for (int i = 0; i + 1 < n; i++) replay(i ? st[i - 1] : NULL, st[i]);
+    printf("Error: The behavior up to this point is:\n");
+    for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i]);
+    if (n > 1) replay(st[n - 2], st[n - 1]);
+    print_numbered(n, states[s1].action, st[n - 1]);
+    if (s2) {
+        replay(st[n - 1], s2);
+        print_numbered(n + 1, action, s2);
     }
 }
 
@@ -4733,7 +4852,6 @@ static void print_error_message(void) {
 /* ---------------------------------------------------------------- search */
 
 static int expanding = -1;    /* the state whose successors are generated */
-static int cur_action;
 static Value **succ;          /* the assignment the generator fills */
 static int succ_count;
 static int violation;         /* the exit status of the first violation, 0 if none */
@@ -4814,7 +4932,6 @@ static int next_emit(void) {
         if (!succ[i]) {
             printf("Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: %s.\n\n",
                    S(vars[i]->name));
-            printf("Error: The behavior up to this point is:\n");
             print_trace(expanding, succ, cur_action);
             violation = TPP_FAILURE_EVAL;
             return 1;
@@ -4834,8 +4951,7 @@ static int next_emit(void) {
         if (depth > max_depth) max_depth = depth;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            printf("Error: The behavior up to this point is:\n");
-            print_trace(idx, NULL, 0);
+            print_trace(expanding, st, cur_action);
             violation = TPP_VIOLATION_SAFETY;
             return 1;
         }
@@ -4843,7 +4959,6 @@ static int next_emit(void) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad >= 0) {
         printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
-        printf("Error: The behavior up to this point is:\n");
         print_trace(expanding, st, cur_action);
         violation = TPP_VIOLATION_LIVENESS;
         return 1;
@@ -4861,21 +4976,43 @@ static int search(void) {
     handler = &here;
     if (setjmp(here)) {
         handler = NULL;
+        int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
         if (expanding < 0) {
             print_error_message();
             if (error_state) {
                 printf("While working on the initial state:\n");
                 print_state(error_state);
                 printf("\n");
-                print_counts(nstates, 0);
             }
-            return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
+            replay_error(NULL);
+            printf("\n");
+            print_counts(nstates, 0);
+            return status;
         }
-        print_error_message();
-        printf("Error: The behavior up to this point is:\n");
+        /* TLC reports an error of its own evaluator in Next as an unexpected
+           exception; one of a standard module's operators plainly. */
+        if (status == TPP_FAILURE_EVAL && !error_module)
+            printf("Error: TLC threw an unexpected exception.\n"
+                   "This was probably caused by an error in the spec or model.\n"
+                   "See the User Output or TLC Console for clues to what happened.\n"
+                   "The exception was a java.lang.RuntimeException\n: ");
+        else
+            printf("Error: ");
+        Expr *where = error_expr;
+        printf("%s\n", error_message.s ? error_message.s : "");
+        if (where && where->mod) {
+            Buf b = {0};
+            loc_text(&b, where);
+            printf("%s\n", b.s);
+            free(b.s);
+        }
+        Value **from = decode_state(expanding);
         print_trace(expanding, NULL, 0);
-        print_counts(nstates - expanded, error_status == TPP_VIOLATION_ASSERT ? 0 : 0);
-        return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_ERROR;
+        replay_error(from);
+        printf("\n");
+        print_counts(nstates - expanded, 0);
+        if (status == TPP_FAILURE_EVAL && error_module) status = TPP_ERROR;
+        return status;
     }
     gen_target = succ;
     next_state = NULL;
@@ -4911,7 +5048,6 @@ static int search(void) {
         }
         if (succ_count == 0 && check_deadlock) {
             printf("Error: Deadlock reached.\n");
-            printf("Error: The behavior up to this point is:\n");
             print_trace(idx, NULL, 0);
             print_counts(nstates - expanded, 1);
             return TPP_VIOLATION_DEADLOCK;
