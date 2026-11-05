@@ -1845,15 +1845,18 @@ static Expr *parse_name(void) {
         memset(s, 0, sizeof *s);
         static const char *sels[] = {"<<", ">>", ":", "@", "("};
         for (int k = 0; k < 5 && n > 1; k++) if (is_op(t, sels[k])) s->sel = -1 - k;
-        if (s->sel == SEL_NULL) { s->args = parse_args(&s->n); goto more; }
         if (n > 1 && t->kind == T_NUM && t->num > 0) s->sel = (int)t->num;
-        else if (s->sel) ;
-        else if (t->kind == T_IDENT) s->name = t->id;
-        else if (t->kind == T_OP || t->kind == T_KW) s->name = canonical(t->id);
-        else syntax_error("expected a name");
-        next();
-        if (!s->sel && is_op(peek(), "(")) s->args = parse_args(&s->n);
-    more:
+        if (s->sel == SEL_NULL) {
+            s->args = parse_args(&s->n);
+        } else if (s->sel) {
+            next();
+        } else {
+            if (t->kind == T_IDENT) s->name = t->id;
+            else if (t->kind == T_OP || t->kind == T_KW) s->name = canonical(t->id);
+            else syntax_error("expected a name");
+            next();
+            if (is_op(peek(), "(")) s->args = parse_args(&s->n);
+        }
         if (is_op(peek(), "!") && n < 32) { next(); continue; }
         break;
     }
@@ -2385,9 +2388,9 @@ static int label_ahead(void) {
     if (peek()->kind != T_IDENT) return 0;
     int k = 1;
     if (is_op(peek_at(1), "(")) {
-        do k++; while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",") && k++);
-        if (peek_at(k)->kind != T_IDENT || !is_op(peek_at(k + 1), ")")) return 0;
-        k += 2;
+        do if (peek_at(++k)->kind != T_IDENT) return 0;
+        while (is_op(peek_at(++k), ","));
+        if (!is_op(peek_at(k++), ")")) return 0;
     }
     return is_op(peek_at(k), "::");
 }
@@ -3278,22 +3281,28 @@ static int operand(int sel, int n) {
     return 0;
 }
 
+/* The parameters met selecting a subexpression, and their arguments. */
+typedef struct { Def *params[64]; Expr *args[64]; int np, nargs, missing; } Selection;
+
+/* The parameters defs, with the arguments seg gives them, if any. */
+static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
+    if (seg->n && seg->n != n) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), n);
+    if (sel->np + n > 64) semantic_error(e, "Too many parameters.");
+    for (int k = 0; k < n; k++) {
+        sel->params[sel->np++] = defs[k];
+        if (seg->n) sel->args[sel->nargs++] = seg->args[k];
+    }
+    sel->missing |= n && !seg->n;
+}
+
 /* d(a)!lab(b)!2!(c)...: the subexpression that segments i.. of e name, as
    an operator of every parameter met on the way: d's, the labels', and the
    identifiers !(c) or !@ bind. Its arguments, if given, are in *args. */
 static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
     if (d->kind != D_OP || d->local == 2 || !d->body)
         semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
-    Def *params[64];
-    Expr *given[64];
-    int np = 0, ng = 0, missing = 0;
-#define TAKE(defs, count, seg) do { \
-        if ((seg)->n && (seg)->n != (count)) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), (count)); \
-        if (np + (count) > 64) semantic_error(e, "Too many parameters."); \
-        for (int k_ = 0; k_ < (count); k_++) { params[np++] = (defs)[k_]; if ((seg)->n) given[ng++] = (seg)->args[k_]; } \
-        missing |= (count) && !(seg)->n; \
-    } while (0)
-    TAKE(d->params, d->nparams, &e->segs[i]);
+    Selection sel = {0};
+    take(&sel, e, d->params, d->nparams, &e->segs[i]);
     Expr *cur = d->body;
     int names = 1, own = 0;   /* a name next is a label, else a LET definition */
     for (int k = i + 1; k < e->nseg; k++) {
@@ -3301,21 +3310,20 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
         if (s->sel == 0 && names) {
             cur = find_label(cur, s->name, own);
             if (!cur) semantic_error(e, "Unknown label `%s'.", S(s->name));
-            Label *l = cur->label;
-            TAKE(l->defs, l->n, s);
+            take(&sel, e, cur->label->defs, cur->label->n, s);
             own = 1;
         } else if (s->sel == 0) {
             Def *x = NULL;
             for (int j = 0; cur->kind == X_LET && j < cur->ndefs && !x; j++)
                 if (cur->defs[j]->name == s->name) x = cur->defs[j];
             if (!x || !x->body) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
-            TAKE(x->params, x->nparams, s);
+            take(&sel, e, x->params, x->nparams, s);
             cur = x->body;
             names = 1, own = 0;
         } else if (s->sel == SEL_COLON) {
             names = 0;
         } else {
-            int n = 0, k0 = k;   /* CASE takes two selectors */
+            int n = 0, first = k;
             if (cur->kind == X_LET) {
                 if (operand(s->sel, 1)) n = 1, cur = cur->args[0];
             } else if (cur->nb) {
@@ -3324,12 +3332,12 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
                     int nbound = 0;
                     for (int b = 0; b < cur->nb; b++)
                         for (int j = 0; j < cur->bounds[b].n && nbound < 64; j++) bound[nbound++] = cur->bounds[b].defs[j];
-                    TAKE(bound, nbound, s);
+                    take(&sel, e, bound, nbound, s);
                     n = 1, cur = cur->args[0];
                 } else if ((n = operand(s->sel, cur->bounds[0].set ? cur->nb : 0))) {
                     cur = cur->bounds[n - 1].set;
                 }
-            } else if (cur->kind == X_CASE) {
+            } else if (cur->kind == X_CASE) {   /* an arm, then its guard or value */
                 int arm = operand(s->sel, cur->n / 2);
                 if (arm && ++k < e->nseg && (n = operand(e->segs[k].sel, 2))) cur = cur->args[2 * arm - 3 + n];
             } else if (cur->kind == X_DOT) {
@@ -3344,12 +3352,11 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
             } else if ((n = operand(s->sel, cur->n)) && (cur->kind != X_EXCEPT || n == 1)) {
                 cur = cur->args[n - 1];
             }
-            if (!n || !cur) semantic_error(e, "Nonexistent operand specified by selector %d of %s.", k0 - i, S(d->name));
+            if (!n || !cur) semantic_error(e, "Nonexistent operand specified by selector %d of %s.", first - i, S(d->name));
             names = 0, own = 0;
         }
     }
-#undef TAKE
-    if (missing && ng) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), np);
+    if (sel.missing && sel.nargs) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), sel.np);
     /* The LET definitions around the subexpression are in scope in it. */
     Expr *lets[64];
     Expr *body = cur;
@@ -3362,17 +3369,18 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
         body = let;
     }
     Def *f = NEW(Def);
-    *f = *d;
     f->kind = D_OP;
-    f->nparams = np;
-    f->params = NEWN(Def *, np);
-    memcpy(f->params, params, sizeof(Def *) * (size_t)np);
+    f->name = d->name;
+    f->mod = d->mod;
+    f->where = d->where;
+    f->level = f->var_index = -1;
+    f->nparams = sel.np;
+    f->params = NEWN(Def *, sel.np);
+    memcpy(f->params, sel.params, sizeof(Def *) * (size_t)sel.np);
     f->body = body;
-    f->level = -1;
-    f->cache = NULL;
-    *nargs = ng;
-    *args = NEWN(Expr *, ng);
-    memcpy(*args, given, sizeof(Expr *) * (size_t)ng);
+    *nargs = sel.nargs;
+    *args = NEWN(Expr *, sel.nargs);
+    memcpy(*args, sel.args, sizeof(Expr *) * (size_t)sel.nargs);
     return f;
 }
 
