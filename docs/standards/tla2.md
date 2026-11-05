@@ -386,6 +386,12 @@ evaluated natively.
   `:>`, `@@`, `Permutations`, `SortSeq`, `RandomElement`, `Any`,
   `ToString`, `TLCEval`.
 
+The operators of Sequences read a string as the sequence of its
+characters, each a one-character string: `Head("ab") = "a"`, and `Tail`,
+`SubSeq` and `Append` of a string, and `\o` of two strings, are strings;
+`SelectSeq` of a string, and `s \o t` for a sequence `s` and a string `t`,
+are tuples; and a string is in `Seq(S)` when its characters are in `S`.
+
 `Print(out, val)` writes `out` and `val` and yields `val`; `PrintT(out)`
 writes `out` and yields `TRUE`; `Assert(c, out)` is `TRUE` when `c` is and
 otherwise an error (§11.3).
@@ -589,6 +595,21 @@ or as the first line of an action error:
 | `<<>> = {}` | `Attempted to check equality of the function << >> with the value:` / `{}` |
 | a non-Boolean `/\` operand | `Attempted to evaluate an expression of form P /\ Q when P was` / `an integer.` |
 | quantifier over `Nat` | `TLC encountered a non-enumerable quantifier bound` / `Nat.` |
+| `+`, `-`, `*`, `\div`, `%`, `^`, `..` of a non-integer | `Cannot cast tlc2.value.impl.BoolValue to tlc2.value.impl.IntValue`, naming the class TLC keeps the value in |
+| `x \in v` for a value `v` that is not a set | `Attempted to check if the value:` / `x` / `is an element of the integer 2` (or `the string`, `the boolean`, `the function`); for a tuple, `Attempted to check set membership in a tuple value.`; for a record, `Attempted to check if element:` / `x` / `is in the record:` / `v` |
+| a value of the wrong kind in `Seq(S)`, `SUBSET S`, `[S -> T]`, `[a : S]`, `S \X T` | TLC's message for that set, such as `Attempted to check if non-record` / `x` / `is in the set of records:` / `S` |
+| comparing `Nat`, `Int`, `STRING` or `Seq(S)` with another set | `Attempted to compare overridden value Nat with non-overridden value:` / `S` |
+| enumerating or counting a set with an infinite part | TLC's message for the part, such as `Attempted to compute the number of elements in the overridden value Nat.` |
+
+An error inside an operator of §8, which TLC implements in Java, such as
+in the test of `SelectSeq`, follows a preamble for each such operator it is
+inside, outermost first: `Attempted to apply the operator overridden by the
+Java method` / its signature, as in `public static tlc2.value.impl.Value
+tlc2.module.Sequences.SelectSeq(tlc2.value.impl.Value,tlc2.value.impl.Value),`
+/ `but it produced the following error:`. The location of the inner error,
+if any, ends the message. Errors that TLC raises as `EvalException`s, which
+are those the operators of §8 raise about their own arguments, have no
+preamble.
 
 A message that names an expression is followed by its location, `line l,
 col c to line l2, col c2 of module M`.

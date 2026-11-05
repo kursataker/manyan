@@ -205,6 +205,10 @@ static Buf error_message;
 static Expr *error_expr;   /* the expression an evaluation error names, if any */
 static int error_status;   /* the exit status the error implies */
 static int error_module;   /* raised by a standard module's operator: TLC's EvalException */
+/* The Java methods of the standard operators being applied, innermost last.
+   TLC wraps any error inside one, but an EvalException, in a preamble. */
+static const char *java_frames[64];
+static int java_depth;
 
 static void error_reset(void) {
     error_message.n = 0;
@@ -222,11 +226,24 @@ static _Noreturn void raise_error(void) {
     siglongjmp(*handler, 1);
 }
 
+static void loc_line(Buf *b, Expr *e);
+
 static _Noreturn void vfail(Expr *e, int module, const char *fmt, va_list ap) {
     char small[1024];
     vsnprintf(small, sizeof small, fmt, ap);
     error_reset();
-    buf_puts(&error_message, small);
+    if (!module && java_depth) {
+        for (int i = 0; i < java_depth && i < 64; i++)
+            buf_printf(&error_message, "Attempted to apply the operator overridden by the Java method\n%s,\n"
+                       "but it produced the following error:\n", java_frames[i]);
+        buf_puts(&error_message, small);
+        loc_line(&error_message, e);
+        e = NULL;
+        module = 1;
+    } else {
+        buf_puts(&error_message, small);
+    }
+    java_depth = 0;   /* errors are caught outside every standard operator */
     error_expr = e;
     error_module = module;
     raise_error();
@@ -326,6 +343,16 @@ static Value *mk_tuple(int n) {
     return v;
 }
 
+/* The characters of a string, which TLC's Sequences operators read as a sequence. */
+static Value *str_chars(Value *s) {
+    int n = strs[s->u.i].len;
+    Value *t = mk_tuple(n);
+    for (int i = 0; i < n; i++) t->u.fcn.vals[i] = mk_str(intern_n(strs[s->u.i].s + i, 1));
+    return t;
+}
+
+static Value *substr(Value *s, int from, int len) { return mk_str(intern_n(strs[s->u.i].s + from, len)); }
+
 static Value *mk_fcn(int n) {
     Value *v = NEW(Value);
     v->kind = V_FCN;
@@ -364,6 +391,11 @@ static const char *kind_name(Value *v) {
 }
 
 static int is_set(Value *v) { return v->kind == V_SET || v->kind == V_INTERVAL || v->kind == V_LAZY; }
+
+/* Nat, Int, STRING and Seq(S): what TLC calls overridden values. */
+static int user_set(Value *s) {
+    return s->kind == V_LAZY && (s->lazy == L_NAT || s->lazy == L_INT || s->lazy == L_STRING || s->lazy == L_SEQ);
+}
 /* How TLC names the kind of a value in error messages. */
 static const char *kind_string(Value *v) {
     switch (v->kind) {
@@ -372,7 +404,7 @@ static const char *kind_string(Value *v) {
     case V_STR: return "a string";
     case V_MODEL: return "a model value";
     case V_TUPLE: return "a tuple";
-    case V_FCN: return "a function  of the form (d1 :> e1 @@ ... @@ dN :> eN)";
+    case V_FCN: return v->made == MADE_RECORD ? "a record" : "a function  of the form (d1 :> e1 @@ ... @@ dN :> eN)";
     case V_SET: return "a set of the form {e1, ... ,eN}";
     case V_INTERVAL: return "a set of the form i..j";
     case V_OPER: return "an operator";
@@ -675,6 +707,14 @@ static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; 
 
 /* The standard order (§7.4). Model values come first; other values of
    different kinds cannot be compared. */
+/* TLC's error comparing sets of which one is infinite. */
+static _Noreturn void incomparable(Value *a, Value *b) {
+    if (user_set(a)) fail("Attempted to compare overridden value %s with non-overridden value:\n%s", pretty(a), pretty(b));
+    if (user_set(b)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(enumerate(a)), pretty(b));
+    enumerate(set_is_infinite(a) ? a : b);   /* fails with TLC's error for that set */
+    abort();
+}
+
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
@@ -704,6 +744,8 @@ static int vcmp(Value *a, Value *b) {
         return 0;
     }
     if (is_set(a) && is_set(b)) {
+        if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 0;
+        if (set_is_infinite(a) || set_is_infinite(b)) incomparable(user_set(b) ? b : a, user_set(b) ? a : b);   /* as TLC sorts */
         a = enumerate(a);
         b = enumerate(b);
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
@@ -743,7 +785,7 @@ static int veq(Value *a, Value *b) {
         if (set_is_infinite(a) || set_is_infinite(b)) {
             if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy == L_SEQ)
                 return veq(a->u.l.a, b->u.l.a);
-            fail("Attempted to check equality of the infinite set %s with %s", pretty(a), pretty(b));
+            incomparable(a, b);
         }
         a = enumerate(a);
         b = enumerate(b);
@@ -856,6 +898,8 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng, int as_record
 }
 
 /* The elements of a finite set, as a normalized V_SET. */
+static _Noreturn void count_infinite(Value *s);
+
 static Value *enumerate(Value *s) {
     if (s->kind == V_SET) return s;
     if (s->kind == V_INTERVAL) {
@@ -866,6 +910,7 @@ static Value *enumerate(Value *s) {
     if (s->kind != V_LAZY) fail("Attempted to enumerate %s, which is not a set.", pretty(s));
     switch (s->lazy) {
     case L_SUBSET: {
+        if (set_is_infinite(s->u.l.a)) count_infinite(s->u.l.a);
         Value *base = enumerate(s->u.l.a);
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
         List out = {0};
@@ -878,6 +923,10 @@ static Value *enumerate(Value *s) {
         return list_set(&out);
     }
     case L_FCNSET: {
+        for (int i = 0; i < 2; i++)
+            if (set_is_infinite(i ? s->u.l.b : s->u.l.a))
+                fail("Attempted to enumerate a set of the form [D -> R],but the %s:\n%s\ncannot be enumerated.",
+                     i ? "range R" : "domain D", pretty(i ? s->u.l.b : s->u.l.a));
         Value *dom = enumerate(s->u.l.a);
         return enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, 0);
     }
@@ -886,7 +935,13 @@ static Value *enumerate(Value *s) {
         Value **sets = NEWN(Value *, n);
         int64_t total = 1;
         for (int i = 0; i < n; i++) {
-            sets[i] = enumerate(s->u.l.names[n + i]);
+            Value *part = s->u.l.names[n + i];
+            if (set_is_infinite(part) && s->lazy == L_TIMES)
+                fail("Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s%d:\n%s", i, pretty(part));
+            if (set_is_infinite(part))
+                fail("Attempted to enumerate a set of the form [l1 : v1, ..., ln : vn],\n"
+                     "but can't enumerate the value of the `%s' field:\n%s", S(s->u.l.names[i]->u.i), pretty(part));
+            sets[i] = enumerate(part);
             total *= sets[i]->n;
             if (total > 100000000) fail("Attempted to enumerate a set with too many elements.");
         }
@@ -920,12 +975,32 @@ static Value *enumerate(Value *s) {
         if (!s->perm || arena == &perm_arena) s->u.l.b = set;
         return set;
     }
+    case L_CUP: {
+        /* TLC makes S \cup T from whichever of them is enumerated. */
+        Value *a = s->u.l.a, *b = s->u.l.b;
+        if (a->kind == V_LAZY && b->kind != V_LAZY) { Value *t = a; a = b; b = t; }
+        fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
+    }
+    case L_CAP:
+        fail("Attempted to enumerate S \\cap T when neither S:\n%s\nnor T:\n%s\nis enumerable", pretty(s->u.l.a), pretty(s->u.l.b));
+    case L_DIFF:
+        fail("Attempted to enumerate S \\ T when S:\n%s\nis not enumerable.", pretty(s->u.l.a));
     default:
         fail("TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
     }
 }
 
 static Value *normalize_set(Value *v) { return enumerate(v); }
+
+/* TLC's error counting an infinite set: the first part it cannot count. */
+static _Noreturn void count_infinite(Value *s) {
+    if (user_set(s)) fail("Attempted to compute the number of elements in the overridden value %s.", pretty(s));
+    if (s->lazy == L_SUBSET || s->lazy == L_FCNSET) count_infinite(set_is_infinite(s->u.l.a) ? s->u.l.a : s->u.l.b);
+    if (s->lazy == L_RCDSET || s->lazy == L_TIMES)
+        for (int i = 0; i < s->n; i++) if (set_is_infinite(s->u.l.names[s->n + i])) count_infinite(s->u.l.names[s->n + i]);
+    enumerate(s);   /* fails, as s is infinite */
+    abort();
+}
 
 /* The number of elements of a finite set, without enumerating a product of
    sets, or -1 when it is not a 32-bit int, TLC's count. */
@@ -956,7 +1031,16 @@ static int all_members(Value *sub, Value *s) {
     return 1;
 }
 
+/* TLC's error testing membership in a value that is not a set. */
+static _Noreturn void not_a_set(Value *v, Value *s) {
+    if (s->kind == V_TUPLE) fail("Attempted to check set membership in a tuple value.");
+    if (s->kind == V_FCN && s->made == MADE_RECORD) fail("Attempted to check if element:\n%s\nis in the record:\n%s", pretty(v), pretty(s));
+    fail("Attempted to check if the value:\n%s\nis an element of the %s %s", pretty(v),
+         s->kind == V_FCN || s->kind == V_LAMBDA ? "function" : kind_name(s), pretty(s));
+}
+
 static int set_member(Value *v, Value *s) {
+    if (!is_set(s)) not_a_set(v, s);
     switch (s->kind) {
     case V_SET: {
         int lo = 0, hi = s->n;
@@ -987,13 +1071,18 @@ static int set_member(Value *v, Value *s) {
                 fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v),
                             s->lazy == L_NAT ? "Nat" : s->lazy == L_INT ? "Int" : "STRING");
             return s->lazy != L_NAT || v->u.i >= 0;
-        case L_SUBSET: return is_set(v) && all_members(v, s->u.l.a);
+        case L_SUBSET:
+            if (!is_set(v)) fail("Attempted to check if the non-enumerable value\n%s\nis element of\n%s", pretty(v), pretty(s));
+            return all_members(v, s->u.l.a);
         case L_SEQ:
-            if (!is_fcn(v) || !fcn_is_tuple(v)) return 0;
+            if (v->kind == V_STR) v = str_chars(v);
+            if (!is_fcn(v) || !(fcn_is_tuple(v) || v->n == 0))
+                fail("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
             for (int i = 0; i < v->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.a)) return 0;
             return 1;
         case L_FCNSET: {
-            if (!is_fcn(v)) return 0;
+            if (!is_fcn(v))
+                fail("Attempted to check if \n%s\nwhich is not a TLC function value, is in the set of functions:\n%s", pretty(v), pretty(s));
             Value *dom = enumerate(s->u.l.a);
             if (dom->n != v->n) return 0;
             for (int i = 0; i < v->n; i++) {
@@ -1003,6 +1092,8 @@ static int set_member(Value *v, Value *s) {
             return 1;
         }
         case L_RCDSET: {
+            if (!is_fcn(v) || !(v->n == 0 || fcn_is_record(v)))
+                fail("Attempted to check if non-record\n%s\nis in the set of records:\n%s", pretty(v), pretty(s));
             if (v->kind != V_FCN || v->n != s->n) return 0;
             for (int i = 0; i < s->n; i++) {
                 if (!veq(v->u.fcn.keys[i], s->u.l.names[i])) return 0;
@@ -1011,7 +1102,9 @@ static int set_member(Value *v, Value *s) {
             return 1;
         }
         case L_TIMES: {
-            if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != s->n) return 0;
+            if (!is_fcn(v) || !(fcn_is_tuple(v) || v->n == 0))
+                fail("Attempted to check if non-tuple\n%s\nis in the set of tuples:\n%s", pretty(v), pretty(s));
+            if (v->n != s->n) return 0;
             for (int i = 0; i < s->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.names[s->n + i])) return 0;
             return 1;
         }
@@ -1251,6 +1344,7 @@ struct Def {
     int nb;
     Module *mod;
     Native native;
+    const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
     Value *value;         /* D_CONST: the configured value */
     Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
@@ -1265,6 +1359,8 @@ struct Def {
     Expr **subst_expr;
     Expr *where;          /* the definition's location */
 };
+
+static Value *call_native(Def *d, Expr *call, Value **args, Ctx c);
 
 /* A symbol of a module: a definition, reached through `npath` instances. */
 typedef struct { int name; Def *def; Def **path; int npath; int local; } Sym;
@@ -2258,8 +2354,10 @@ static Expr *parse_postfix(void) {
     }
 }
 
-static Expr *parse_unary(void) {
+/* An operand; *prefix is its prefix operator, if it is an application of one. */
+static Expr *parse_unary(const OpInfo **prefix) {
     Tok *t = peek();
+    *prefix = NULL;
     const OpInfo *info = op_info(t, PREFIX), *named = op_info(t, INFIX);
     if (!named) named = op_info(t, POSTFIX);
     if (!info && named && !is_junction(t) && is_op(peek_at(1), "(")) {
@@ -2273,6 +2371,7 @@ static Expr *parse_unary(void) {
     }
     if (info) {
         next();
+        *prefix = info;
         Expr *arg = parse_binary(info->hi);
         Expr *e = mk_op(t, intern(info->name), 1, &arg);
         span_to(e, arg);
@@ -2283,8 +2382,8 @@ static Expr *parse_unary(void) {
 
 /* An expression whose operators all bind tighter than `bound` (§6.1). */
 static Expr *parse_binary(int bound) {
-    Expr *left = parse_unary();
-    const OpInfo *last = NULL;
+    const OpInfo *last;   /* the operator before the next one, as on SANY's stack */
+    Expr *left = parse_unary(&last);
     for (;;) {
         Tok *t = peek();
         const OpInfo *post = op_info(t, POSTFIX);
@@ -2296,11 +2395,11 @@ static Expr *parse_binary(int bound) {
             continue;
         }
         const OpInfo *info = op_info(t, INFIX);
-        if (!info || info->lo <= bound) break;
-        if (last && !(info->hi < last->lo)) {
-            if (!(info == last && info->left))
-                parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and %s", last->name, info->name);
-        }
+        if (!info) break;
+        /* Operators whose ranges overlap conflict, but for a left-associative one repeated. */
+        if (last && !(info->hi < last->lo) && !(info == last && info->left))
+            parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and %s", last->name, info->name);
+        if (info->lo <= bound) break;
         next();
         if (strcmp(info->name, "\\X") == 0) {
             /* a \X b \X c is a product of three sets. */
@@ -2321,7 +2420,7 @@ static Expr *parse_binary(int bound) {
             continue;
         }
         /* SANY rejects a prefix minus right of an operator binding tighter: 2 * -1. */
-        if (info->hi > 12 && is_op(peek(), "-"))
+        if (info->lo > 12 && is_op(peek(), "-"))
             parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and -.", info->name);
         Expr *right = parse_binary(info->hi);
         Expr *pair[2] = {left, right};
@@ -2866,6 +2965,13 @@ static Module *cur_module;   /* the module being resolved */
 static void loc_text(Buf *b, Expr *e) {
     if (!e || !e->mod) { buf_puts(b, "Unknown location"); return; }
     buf_printf(b, "line %d, col %d to line %d, col %d of module %s", e->l1, e->c1, e->l2, e->c2, S(e->mod->name));
+}
+
+/* A new line naming e's location, if it has one. */
+static void loc_line(Buf *b, Expr *e) {
+    if (!e || !e->mod) return;
+    buf_puts(b, "\n");
+    loc_text(b, e);
 }
 
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
@@ -3542,6 +3648,40 @@ static int64_t int_arg(Value *v, int which, const char *op) {
     return v->u.i;
 }
 
+/* The Java class TLC keeps a value in, which its casting errors name. */
+static const char *java_class(Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return "BoolValue";
+    case V_INT: return "IntValue";
+    case V_STR: return "StringValue";
+    case V_MODEL: return "ModelValue";
+    case V_TUPLE: return "TupleValue";
+    case V_FCN: return v->made == MADE_RECORD ? "RecordValue" : "FcnRcdValue";
+    case V_SET: return "SetEnumValue";
+    case V_INTERVAL: return "IntervalValue";
+    case V_LAMBDA: return "FcnLambdaValue";
+    case V_OPER: return "OpLambdaValue";
+    default: break;
+    }
+    switch (v->lazy) {
+    case L_SUBSET: return "SubsetValue";
+    case L_FCNSET: return "SetOfFcnsValue";
+    case L_RCDSET: return "SetOfRcdsValue";
+    case L_FILTER: return v->u.l.a->kind == V_LAZY ? "SetPredValue" : "SetEnumValue";   /* TLC filters an enumerated set at once */
+    case L_TIMES: return "SetOfTuplesValue";
+    case L_CUP: return "SetCupValue";
+    case L_CAP: return "SetCapValue";
+    case L_DIFF: return "SetDiffValue";
+    default: return "UserValue";
+    }
+}
+
+/* An argument of an arithmetic operator, which TLC casts to an integer. */
+static int64_t int_cast(Value *v) {
+    if (v->kind != V_INT) fail("Cannot cast tlc2.value.impl.%s to tlc2.value.impl.IntValue", java_class(v));
+    return v->u.i;
+}
+
 static Value *eval_operator_arg(Expr *a, Ctx c);
 static Value *apply_oper(Value *op, Value **args, int n, Expr *where);
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call);
@@ -3856,7 +3996,7 @@ static Value *eval(Expr *e, Ctx c) {
             for (int i = 0; i < e->n && plain; i++) plain = !d->params[i]->arity;
             if (plain) {
                 for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
-                return d->native(e, vals, c);
+                return call_native(d, e, vals, c);
             }
         }
         return call_def(d, e->args, e->n, c, e);
@@ -3878,7 +4018,7 @@ static Value *eval(Expr *e, Ctx c) {
         }
         if (d->native) {
             for (int k = 0; k < e->n; k++) vals[k] = force(env_find(env, d->params[k]));
-            return d->native(e, vals, ic);
+            return call_native(d, e, vals, ic);
         }
         Ctx body = {env, inst};
         return eval_body(d->body, body);
@@ -3924,21 +4064,21 @@ static Value *eval(Expr *e, Ctx c) {
     case K_NEQ: return BOOLV(!veq(eval(e->args[0], c), eval(e->args[1], c)));
     case K_IN: case K_NOTIN: {
         Value *v = eval(e->args[0], c), *s = eval(e->args[1], c);
-        if (!is_set(s)) fail_at(e, "Attempted to check if the value:\n%s\nis an element of the non-set:\n%s", pretty(v), pretty(s));
         int in = set_member(v, s);
         return BOOLV(e->kind == K_IN ? in : !in);
     }
     case K_CUP: case K_CAP: case K_SETMINUS: case K_SUBSETEQ: {
         Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+        if (e->kind == K_SUBSETEQ) {
+            if (!is_set(a) || user_set(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
+            return BOOLV(all_members(a, b));
+        }
         if (!is_set(a) || !is_set(b))
             fail_at(e, "Attempted to apply a set operator to the non-set:\n%s", pretty(is_set(a) ? b : a));
         switch (e->kind) {
         case K_CUP: return set_union(a, b);
         case K_CAP: return set_inter(a, b);
-        case K_SETMINUS: return set_minus(a, b);
-        default:
-            if (set_is_infinite(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
-            return BOOLV(all_members(a, b));
+        default: return set_minus(a, b);
         }
     }
     case K_SUBSET: {
@@ -3951,6 +4091,8 @@ static Value *eval(Expr *e, Ctx c) {
         Value *s = enumerate(eval(e->args[0], c));
         List l = {0};
         for (int i = 0; i < s->n; i++) {
+            if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i]))
+                fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
             Value *t = enumerate(s->u.set.elems[i]);
             for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
         }
@@ -4105,7 +4247,7 @@ static Value *eval(Expr *e, Ctx c) {
     }
     case X_IF: {
         Value *v = eval(e->args[0], c);
-        if (v->kind != V_BOOL) fail_at(e, "A non-boolean expression (%s) was used as the condition of an IF.\n%s", kind_name(v), pretty(v));
+        if (v->kind != V_BOOL) fail_at(e, "A non-boolean expression (%s) was used as the condition of an IF.", kind_string(v));
         return eval(e->args[v->u.i ? 1 : 2], c);
     }
     case X_CASE: {
@@ -4164,7 +4306,7 @@ static Value *eval_operator_arg(Expr *a, Ctx c) {
 }
 
 static Value *call_values(Def *d, Value **vals, int n, Ctx c, Expr *where) {
-    if (d->native) return d->native(where, vals, c);
+    if (d->native) return call_native(d, where, vals, c);
     Env *env = c.env;
     if (d->kind == D_FCN) return fcndef_apply(d, n == 1 ? vals[0] : NULL, c, where);
     for (int i = 0; i < n && i < d->nparams; i++) env = mk_binding(d->params[i], vals[i], env);
@@ -4223,7 +4365,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Value **vals = NEWN(Value *, n);
         for (int i = 0; i < n; i++)
             vals[i] = d->params[i]->arity ? eval_operator_arg(args[i], c) : eval(args[i], c);
-        return d->native(call, vals, c);
+        return call_native(d, call, vals, c);
     }
     if (n == 0 && !c.inst) {
         if (d->cache) return d->cache;
@@ -4254,22 +4396,30 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
 /* ---------------------------------------------------------------- standard modules */
 
 #define NATIVE(name) static Value *name(Expr *call, Value **a, Ctx c)
+
+static Value *call_native(Def *d, Expr *call, Value **args, Ctx c) {
+    if (java_depth < 64) java_frames[java_depth] = d->java;
+    java_depth++;
+    Value *v = d->native(call, args, c);
+    java_depth--;
+    return v;
+}
 #define UNUSED (void)call; (void)a; (void)c
 
 NATIVE(n_nat) { UNUSED; return mk_lazy(L_NAT); }
 NATIVE(n_int) { UNUSED; return mk_lazy(L_INT); }
-NATIVE(n_plus) { UNUSED; int64_t x = int_arg(a[0], 1, "+"), y = int_arg(a[1], 2, "+"); return mk_int(check_int(x + y, x, y, "+")); }
-NATIVE(n_minus) { UNUSED; int64_t x = int_arg(a[0], 1, "-"), y = int_arg(a[1], 2, "-"); return mk_int(check_int(x - y, x, y, "-")); }
-NATIVE(n_times) { UNUSED; int64_t x = int_arg(a[0], 1, "*"), y = int_arg(a[1], 2, "*"); return mk_int(check_int(x * y, x, y, "*")); }
+NATIVE(n_plus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x + y, x, y, "+")); }
+NATIVE(n_minus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x - y, x, y, "-")); }
+NATIVE(n_times) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x * y, x, y, "*")); }
 NATIVE(n_lt) { UNUSED; return BOOLV(int_arg(a[0], 1, "<") < int_arg(a[1], 2, "<")); }
 NATIVE(n_gt) { UNUSED; return BOOLV(int_arg(a[0], 1, ">") > int_arg(a[1], 2, ">")); }
-NATIVE(n_leq) { UNUSED; return BOOLV(int_arg(a[0], 1, "\\leq") <= int_arg(a[1], 2, "\\leq")); }
-NATIVE(n_geq) { UNUSED; return BOOLV(int_arg(a[0], 1, "\\geq") >= int_arg(a[1], 2, "\\geq")); }
-NATIVE(n_neg) { UNUSED; int64_t x = int_arg(a[0], 1, "-"); return mk_int(check_int(-x, 0, x, "-")); }
+NATIVE(n_leq) { UNUSED; return BOOLV(int_arg(a[0], 1, "<=") <= int_arg(a[1], 2, "<=")); }
+NATIVE(n_geq) { UNUSED; return BOOLV(int_arg(a[0], 1, ">=") >= int_arg(a[1], 2, ">=")); }
+NATIVE(n_neg) { UNUSED; int64_t x = int_cast(a[0]); return mk_int(check_int(-x, 0, x, "-")); }
 
 NATIVE(n_pow) {
     UNUSED;
-    int64_t x = int_arg(a[0], 1, "^"), y = int_arg(a[1], 2, "^");
+    int64_t x = int_cast(a[0]), y = int_cast(a[1]);
     if (y < 0) fail_module("The second argument of ^ should be a natural number, but instead it is:\n%lld", (long long)y);
     if (x == 0 && y == 0) fail_module("0^0 is undefined.");
     int64_t r = 1;
@@ -4282,7 +4432,7 @@ NATIVE(n_pow) {
 
 NATIVE(n_div) {
     UNUSED;
-    int64_t x = int_arg(a[0], 1, "\\div"), y = int_arg(a[1], 2, "\\div");
+    int64_t x = int_cast(a[0]), y = int_cast(a[1]);
     if (y == 0) fail_module("The second argument of \\div is 0.");
     int64_t q = x / y;
     if ((x % y != 0) && ((x < 0) != (y < 0))) q--;
@@ -4291,7 +4441,7 @@ NATIVE(n_div) {
 
 NATIVE(n_mod) {
     UNUSED;
-    int64_t x = int_arg(a[0], 1, "%"), y = int_arg(a[1], 2, "%");
+    int64_t x = int_cast(a[0]), y = int_cast(a[1]);
     if (y <= 0) fail_module("The second argument of %% should be a positive number, but instead it is:\n%lld", (long long)y);
     int64_t r = x % y;
     if (r < 0) r += y;
@@ -4300,12 +4450,13 @@ NATIVE(n_mod) {
 
 NATIVE(n_range) {
     UNUSED;
-    return mk_interval(int_arg(a[0], 1, ".."), int_arg(a[1], 2, ".."));
+    return mk_interval(int_cast(a[0]), int_cast(a[1]));
 }
 
 /* A sequence: a function on 1..n, or a string. */
 static Value *seq_arg(Value *v, const char *error) {
     if (is_fcn(v) && (fcn_is_tuple(v) || v->n == 0)) return v;
+    if (v->kind == V_STR) return str_chars(v);
     fail_module("%s:\n%s", error, pretty(v));
 }
 
@@ -4326,16 +4477,20 @@ NATIVE(n_len) {
     return mk_int(seq_arg(a[0], NOT_SEQ("argument", "Len"))->n);
 }
 
+/* s \o t for a string s. */
+static Value *str_concat(Value *s, Value *t) {
+    if (t->kind != V_STR) fail_module("Evaluating an expression of the form t \\o s when s is not a string:\n%s", pretty(t));
+    Buf b = {0};
+    buf_puts(&b, S(s->u.i));
+    buf_puts(&b, S(t->u.i));
+    int id = intern_n(b.s ? b.s : "", (int)b.n);
+    free(b.s);
+    return mk_str(id);
+}
+
 NATIVE(n_concat) {
     UNUSED;
-    if (a[0]->kind == V_STR && a[1]->kind == V_STR) {
-        Buf b = {0};
-        buf_puts(&b, S(a[0]->u.i));
-        buf_puts(&b, S(a[1]->u.i));
-        int id = intern_n(b.s ? b.s : "", (int)b.n);
-        free(b.s);
-        return mk_str(id);
-    }
+    if (a[0]->kind == V_STR) return str_concat(a[0], a[1]);
     Value *x = seq_arg(a[0], "Evaluating an expression of the form s \\o t when s is not a sequence"),
           *y = seq_arg(a[1], "Evaluating an expression of the form t \\o s when s is not a sequence");
     Value *t = mk_tuple(x->n + y->n);
@@ -4346,6 +4501,7 @@ NATIVE(n_concat) {
 
 NATIVE(n_append) {
     UNUSED;
+    if (a[0]->kind == V_STR) return str_concat(a[0], a[1]);
     Value *x = seq_arg(a[0], "Evaluating an expression of the form Append(v, s) when s is not a sequence");
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
@@ -4364,6 +4520,7 @@ NATIVE(n_tail) {
     UNUSED;
     Value *x = seq_arg(a[0], NOT_SEQ("argument", "Tail"));
     if (x->n == 0) fail_module("Attempted to apply Tail to the empty sequence.");
+    if (a[0]->kind == V_STR) return substr(a[0], 1, x->n - 1);
     Value *t = mk_tuple(x->n - 1);
     for (int i = 1; i < x->n; i++) t->u.fcn.vals[i - 1] = x->u.fcn.vals[i];
     return t;
@@ -4372,12 +4529,17 @@ NATIVE(n_tail) {
 NATIVE(n_subseq) {
     UNUSED;
     Value *x = seq_arg(a[0], NOT_SEQ("first argument", "SubSeq"));
-    int64_t m = int_arg(a[1], 2, "SubSeq"), n = int_arg(a[2], 3, "SubSeq");
-    if (m > n) return mk_tuple(0);
+    for (int i = 1; i < 3; i++)
+        if (a[i]->kind != V_INT)
+            fail_module("The %s argument of SubSeq should be a natural number, but instead it is:\n%s", i == 1 ? "second" : "third", pretty(a[i]));
+    int64_t m = a[1]->u.i, n = a[2]->u.i;
+    int str = a[0]->kind == V_STR;
+    if (m > n) return str ? substr(a[0], 0, 0) : mk_tuple(0);
     int second = m < 1 || m > x->n;
     if (second || n > x->n)
         fail_module("The %s argument of SubSeq must be in the domain of its first argument:\n%s\n, but instead it is\n%lld",
-                    second ? "second" : "third", pretty(x), (long long)(second ? m : n));
+                    second ? "second" : "third", pretty(a[0]), (long long)(second ? m : n));
+    if (str) return substr(a[0], (int)m - 1, (int)(n - m + 1));
     Value *t = mk_tuple((int)(n - m + 1));
     for (int64_t i = m; i <= n; i++) t->u.fcn.vals[i - m] = x->u.fcn.vals[i - 1];
     return t;
@@ -4389,7 +4551,7 @@ NATIVE(n_selectseq) {
     List l = {0};
     for (int i = 0; i < x->n; i++) {
         Value *r = apply_oper(a[1], &x->u.fcn.vals[i], 1, call);
-        if (r->kind != V_BOOL) fail_module("The second argument of SelectSeq must be a predicate.");
+        if (r->kind != V_BOOL) fail_module("The second argument of SelectSeq should be a operator, but instead it is:\n%s", pretty(r));
         if (r->u.i) list_add(&l, x->u.fcn.vals[i]);
     }
     Value *t = mk_tuple(l.n);
@@ -4401,12 +4563,11 @@ NATIVE(n_isfinite) { UNUSED; return BOOLV(is_set(a[0]) && !set_is_infinite(a[0])
 
 NATIVE(n_cardinality) {
     UNUSED;
-    if (!is_set(a[0]) || set_is_infinite(a[0])) fail_module("Attempted to compute cardinality of the value\n%s", pretty(a[0]));
+    if (!is_set(a[0]) || user_set(a[0])) fail_module("Attempted to compute cardinality of the value\n%s", pretty(a[0]));
+    if (set_is_infinite(a[0])) count_infinite(a[0]);
     int64_t n = set_size(a[0]);
     if (n < 0)
-        fail_module("Attempted to apply the operator overridden by the Java method\n"
-                    "public static tlc2.value.impl.IntValue tlc2.module.FiniteSets.Cardinality(tlc2.value.impl.Value),\n"
-                    "but it produced the following error:\nOverflow when computing the number of elements in%s%s",
+        fail("Overflow when computing the number of elements in%s%s",
                     a[0]->lazy == L_TIMES ? " " : ":\n", pretty(a[0]));
     return mk_int(n);
 }
@@ -4456,7 +4617,11 @@ NATIVE(n_singleton) {
 
 NATIVE(n_merge) {
     UNUSED;
-    if (!is_fcn(a[0]) || !is_fcn(a[1])) fail_module("The arguments of @@ should be functions.");
+    for (int i = 0; i < 2; i++) {
+        if (a[i]->kind == V_LAMBDA) enumerate(a[i]->u.l.a);   /* TLC enumerates the domain, which fails */
+        if (!is_fcn(a[i]))
+            fail_module("The %s argument of @@ should be a function, but instead it is:\n%s", i ? "second" : "first", pretty(a[i]));
+    }
     List keys = {0}, vals = {0};
     for (int i = 0; i < a[0]->n; i++) { list_add(&keys, fcn_key(a[0], i)); list_add(&vals, a[0]->u.fcn.vals[i]); }
     for (int i = 0; i < a[1]->n; i++) {
@@ -4503,7 +4668,7 @@ NATIVE(n_sortseq) {
         while (j >= 0) {
             Value *pair[2] = {v, t->u.fcn.vals[j]};
             Value *r = apply_oper(a[1], pair, 2, call);
-            if (r->kind != V_BOOL) fail_module("The second argument of SortSeq must be a binary predicate.");
+            if (r->kind != V_BOOL) fail_module("The second argument of SortSeq should be a function, but instead it is:\n%s", pretty(r));
             if (!r->u.i) break;
             t->u.fcn.vals[j + 1] = t->u.fcn.vals[j];
             j--;
@@ -4530,26 +4695,59 @@ NATIVE(n_tostring) {
 
 NATIVE(n_tlceval) { UNUSED; return a[0]; }
 
-static const struct { const char *module, *name; Native fn; } natives[] = {
-    {"Naturals", "Nat", n_nat}, {"Naturals", "+", n_plus}, {"Naturals", "-", n_minus},
-    {"Naturals", "*", n_times}, {"Naturals", "^", n_pow}, {"Naturals", "<", n_lt},
-    {"Naturals", ">", n_gt}, {"Naturals", "\\leq", n_leq}, {"Naturals", "\\geq", n_geq},
-    {"Naturals", "%", n_mod}, {"Naturals", "\\div", n_div}, {"Naturals", "..", n_range},
-    {"Integers", "Int", n_int}, {"Integers", "-.", n_neg},
-    {"Sequences", "Seq", n_seq}, {"Sequences", "Len", n_len}, {"Sequences", "\\o", n_concat},
-    {"Sequences", "Append", n_append}, {"Sequences", "Head", n_head}, {"Sequences", "Tail", n_tail},
-    {"Sequences", "SubSeq", n_subseq}, {"Sequences", "SelectSeq", n_selectseq},
-    {"FiniteSets", "IsFiniteSet", n_isfinite}, {"FiniteSets", "Cardinality", n_cardinality},
-    {"TLC", "Print", n_print}, {"TLC", "PrintT", n_printt}, {"TLC", "Assert", n_assert},
-    {"TLC", "JavaTime", n_javatime}, {"TLC", "TLCGet", n_tlcget}, {"TLC", "TLCSet", n_tlcset},
-    {"TLC", ":>", n_singleton}, {"TLC", "@@", n_merge}, {"TLC", "Permutations", n_permutations},
-    {"TLC", "SortSeq", n_sortseq}, {"TLC", "RandomElement", n_randomelement}, {"TLC", "Any", n_any},
-    {"TLC", "ToString", n_tostring}, {"TLC", "TLCEval", n_tlceval},
-    {NULL, NULL, NULL}};
+/* Java's names of TLC's value classes, for its methods' signatures. */
+#define J_V "tlc2.value.impl.Value"
+#define J_I "tlc2.value.impl.IntValue"
+#define J_IV "tlc2.value.impl.IntervalValue"
+#define J_B "tlc2.value.IBoolValue"
+
+/* Each native operator, with the Java method TLC implements it by. */
+static const struct { const char *module, *name; Native fn; const char *ret, *method; } natives[] = {
+    {"Naturals", "Nat", n_nat, J_V, "Nat()"},
+    {"Naturals", "+", n_plus, J_I, "Plus(" J_I "," J_I ")"},
+    {"Naturals", "-", n_minus, J_I, "Minus(" J_I "," J_I ")"},
+    {"Naturals", "*", n_times, J_I, "Times(" J_I "," J_I ")"},
+    {"Naturals", "^", n_pow, J_I, "Expt(" J_I "," J_I ")"},
+    {"Naturals", "<", n_lt, J_B, "LT(" J_V "," J_V ")"},
+    {"Naturals", ">", n_gt, J_B, "GT(" J_V "," J_V ")"},
+    {"Naturals", "\\leq", n_leq, J_B, "LE(" J_V "," J_V ")"},
+    {"Naturals", "\\geq", n_geq, J_B, "GEQ(" J_V "," J_V ")"},
+    {"Naturals", "%", n_mod, J_I, "Mod(" J_I "," J_I ")"},
+    {"Naturals", "\\div", n_div, J_I, "Divide(" J_I "," J_I ")"},
+    {"Naturals", "..", n_range, J_IV, "DotDot(" J_I "," J_I ")"},
+    {"Integers", "Int", n_int, J_V, "Int()"},
+    {"Integers", "-.", n_neg, J_I, "Neg(" J_I ")"},
+    {"Sequences", "Seq", n_seq, J_V, "Seq(" J_V ")"},
+    {"Sequences", "Len", n_len, J_I, "Len(" J_V ")"},
+    {"Sequences", "\\o", n_concat, J_V, "Concat(" J_V "," J_V ")"},
+    {"Sequences", "Append", n_append, J_V, "Append(" J_V "," J_V ")"},
+    {"Sequences", "Head", n_head, J_V, "Head(" J_V ")"},
+    {"Sequences", "Tail", n_tail, J_V, "Tail(" J_V ")"},
+    {"Sequences", "SubSeq", n_subseq, J_V, "SubSeq(" J_V "," J_V "," J_V ")"},
+    {"Sequences", "SelectSeq", n_selectseq, J_V, "SelectSeq(" J_V "," J_V ")"},
+    {"FiniteSets", "IsFiniteSet", n_isfinite, J_B, "IsFiniteSet(" J_V ")"},
+    {"FiniteSets", "Cardinality", n_cardinality, J_I, "Cardinality(" J_V ")"},
+    {"TLC", "Print", n_print, J_V, "Print(" J_V "," J_V ")"},
+    {"TLC", "PrintT", n_printt, J_V, "PrintT(" J_V ")"},
+    {"TLC", "Assert", n_assert, J_V, "Assert(" J_V "," J_V ")"},
+    {"TLC", "JavaTime", n_javatime, J_V, "JavaTime()"},
+    {"TLC", "TLCGet", n_tlcget, J_V, "TLCGet(" J_V ")"},
+    {"TLC", "TLCSet", n_tlcset, J_V, "TLCSet(" J_V "," J_V ")"},
+    {"TLC", ":>", n_singleton, J_V, "MakeFcn(" J_V "," J_V ")"},
+    {"TLC", "@@", n_merge, J_V, "CombineFcn(" J_V "," J_V ")"},
+    {"TLC", "Permutations", n_permutations, J_V, "Permutations(" J_V ")"},
+    {"TLC", "SortSeq", n_sortseq, J_V, "SortSeq(" J_V "," J_V ")"},
+    {"TLC", "RandomElement", n_randomelement, J_V, "RandomElement(" J_V ")"},
+    {"TLC", "Any", n_any, J_V, "Any()"},
+    {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
+    {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
+    {NULL, NULL, NULL, NULL, NULL}};
 
 /* Attaches the native operators to the standard modules that were read
    from tla2tools' text (a module the user supplies keeps its own). */
 static void bind_natives(void) {
+    int integers = 0;
+    for (int i = 0; i < nmodules; i++) integers |= modules[i]->standard && strcmp(S(modules[i]->name), "Integers") == 0;
     for (int i = 0; i < nmodules; i++) {
         Module *m = modules[i];
         if (!m->standard) continue;
@@ -4557,7 +4755,14 @@ static void bind_natives(void) {
             Def *d = m->units[u].def;
             if (m->units[u].kind != 0 || !d) continue;
             for (int k = 0; natives[k].module; k++)
-                if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0) d->native = natives[k].fn;
+                if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0) {
+                    d->native = natives[k].fn;
+                    /* With Integers loaded, TLC takes Naturals' operators from its class too. */
+                    const char *cls = strcmp(natives[k].module, "Naturals") == 0 && integers ? "Integers" : natives[k].module;
+                    Buf b = {0};
+                    buf_printf(&b, "public static %s tlc2.module.%s.%s", natives[k].ret, cls, natives[k].method);
+                    d->java = buf_take(&b);
+                }
         }
     }
 }

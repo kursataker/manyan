@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 33 of module member_fcnset failed.
+Attempted to check if
+1
+which is not a TLC function value, is in the set of functions:
+{<<1>>}
+exit 10

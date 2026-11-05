@@ -1,0 +1,5 @@
+TRUE
+Error: Evaluating assumption line 5, col 8 to line 5, col 24 of module infinite_equality failed.
+Attempted to compare overridden value Nat with non-overridden value:
+{1}
+exit 10

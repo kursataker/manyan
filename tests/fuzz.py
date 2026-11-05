@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import spec_runner  # noqa: E402
 
 STATUSES = {0, 10, 11, 12, 13, 14, 75, 76, 150, 151, 255}
+STRINGS = ['"a"', '"b"', '"ab"', '""']
 TOKEN = re.compile(r"\\[A-Za-z]+|[A-Za-z_][A-Za-z0-9_]*|\d+|\"[^\"\n]*\"|<<|>>|\|->|==|/\\|\\/|[^\s\w]|\s+")
 
 
@@ -118,7 +119,10 @@ class Gen:
             lambda: f"(-{n()})",
             lambda: f"(IF {self.bool(d + 1)} THEN {n()} ELSE {n()})",
             lambda: f"Cardinality({self.set(d + 1)})",
+            lambda: f"Cardinality({self.big(d + 1)})",
             lambda: f"Len({self.seq(d + 1)})",
+            lambda: f"Head({self.seq(d + 1)})",
+            lambda: f"({n()} ^ {r.randint(0, 3)})",
             lambda: self.choose(d, "int"),
             lambda: f"{self.record(d + 1)}.a",
             lambda: f"{self.fcn(d + 1)}[{r.randint(1, 3)}]",
@@ -144,6 +148,10 @@ class Gen:
             lambda: self.quantifier(d),
             lambda: f"({self.seq(d + 1)} = {self.seq(d + 1)})",
             lambda: f"({self.set(d + 1)} = {self.set(d + 1)})",
+            lambda: f"({self.seq(d + 1)} \\in Seq({self.set(d + 1)}))",
+            lambda: f"({self.record(d + 1)} = {self.record(d + 1)})",
+            lambda: f"({self.record(d + 1)} \\in [a: {self.set(d + 1)}, b: BOOLEAN])",
+            lambda: f"({r.choice(STRINGS)} = {r.choice(STRINGS)})",
         )
 
     def bind(self, body):
@@ -183,6 +191,19 @@ class Gen:
             lambda: f"UNION {{{s()}, {s()}}}",
         )
 
+    def big(self, d=0):
+        """A set of something other than integers."""
+        s = lambda: self.set(d + 1)
+        return self.pick(
+            lambda: f"DOMAIN {self.record(d + 1)}",
+            lambda: "{" + ", ".join(self.rng.sample(STRINGS, self.rng.randint(0, 3))) + "}",
+            lambda: f"SUBSET {s()}",
+            lambda: f"({s()} \\X {s()})",
+            lambda: f"[{s()} -> {s()}]",
+            lambda: f"[a: {s()}, b: BOOLEAN]",
+            lambda: f"{{{self.seq(d + 1)}, {self.seq(d + 1)}}}",
+        )
+
     def filter(self, d):
         s = self.set(d + 1)
         x, p = self.bind(lambda: self.bool(d + 1))
@@ -205,6 +226,8 @@ class Gen:
             lambda: f"({q()} \\o {q()})",
             lambda: f"SubSeq({q()}, {r.randint(1, 2)}, {r.randint(0, 3)})",
             lambda: f"Tail({q()})",
+            lambda: f"SelectSeq({q()}, LAMBDA v : v > {n()})",
+            lambda: f"[{q()} EXCEPT ![{r.randint(1, 3)}] = @ * 2]",
             lambda: f"[{self.fcn(d + 1)} EXCEPT ![{r.randint(1, 3)}] = {n()}]",
         )
 
@@ -214,10 +237,13 @@ class Gen:
         return f"[{x} \\in {s} |-> {e}]"
 
     def record(self, d=0):
-        return f"[a |-> {self.int(d + 1)}, b |-> {self.bool(d + 1)}]"
+        r = [f"[a |-> {self.int(d + 1)}, b |-> {self.bool(d + 1)}]"]
+        if d < 2:
+            r.append(f"[{self.record(d + 1)} EXCEPT !.a = {self.int(d + 1)}]")
+        return self.rng.choice(r)
 
     def any(self):
-        return self.pick(self.int, self.bool, self.set, self.seq, self.record)
+        return self.pick(self.int, self.bool, self.set, self.big, self.seq, self.record)
 
 
 def batch_output(command, exprs):

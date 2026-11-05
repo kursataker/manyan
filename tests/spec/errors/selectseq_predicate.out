@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 45 of module selectseq_predicate failed.
+The second argument of SelectSeq should be a operator, but instead it is:
+2
+exit 10

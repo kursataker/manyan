@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 41 of module if_condition failed.
+A non-boolean expression (a record) was used as the condition of an IF.
+line 4, col 15 to line 4, col 40 of module if_condition
+exit 10

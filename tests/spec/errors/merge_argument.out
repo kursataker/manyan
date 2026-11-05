@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 26 of module merge_argument failed.
+The second argument of @@ should be a function, but instead it is:
+3
+exit 10
