@@ -3,7 +3,7 @@
 tpp (TLA Plus Plus) is a model checker for TLA+ written in C11. It reads
 the same specifications and model configurations as TLC and prints the
 same report, the same traces and counterexamples, and the same state
-counts, often several times faster.
+counts, three to twenty times faster with one worker.
 
 ```
 $ tpp -workers auto MySpec
@@ -43,11 +43,11 @@ report as TLC with one worker.
 
 | spec | distinct states | TLC | tpp | speedup | TLC (8) | tpp (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| closure | 65536 | 2.26 | 1.16 | 1.9x | 1.29 | 0.26 | 5.0x |
-| counters | 823543 | 3.83 | 1.66 | 2.3x | 3.16 | 0.51 | 6.2x |
-| log | 31501 | 1.03 | 0.09 | 11.1x | 0.94 | 0.04 | 21.6x |
-| mutex | 11365 | 0.76 | 0.05 | 13.9x | 0.75 | 0.03 | 22.3x |
-| queue | 183680 | 1.29 | 0.26 | 5.0x | 1.20 | 0.10 | 12.2x |
+| closure | 65536 | 2.25 | 0.69 | 3.3x | 1.29 | 0.16 | 7.9x |
+| counters | 823543 | 3.79 | 1.05 | 3.6x | 3.16 | 0.32 | 9.8x |
+| log | 31501 | 1.02 | 0.06 | 16.5x | 0.99 | 0.04 | 28.2x |
+| mutex | 11365 | 0.76 | 0.04 | 19.8x | 0.74 | 0.03 | 25.6x |
+| queue | 183680 | 1.29 | 0.20 | 6.4x | 1.23 | 0.08 | 15.0x |
 
 `make bench` reproduces these numbers in [docs/benchmark.md](docs/benchmark.md).
 
