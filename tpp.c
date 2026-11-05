@@ -1519,6 +1519,16 @@ static int expect_ident(void) {
     return t->id;
 }
 
+/* A record field: any word, keywords included. */
+static int is_field(Tok *t) { return t->kind == T_IDENT || (t->kind == T_KW && isalpha((unsigned char)S(t->id)[0])); }
+
+static int expect_field(void) {
+    Tok *t = peek();
+    if (!is_field(t)) syntax_error("expected a field name");
+    next();
+    return t->id;
+}
+
 static Expr *mk_expr(int kind, Tok *start) {
     Expr *e = NEW(Expr);
     e->kind = (short)kind;
@@ -2118,7 +2128,7 @@ static Expr *parse_primary(void) {
                     while (k < 32) {
                         if (is_op(peek(), ".")) {
                             next();
-                            fields[k] = expect_ident();
+                            fields[k] = expect_field();
                             keys[k++] = NULL;
                         } else if (is_op(peek(), "[")) {
                             Tok *open = peek();
@@ -2201,11 +2211,11 @@ static Expr *parse_postfix(void) {
             app->args = args_array(a, n);
             finish(app);
             e = app;
-        } else if (is_op(t, ".") && peek_at(1)->kind == T_IDENT) {
+        } else if (is_op(t, ".") && is_field(peek_at(1))) {
             next();
             Expr *d = mk_expr(X_DOT, t);
             span_from(d, e);
-            d->op = expect_ident();
+            d->op = expect_field();
             d->n = 1;
             d->args = NEWN(Expr *, 1);
             d->args[0] = e;
