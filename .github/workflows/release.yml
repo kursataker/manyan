@@ -45,7 +45,7 @@ jobs:
           python3 tests/spec_runner.py "./tpp -workers 4" --strict
       - run: |
           softwareupdate --install-rosetta --agree-to-license
-          python3 tests/spec_runner.py "arch -x86_64 ./tpp" --strict
+          python3 tests/spec_runner.py "arch -x86_64 $PWD/tpp" --strict
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-macos-universal
           mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir

@@ -1199,7 +1199,10 @@ static Value *held(Value *s) {
 
 static Value *set_union(Value *a, Value *b) {
     if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
-    if (!reducible(a) || !reducible(b)) return held(set_union(enumerate(a), enumerate(b)));
+    if (!reducible(a) || !reducible(b)) {
+        a = enumerate(a);
+        return held(set_union(a, enumerate(b)));
+    }
     a = enumerate(a); b = enumerate(b);
     if (!b->n) return a;
     if (!a->n) return b;
@@ -4586,12 +4589,15 @@ static __attribute__((noinline)) Value *ev_equiv(Expr *e, Ctx c) {
     return BOOLV(a->u.i == b->u.i);
 }
 
+/* The left side first, as TLC: C leaves the order of arguments open. */
 static __attribute__((noinline)) Value *ev_eq(Expr *e, Ctx c) {
-    return BOOLV(veq(eval(e->args[0], c), eval(e->args[1], c)));
+    Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+    return BOOLV(veq(a, b));
 }
 
 static __attribute__((noinline)) Value *ev_neq(Expr *e, Ctx c) {
-    return BOOLV(!veq(eval(e->args[0], c), eval(e->args[1], c)));
+    Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
+    return BOOLV(!veq(a, b));
 }
 
 static __attribute__((noinline)) Value *ev_in(Expr *e, Ctx c) {
@@ -5071,10 +5077,10 @@ NATIVE(n_int) { UNUSED; return mk_lazy(L_INT); }
 NATIVE(n_plus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x + y, x, y, "+")); }
 NATIVE(n_minus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x - y, x, y, "-")); }
 NATIVE(n_times) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x * y, x, y, "*")); }
-NATIVE(n_lt) { UNUSED; return BOOLV(int_arg(a[0], 1, "<") < int_arg(a[1], 2, "<")); }
-NATIVE(n_gt) { UNUSED; return BOOLV(int_arg(a[0], 1, ">") > int_arg(a[1], 2, ">")); }
-NATIVE(n_leq) { UNUSED; return BOOLV(int_arg(a[0], 1, "<=") <= int_arg(a[1], 2, "<=")); }
-NATIVE(n_geq) { UNUSED; return BOOLV(int_arg(a[0], 1, ">=") >= int_arg(a[1], 2, ">=")); }
+NATIVE(n_lt) { UNUSED; int64_t x = int_arg(a[0], 1, "<"), y = int_arg(a[1], 2, "<"); return BOOLV(x < y); }
+NATIVE(n_gt) { UNUSED; int64_t x = int_arg(a[0], 1, ">"), y = int_arg(a[1], 2, ">"); return BOOLV(x > y); }
+NATIVE(n_leq) { UNUSED; int64_t x = int_arg(a[0], 1, "<="), y = int_arg(a[1], 2, "<="); return BOOLV(x <= y); }
+NATIVE(n_geq) { UNUSED; int64_t x = int_arg(a[0], 1, ">="), y = int_arg(a[1], 2, ">="); return BOOLV(x >= y); }
 NATIVE(n_neg) { UNUSED; int64_t x = int_cast(a[0]); return mk_int(check_int(-x, 0, x, "-")); }
 
 NATIVE(n_pow) {
