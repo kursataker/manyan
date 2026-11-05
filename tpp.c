@@ -1548,6 +1548,36 @@ static Expr *mk_op(Tok *start, int op, int n, Expr **args) {
     return e;
 }
 
+static int is_junction(Tok *t) { return is_op(t, "/\\") || is_op(t, "\\/") || is_op(t, "\\land") || is_op(t, "\\lor"); }
+
+/* LAMBDA x, y : e, where an operator argument may be. */
+static Expr *parse_lambda(void) {
+    Expr *l = mk_expr(X_LAMBDA, next());
+    Def *params[16];
+    int np = 0;
+    do {
+        if (np == 16) syntax_error("too many parameters");
+        Def *d = NEW(Def);
+        d->kind = D_PARAM;
+        d->name = expect_ident();
+        params[np++] = d;
+    } while (is_op(peek(), ",") && next());
+    expect_op(":");
+    Def *op = NEW(Def);
+    op->kind = D_OP;
+    op->name = intern("LAMBDA");
+    op->nparams = np;
+    op->params = NEWN(Def *, np);
+    memcpy(op->params, params, sizeof(Def *) * (size_t)np);
+    op->body = parse_expr();
+    op->mod = P->mod;
+    op->level = -1;
+    op->var_index = -1;
+    l->def = op;
+    finish(l);
+    return l;
+}
+
 /* Arguments of an operator application: expressions, LAMBDAs, or
    operator symbols passed as operators. */
 static Expr **parse_args(int *count) {
@@ -1560,30 +1590,7 @@ static Expr **parse_args(int *count) {
         Tok *t = peek();
         if (n == 64) syntax_error("too many arguments");
         if (is_kw(t, "LAMBDA")) {
-            Expr *l = mk_expr(X_LAMBDA, t);
-            next();
-            Def *params[16];
-            int np = 0;
-            do {
-                Def *d = NEW(Def);
-                d->kind = D_PARAM;
-                d->name = expect_ident();
-                params[np++] = d;
-            } while (is_op(peek(), ",") && next());
-            expect_op(":");
-            Def *op = NEW(Def);
-            op->kind = D_OP;
-            op->name = intern("LAMBDA");
-            op->nparams = np;
-            op->params = NEWN(Def *, np);
-            memcpy(op->params, params, sizeof(Def *) * (size_t)np);
-            op->body = parse_expr();
-            op->mod = P->mod;
-            op->level = -1;
-            op->var_index = -1;
-            l->def = op;
-            finish(l);
-            args[n++] = l;
+            args[n++] = parse_lambda();
         } else if ((t->kind == T_OP || t->kind == T_KW) && (op_info(t, INFIX) || op_info(t, PREFIX) || op_info(t, POSTFIX)) &&
                    (is_op(peek_at(1), ",") || is_op(peek_at(1), ")"))) {
             Expr *r = mk_expr(X_OPREF, t);
@@ -2088,8 +2095,7 @@ static Expr *parse_primary(void) {
             }
             syntax_error("expected ]_, ->, or EXCEPT");
         }
-        if (is_op(t, "/\\") || is_op(t, "\\/") || is_op(t, "\\land") || is_op(t, "\\lor"))
-            return parse_junction(t);
+        if (is_junction(t)) return parse_junction(t);
         break;
     default:
         break;
@@ -2137,8 +2143,18 @@ static Expr *parse_postfix(void) {
 
 static Expr *parse_unary(void) {
     Tok *t = peek();
-    const OpInfo *info = op_info(t, PREFIX);
-    if (info && !(is_op(t, "-") && 0)) {
+    const OpInfo *info = op_info(t, PREFIX), *named = op_info(t, INFIX);
+    if (!named) named = op_info(t, POSTFIX);
+    if (!info && named && !is_junction(t) && is_op(peek_at(1), "(")) {
+        /* An infix or postfix operator applied to its arguments: +(a, b), ^+(a). */
+        next();
+        int n;
+        Expr **args = parse_args(&n);
+        Expr *e = mk_op(t, intern(named->name), n, args);
+        finish(e);
+        return e;
+    }
+    if (info) {
         next();
         Expr *arg = parse_binary(info->hi);
         Expr *e = mk_op(t, intern(info->name), 1, &arg);
@@ -2347,7 +2363,7 @@ static Def *parse_instance(Tok *start, int name) {
                 next();
                 exprs[n++] = r;
             } else {
-                exprs[n++] = parse_expr();
+                exprs[n++] = is_kw(at, "LAMBDA") ? parse_lambda() : parse_expr();
             }
         } while (is_op(peek(), ",") && next() && n < 256);
     }
@@ -5874,9 +5890,14 @@ static void use_specification(Def *spec) {
     Expr **parts = NULL, *call = NULL, *body = unfold(spec->body);
     int n = 0;
     if (body->kind == K_INSTCALL && body->n == 0 && body->def->kind == D_OP && !body->def->native) {
-        /* A specification of an instance: Spec == I!Spec. */
-        call = body;
-        body = body->def->body;
+        /* A specification of an instance: Spec == I!Spec. TLC finds none in
+           an instance with parameters, IM(y)!Spec. */
+        int plain = 1;
+        for (int i = 0; i < body->ndefs; i++) plain &= body->defs[i]->nparams == 0;
+        if (plain) {
+            call = body;
+            body = body->def->body;
+        }
     }
     conjuncts(body, &parts, &n);
     Expr **init = NULL;
