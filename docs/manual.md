@@ -100,10 +100,11 @@ output TLC produces when it reconstructs a trace.
 
 ## Workers
 
-With `-workers N`, tpp forks N processes once the search reaches a level of
-256 states or more. They share the state store and the fingerprint set,
-read-only, and expand the level in batches of 32 states; tpp merges their
-successors in the order one process would find them. A state whose
+With `-workers N`, N processes expand states: tpp forks N - 1 once the
+search reaches a level of 256 states or more, and is the last itself. They
+share the state store and the fingerprint set, read-only, and expand the
+level in batches of 32 states; tpp merges their successors in the order one
+process would find them, and expands a batch while it waits for one. A state whose
 expansion reports anything (an error, a violation, a deadlock, output from
 `Print`) is expanded again by tpp itself, so the output, including which
 violation is reported and its trace, is the same for every N. Levels

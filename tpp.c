@@ -6270,6 +6270,7 @@ static int expand_state(int idx) {
 #define PARALLEL_LEVEL 256    /* smaller levels are expanded by the search alone */
 #define BATCH 32
 #define MAX_CLAIMS ((size_t)1 << 27)
+#define CLAIM_CHUNK 64
 
 /* A successor: the state it is if seen as the level started, NEW with
    its claim, or CONSTRAINED. */
@@ -6299,6 +6300,7 @@ static double growth = 1;      /* new states per state expanded, on the last lev
 
 static int w_id;               /* in a worker: its number */
 static size_t w_n, w_encoded;  /* bytes used of its regions */
+static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
 static Buf w_bytes;
 
@@ -6337,7 +6339,12 @@ static Claim *claim(uint64_t fp, int make, int *made) {
         if (k == key) return &claims[j];
         if (k) continue;
         if (!make) return NULL;
-        if (atomic_fetch_add(&control->claimed, 1) >= control->nclaims / 2) return NULL;
+        if (!w_budget) {
+            /* Room for claims is taken a chunk at a time: the count is shared. */
+            if (atomic_fetch_add(&control->claimed, CLAIM_CHUNK) + CLAIM_CHUNK > control->nclaims / 2) return NULL;
+            w_budget = CLAIM_CHUNK;
+        }
+        w_budget--;
         if (atomic_compare_exchange_strong(&claims[j].key, &k, key)) { *made = 1; return &claims[j]; }
         if (k == key) return &claims[j];
     }
@@ -6391,7 +6398,7 @@ static void worker_expand(int idx) {
     w_n += 2 * sizeof(int);
     w_clean = 1;
     w_found = 0;
-    sigjmp_buf here;
+    sigjmp_buf here, *saved = handler;
     handler = &here;
     if (sigsetjmp(here, 0)) {
         w_clean = 0;
@@ -6408,11 +6415,23 @@ static void worker_expand(int idx) {
         }
         if (succ_count == 0 && check_deadlock) w_clean = 0;
     }
-    handler = NULL;
+    handler = saved;
     if (!w_clean) { w_n = head + 2 * sizeof(int); w_found = 0; }
     int header[2] = {w_clean, w_found};
     memcpy(results[w_id] + head, header, sizeof header);
     arena_reset(&scratch_arena);
+}
+
+/* Expands the next batch of the level, if any is left. */
+static int expand_batch(void) {
+    int b = atomic_fetch_add(&control->next, 1);
+    if (b >= control->nbatches) return 0;
+    batches[b].worker = w_id;
+    batches[b].off = w_n;
+    int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
+    for (int idx = lo; idx < hi; idx++) worker_expand(idx);
+    atomic_store(&batches[b].done, 1);
+    return 1;
 }
 
 static _Noreturn void worker_main(int id) {
@@ -6423,16 +6442,8 @@ static _Noreturn void worker_main(int id) {
     while (read(to_worker[id][0], &c, 1) == 1) {
         fp_table = control->fp_table;
         fp_size = control->fp_size;
-        w_n = w_encoded = 0;
-        for (;;) {
-            int b = atomic_fetch_add(&control->next, 1);
-            if (b >= control->nbatches) break;
-            batches[b].worker = id;
-            batches[b].off = w_n;
-            int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
-            for (int idx = lo; idx < hi; idx++) worker_expand(idx);
-            atomic_store(&batches[b].done, 1);
-        }
+        w_n = w_encoded = w_budget = 0;
+        while (expand_batch()) {}
         fflush(stdout);
         if (write(from_worker[id][1], "x", 1) != 1) _exit(1);
     }
@@ -6444,7 +6455,7 @@ static void start_workers(void) {
     to_worker = xmalloc(sizeof *to_worker * (size_t)nworkers);
     from_worker = xmalloc(sizeof *from_worker * (size_t)nworkers);
     worker_pids = xmalloc(sizeof(pid_t) * (size_t)nworkers);
-    for (int i = 0; i < nworkers; i++) {
+    for (int i = 0; i < nworkers - 1; i++) {
         if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
         pid_t pid = fork();
         if (pid < 0) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
@@ -6464,8 +6475,8 @@ static void start_workers(void) {
 
 static void stop_workers(void) {
     if (!workers_running) return;
-    for (int i = 0; i < nworkers; i++) close(to_worker[i][1]);
-    for (int i = 0; i < nworkers; i++) waitpid(worker_pids[i], NULL, 0);
+    for (int i = 0; i < nworkers - 1; i++) close(to_worker[i][1]);
+    for (int i = 0; i < nworkers - 1; i++) waitpid(worker_pids[i], NULL, 0);
     workers_running = 0;
 }
 
@@ -6523,19 +6534,33 @@ static int expand_level(int lo, int hi) {
     atomic_store(&control->next, 0);
     for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
-    for (int i = 0; i < nworkers; i++)
+    for (int i = 0; i < nworkers - 1; i++)
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+    w_id = nworkers - 1;
+    w_n = w_encoded = w_budget = 0;
     int status = merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
-    for (int i = 0; i < nworkers; i++)
+    for (int i = 0; i < nworkers - 1; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
     return status;
 }
 
+/* The search expands a batch as the workers do while it waits for one. */
+static int steal_batch(void) {
+    int (*saved_emit)(void) = gen_emit;
+    in_worker = 1;
+    gen_emit = worker_emit;
+    int took = expand_batch();
+    gen_emit = saved_emit;
+    in_worker = 0;
+    return took;
+}
+
 static int merge_level(int lo, int hi) {
     for (int b = 0; b < control->nbatches; b++) {
-        while (!atomic_load(&batches[b].done)) sched_yield();
+        while (!atomic_load(&batches[b].done))
+            if (!steal_batch()) sched_yield();
         const char *p = results[batches[b].worker] + batches[b].off;
         int end = lo + (b + 1) * BATCH < hi ? lo + (b + 1) * BATCH : hi;
         for (int idx = lo + b * BATCH; idx < end; idx++) {

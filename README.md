@@ -49,7 +49,8 @@ report as TLC with one worker.
 | mutex | 11365 | 0.76 | 0.03 | 24.5x | 0.74 | 0.03 | 28.2x |
 | queue | 183680 | 1.30 | 0.18 | 7.1x | 1.17 | 0.08 | 14.7x |
 
-`make bench` reproduces these numbers in [docs/benchmark.md](docs/benchmark.md).
+`make bench` reproduces these numbers in [docs/benchmark.md](docs/benchmark.md);
+[docs/optimizations.md](docs/optimizations.md) records how they were reached.
 
 ## Getting started
 
@@ -108,7 +109,8 @@ tpp.c, tpp.h           the checker and its C API
 docs/standards/        the language standard tpp conforms to
 docs/manual.md         how to use tpp
 docs/benchmark.md      tpp against TLC
+docs/optimizations.md  what made tpp fast, and what did not
 tests/spec/            conformance tests, by chapter of the standard
 tests/tla/             TLA+ models of tpp's algorithms
-bench/                 benchmark specs and bench/compare.py
+bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
 ```
