@@ -43,8 +43,8 @@ jobs:
       - run: |
           softwareupdate --install-rosetta --agree-to-license
           for arch in arm64 x86_64; do
-            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp" --strict
-            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp -workers 4" --strict
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp" --strict --verbose
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp -workers 4" --strict --verbose
           done
       - run: |
           for arch in arm64 x86_64; do
@@ -71,8 +71,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: make release LDFLAGS=-static
       - run: |
-          python3 tests/spec_runner.py ./tpp --strict
-          python3 tests/spec_runner.py "./tpp -workers 4" --strict
+          python3 tests/spec_runner.py ./tpp --strict --verbose
+          python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
           mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir
@@ -100,8 +100,8 @@ jobs:
           packages: gcc-core make python3 zip
       - run: make release
       - run: |
-          python3 tests/spec_runner.py ./tpp --strict
-          python3 tests/spec_runner.py "./tpp -workers 4" --strict
+          python3 tests/spec_runner.py ./tpp --strict --verbose
+          python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
           mkdir $dir && cp tpp.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md LICENSE $dir
@@ -133,8 +133,10 @@ jobs:
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
           unzip -q $dir.zip
-          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe" --strict
-          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe -workers 4" --strict
+          ls -l $dir
+          "$PWD/$dir/tpp.exe" -version
+          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe" --strict --verbose
+          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe -workers 4" --strict --verbose
 
   publish:
     if: github.ref_type == 'tag'
