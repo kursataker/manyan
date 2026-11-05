@@ -184,9 +184,11 @@ that does not terminate is an error (§11.3).
 
 ### 5.6 Scoping
 
-A bound name may not reuse a name already visible in its scope, except that
-names introduced by different definitions do not conflict. A name refers to
-the innermost binding.
+A name is visible only after its declaration or definition; a definition
+sees itself only when it defines a function or was declared `RECURSIVE`. So
+`LET e == CHOOSE e \in S : TRUE IN e` is legal. A bound name may not reuse a
+name already visible in its scope, except that names introduced by different
+definitions do not conflict. A name refers to the innermost binding.
 
 ## 6 Expressions
 

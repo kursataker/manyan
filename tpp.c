@@ -1258,6 +1258,7 @@ struct Def {
     int level_busy;
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int local;
+    int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     Module *target;       /* D_INST */
     int nsubst;
     Def **subst_decl;
@@ -1910,12 +1911,13 @@ static Expr *parse_primary(void) {
             next();
             e = mk_expr(X_LET, t);
             Def *defs[256];
-            int n = 0;
+            int n = 0, recursive[256], nrec = 0;
             while (!is_kw(peek(), "IN")) {
                 if (is_kw(peek(), "RECURSIVE")) {
                     next();
                     do {
-                        expect_ident();
+                        int name = expect_ident();
+                        if (nrec < 256) recursive[nrec++] = name;
                         if (is_op(peek(), "(")) {
                             next();
                             while (!is_op(peek(), ")")) next();
@@ -1928,6 +1930,8 @@ static Expr *parse_primary(void) {
                 defs[n++] = parse_definition(0);
             }
             next();
+            for (int i = 0; i < n; i++)
+                for (int k = 0; k < nrec; k++) defs[i]->recursive |= defs[i]->name == recursive[k];
             e->defs = NEWN(Def *, n);
             memcpy(e->defs, defs, sizeof(Def *) * (size_t)n);
             e->ndefs = n;
@@ -2877,7 +2881,15 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     exit(TPP_ERROR_PARSE);
 }
 
+static Def *scope_lookup(Scope *sc, int name);
+static Sym *module_lookup(Module *m, int name);
+
+/* A new name in scope, which must not hide one (§5.6). */
 static Scope *bind(Scope *sc, int name, Def *d) {
+    Def *old = scope_lookup(sc, name);
+    Sym *sym = old || !cur_module ? NULL : module_lookup(cur_module, name);
+    if ((old && old != d) || (sym && sym->def != d))
+        semantic_error(d->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(name));
     Scope *s = NEW(Scope);
     s->name = name; s->def = d; s->next = sc;
     return s;
@@ -3179,11 +3191,14 @@ static void resolve_expr(Expr *e, Scope *sc) {
     }
     case X_LET: {
         Scope *inner = sc;
+        for (int i = 0; i < e->ndefs; i++)
+            if (e->defs[i]->recursive) inner = bind(inner, e->defs[i]->name, e->defs[i]);
         for (int i = 0; i < e->ndefs; i++) {
-            e->defs[i]->local = 2;   /* a LET definition: bound in the environment */
-            inner = bind(inner, e->defs[i]->name, e->defs[i]);
+            Def *d = e->defs[i];
+            d->local = 2;   /* a LET definition: bound in the environment */
+            resolve_def(d, inner);
+            if (!d->recursive) inner = bind(inner, d->name, d);
         }
-        for (int i = 0; i < e->ndefs; i++) resolve_def(e->defs[i], inner);
         resolve_args(e->args, e->n, inner);
         return;
     }
@@ -3277,12 +3292,7 @@ static void resolve_module(Module *m) {
             if (!x->syms[k].local) add_sym(m, x->syms[k].name, x->syms[k].def, x->syms[k].path, x->syms[k].npath, 0, NULL);
         for (int k = 0; k < x->ndecls; k++) add_decl(m, x->decls[k]);
     }
-    /* Definitions may be used before they appear: register them first. */
-    for (int i = 0; i < m->nunits; i++) {
-        Unit *u = &m->units[i];
-        if (u->kind == 0 && (u->def->kind == D_OP || u->def->kind == D_FCN || u->def->kind == D_INST))
-            add_sym(m, u->def->name, u->def, NULL, 0, u->local, u->def->where);
-    }
+    /* A name is defined before it is used; RECURSIVE declares a definition to come. */
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         cur_module = m;
@@ -3292,9 +3302,19 @@ static void resolve_module(Module *m) {
                 d->mod = m;
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
                 add_decl(m, d);
+            } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
+                resolve_def(d, NULL);
+                add_sym(m, d->name, d, NULL, 0, u->local, d->where);
             } else {
                 resolve_def(d, NULL);
             }
+        } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
+            for (int k = i + 1; k < m->nunits; k++)
+                if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&
+                    (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN)) {
+                    add_sym(m, u->def->name, m->units[k].def, NULL, 0, m->units[k].local, m->units[k].def->where);
+                    break;
+                }
         } else if (u->kind == 1) {
             Def *d = u->def;
             resolve_def(d, NULL);
