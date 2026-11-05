@@ -1010,6 +1010,11 @@ static int fcn_index(Value *f, Value *a) {
         for (int i = 0; i < f->n; i++) if (veq(a, f->u.fcn.keys[i])) return i;
         return -1;
     }
+    if (f->n && (a->kind == V_INT || a->kind == V_MODEL) && f->u.fcn.keys[0]->kind == a->kind) {
+        /* A domain of consecutive numbers or model values: index it. */
+        int64_t i = a->u.i - f->u.fcn.keys[0]->u.i;
+        if (i >= 0 && i < f->n && f->u.fcn.keys[i]->kind == a->kind && f->u.fcn.keys[i]->u.i == a->u.i) return (int)i;
+    }
     /* Probing as TLC tests membership in a function's domain. */
     int lo = 0, hi = f->n;
     while (lo < hi) {
