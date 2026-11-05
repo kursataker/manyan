@@ -52,6 +52,9 @@ report as TLC with one worker.
 
 ## Getting started
 
+Each [release](https://github.com/soasme/tlaplusplus/releases) has `tpp`
+built for macOS, Linux and Windows. To build it instead:
+
 ```sh
 make                          # builds ./tpp; needs a C11 compiler
 make release                  # faster ./tpp: profile-guided, trained on tests/spec
@@ -118,4 +121,5 @@ docs/optimizations.md  what made tpp fast, and what did not
 tests/spec/            conformance tests, by chapter of the standard
 tests/tla/             TLA⁺ models of tpp's algorithms
 bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
+CHANGELOG.md           what each release changed; releasing is tagging vX.Y.Z
 ```
