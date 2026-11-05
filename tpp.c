@@ -6542,7 +6542,6 @@ static int expand_state(int idx) {
    process would. */
 #define PARALLEL_LEVEL 256    /* smaller levels are expanded by the search alone */
 #define BATCH 32
-#define MAX_CLAIMS ((size_t)1 << 27)
 #define CLAIM_CHUNK 64
 
 /* A successor: the state it is if seen as the level started, NEW with
@@ -6570,6 +6569,11 @@ static int (*to_worker)[2], (*from_worker)[2];
 static pid_t *worker_pids;
 static int workers_running, forked_strs;
 static double growth = 1;      /* new states per state expanded, on the last level */
+static size_t max_claims, results_size, encodings_size;
+
+/* What a worker's successors may fill of its results, the headers of a
+   batch kept. */
+static size_t results_room(void) { return results_size - BATCH * 2 * sizeof(int); }
 
 static int w_id;               /* in a worker: its number */
 static size_t w_n, w_encoded;  /* bytes used of its regions */
@@ -6577,28 +6581,46 @@ static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
 static Buf w_bytes;
 
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+
 static void *shared(size_t bytes) {
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { fputs("tpp: cannot reserve shared memory for workers\n", stderr); exit(TPP_ERROR); }
     return p;
 }
 
-/* Puts the store, the state records and the fingerprint set in shared memory. */
+/* Puts the store, the state records and the fingerprint set in shared
+   memory. Linux and macOS reserve it as it is touched; Windows commits all
+   Cygwin maps, so there every region is halved until all fit in a quarter
+   of the memory. */
 static void share_search(void) {
-    store.cap = (size_t)1 << 37;
+    int shift = 0;
+#ifdef __CYGWIN__
+    size_t memory = (size_t)sysconf(_SC_PHYS_PAGES) * (size_t)sysconf(_SC_PAGESIZE);
+    size_t all = ((size_t)1 << 37) + sizeof(StateRec) * ((size_t)1 << 29) + ((size_t)1 << 36) +
+                 sizeof(Batch) * ((size_t)1 << 29) / BATCH + sizeof(Claim) * ((size_t)1 << 27) +
+                 (size_t)nworkers * (((size_t)1 << 34) + ((size_t)1 << 36));
+    while ((all >> shift) > memory / 4) shift++;
+#endif
+    store.cap = ((size_t)1 << 37) >> shift;
     store.s = shared(store.cap);
-    capstates = 1 << 29;
+    capstates = (1 << 29) >> shift;
     states = shared(sizeof(StateRec) * (size_t)capstates);
-    fp_region_size = (size_t)1 << 36;
+    fp_region_size = ((size_t)1 << 36) >> shift;
     fp_region = shared(fp_region_size);
     control = shared(sizeof(Control));
     batches = shared(sizeof(Batch) * (size_t)(capstates / BATCH + 1));
-    claims = shared(sizeof(Claim) * MAX_CLAIMS);
+    max_claims = ((size_t)1 << 27) >> shift;
+    claims = shared(sizeof(Claim) * max_claims);
+    results_size = ((size_t)1 << 34) >> shift;
+    encodings_size = ((size_t)1 << 36) >> shift;
     results = xmalloc(sizeof(char *) * (size_t)nworkers);
     encodings = xmalloc(sizeof(char *) * (size_t)nworkers);
     for (int i = 0; i < nworkers; i++) {
-        results[i] = shared((size_t)1 << 34);
-        encodings[i] = shared((size_t)1 << 36);
+        results[i] = shared(results_size);
+        encodings[i] = shared(encodings_size);
     }
 }
 
@@ -6631,7 +6653,7 @@ static void settle(Claim *c) {
     if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0) {
         w_bytes.n = 0;
         for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
-        ok = 1;
+        ok = w_encoded + w_bytes.n <= encodings_size;   /* else the search keeps it */
     }
     handler = saved;
     if (ok) {
@@ -6660,6 +6682,7 @@ static int worker_emit(void) {
             f.claim = (uint32_t)(c - claims);
         }
     }
+    if (w_n + sizeof f > results_room()) { w_clean = 0; return 1; }   /* the search expands it */
     memcpy(results[w_id] + w_n, &f, sizeof f);
     w_n += sizeof f;
     w_found++;
@@ -6696,10 +6719,16 @@ static void worker_expand(int idx) {
     arena_reset(&scratch_arena);
 }
 
-/* Expands the next batch of the level, if any is left. */
+/* Expands the next batch of the level, if any is left and there is room
+   for its results; else gives it back to the search. */
 static int expand_batch(void) {
     int b = atomic_fetch_add(&control->next, 1);
     if (b >= control->nbatches) return 0;
+    if (w_n > results_room()) {
+        batches[b].worker = -1;
+        atomic_store(&batches[b].done, 1);
+        return 0;
+    }
     batches[b].worker = w_id;
     batches[b].off = w_n;
     int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
@@ -6801,7 +6830,7 @@ static int expand_level(int lo, int hi) {
     control->fp_table = fp_table;
     control->fp_size = fp_size;
     size_t want = (size_t)(4 * (hi - lo) * (growth > 1 ? growth : 1)), n = 4096;
-    while (n < want && n < MAX_CLAIMS) n *= 2;
+    while (n < want && n < max_claims) n *= 2;
     memset(claims, 0, sizeof(Claim) * n);
     control->nclaims = n;
     atomic_store(&control->claimed, 0);
@@ -6835,14 +6864,17 @@ static int merge_level(int lo, int hi) {
     for (int b = 0; b < control->nbatches; b++) {
         while (!atomic_load(&batches[b].done))
             if (!steal_batch()) sched_yield();
-        const char *p = results[batches[b].worker] + batches[b].off;
+        /* A batch given back has no results: the search expands it. */
+        const char *p = batches[b].worker < 0 ? NULL : results[batches[b].worker] + batches[b].off;
         int end = lo + (b + 1) * BATCH < hi ? lo + (b + 1) * BATCH : hi;
         for (int idx = lo + b * BATCH; idx < end; idx++) {
-            int header[2];
-            memcpy(header, p, sizeof header);
-            const Found *f = (const Found *)(p + sizeof header);
-            p += sizeof header + sizeof(Found) * (size_t)header[1];
-            if (header[0] && mergeable(f, header[1])) { merge_state(idx, f, header[1]); continue; }
+            if (p) {
+                int header[2];
+                memcpy(header, p, sizeof header);
+                const Found *f = (const Found *)(p + sizeof header);
+                p += sizeof header + sizeof(Found) * (size_t)header[1];
+                if (header[0] && mergeable(f, header[1])) { merge_state(idx, f, header[1]); continue; }
+            }
             int status = expand_state(idx);
             if (status) return status;
         }

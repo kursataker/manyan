@@ -34,22 +34,24 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
-      # arm64 profile-guided, x86_64 from the same profile, joined.
+      # arm64 profile-guided; x86_64 from the same profile, run under Rosetta.
       - run: |
           make release
-          mv tpp tpp-arm64
-          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c -lm -o tpp-x86_64
-          lipo -create tpp-arm64 tpp-x86_64 -output tpp
-      - run: |
-          python3 tests/spec_runner.py ./tpp --strict
-          python3 tests/spec_runner.py "./tpp -workers 4" --strict
+          mkdir arm64 x86_64
+          mv tpp arm64/tpp
+          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c -lm -o x86_64/tpp
       - run: |
           softwareupdate --install-rosetta --agree-to-license
-          python3 tests/spec_runner.py "arch -x86_64 $PWD/tpp" --strict
+          for arch in arm64 x86_64; do
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp" --strict
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp -workers 4" --strict
+          done
       - run: |
-          dir=tpp-${{ needs.version.outputs.version }}-macos-universal
-          mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir
-          tar -czf $dir.tar.gz $dir
+          for arch in arm64 x86_64; do
+            dir=tpp-${{ needs.version.outputs.version }}-macos-$arch
+            mkdir $dir && cp $arch/tpp README.md CHANGELOG.md LICENSE $dir
+            tar -czf $dir.tar.gz $dir
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -109,9 +111,34 @@ jobs:
           name: windows
           path: "*.zip"
 
+  # Cygwin has no arm64 port: Windows on Arm runs the x86_64 build, emulated.
+  windows-arm:
+    needs: [version, windows]
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: C:\cygwin\bin\bash.exe --login -eo pipefail -o igncr '{0}'
+    env:
+      CHERE_INVOKING: "1"
+    steps:
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+      - uses: actions/checkout@v4
+      - uses: cygwin/cygwin-install-action@v4
+        with:
+          packages: python3 unzip
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+      - run: |
+          dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
+          unzip -q $dir.zip
+          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe" --strict
+          python3 tests/spec_runner.py "$PWD/$dir/tpp.exe -workers 4" --strict
+
   publish:
     if: github.ref_type == 'tag'
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, windows-arm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
