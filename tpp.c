@@ -15,6 +15,7 @@
 #include "tpp.h"
 
 #include <ctype.h>
+#include <sched.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -5403,7 +5404,9 @@ static int expand_state(int idx) {
    and its successors in order. A successor not seen as the level started
    is claimed in a table the workers share; the worker that claims it
    checks the invariants and keeps its encoding, once. The search merges
-   the batches in order, taking a new state's encoding from its claim. It
+   the batches in order as they are done, taking a new state's encoding
+   from its claim; states it adds meanwhile are in a fingerprint table the
+   workers do not read, so they claim them as new. It
    expands a state that is not clean, or that is the first to reach a
    state whose invariants failed, itself, so it reports exactly what one
    process would. */
@@ -5411,9 +5414,12 @@ static int expand_state(int idx) {
 #define BATCH 32
 #define MAX_CLAIMS ((size_t)1 << 27)
 
-typedef struct { uint64_t fp; int action; int constrained; } Found;
-typedef struct { int worker; size_t off; } Batch;
-typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; } Claim;
+/* A successor: the state it is if seen as the level started, NEW with
+   its claim, or CONSTRAINED. */
+typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
+enum { NEW = -1, CONSTRAINED = -2 };
+typedef struct { int worker; size_t off; atomic_int done; } Batch;
+typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
 enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
 typedef struct {
@@ -5503,18 +5509,18 @@ static void settle(Claim *c) {
 static int worker_emit(void) {
     succ_count++;
     for (int i = 0; i < nvars; i++) if (!succ[i]) { w_clean = 0; return 1; }
-    Found f = {0, cur_action, 0};
-    if (check_list(constraints, nconstraints, succ) >= 0 ||
-        check_actions(action_constraints, naction_constraints, cur_state, succ) >= 0) {
-        f.constrained = 1;
-    } else {
+    Found f = {0, cur_action, CONSTRAINED, 0};
+    if (check_list(constraints, nconstraints, succ) < 0 &&
+        check_actions(action_constraints, naction_constraints, cur_state, succ) < 0) {
         f.fp = fingerprint(succ);
         if (check_actions(action_props, naction_props, cur_state, succ) >= 0) { w_clean = 0; return 1; }
-        if (fp_find(f.fp) < 0) {
+        f.seen = fp_find(f.fp);
+        if (f.seen == NEW) {
             int made = 0;
             Claim *c = claim(f.fp, 1, &made);
             if (!c) { w_clean = 0; return 1; }
             if (made) settle(c);
+            f.claim = (uint32_t)(c - claims);
         }
     }
     memcpy(results[w_id] + w_n, &f, sizeof f);
@@ -5568,6 +5574,7 @@ static _Noreturn void worker_main(int id) {
             batches[b].off = w_n;
             int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
             for (int idx = lo; idx < hi; idx++) worker_expand(idx);
+            atomic_store(&batches[b].done, 1);
         }
         fflush(stdout);
         if (write(from_worker[id][1], "x", 1) != 1) _exit(1);
@@ -5606,11 +5613,15 @@ static void stop_workers(void) {
 }
 
 /* Whether the successors found for a state can merge: each new one was
-   settled by the worker that claimed it. */
+   settled by the worker that claimed it, which may still be at it. */
 static int mergeable(const Found *f, int nfound) {
-    for (int k = 0; k < nfound; k++)
-        if (!f[k].constrained && fp_find(f[k].fp) < 0 && atomic_load(&claim(f[k].fp, 0, NULL)->state) != SETTLED)
-            return 0;
+    for (int k = 0; k < nfound; k++) {
+        if (f[k].seen != NEW) continue;
+        Claim *c = &claims[f[k].claim];
+        int st;
+        while ((st = atomic_load(&c->state)) == CLAIMED) sched_yield();
+        if (st != SETTLED) return 0;
+    }
     return 1;
 }
 
@@ -5619,19 +5630,23 @@ static void merge_state(int idx, const Found *f, int nfound) {
     expanded = idx + 1;
     for (int k = 0; k < nfound; k++) {
         generated++;
-        if (f[k].constrained) continue;
-        int found = fp_find(f[k].fp);
-        if (found < 0) {
-            Claim *c = claim(f[k].fp, 0, NULL);
+        if (f[k].seen == CONSTRAINED) continue;
+        int found = f[k].seen;
+        Claim *c = &claims[f[k].claim];
+        /* New this level: merged already, or added by the search itself. */
+        if (found == NEW && (found = c->merged - 1) < 0 && (found = fp_find(f[k].fp)) < 0) {
             size_t off = store.n;
             store_add(encodings[c->loc >> 40] + (c->loc & (((uint64_t)1 << 40) - 1)), (size_t)c->len);
             int depth = states[idx].depth + 1;
             found = add_record(off, f[k].fp, idx, f[k].action, depth);
             if (depth > max_depth) max_depth = depth;
         }
+        if (f[k].seen == NEW) c->merged = found + 1;
         if (ntemporal_props) add_edge(idx, found, f[k].action);
     }
 }
+
+static int merge_level(int lo, int hi);
 
 static int expand_level(int lo, int hi) {
     /* Workers know the strings there were when they started; states may
@@ -5649,13 +5664,21 @@ static int expand_level(int lo, int hi) {
     control->nclaims = n;
     atomic_store(&control->claimed, 0);
     atomic_store(&control->next, 0);
+    for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
-    char c;
     for (int i = 0; i < nworkers; i++)
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+    int status = merge_level(lo, hi);
+    atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
+    char c;
     for (int i = 0; i < nworkers; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+    return status;
+}
+
+static int merge_level(int lo, int hi) {
     for (int b = 0; b < control->nbatches; b++) {
+        while (!atomic_load(&batches[b].done)) sched_yield();
         const char *p = results[batches[b].worker] + batches[b].off;
         int end = lo + (b + 1) * BATCH < hi ? lo + (b + 1) * BATCH : hi;
         for (int idx = lo + b * BATCH; idx < end; idx++) {
