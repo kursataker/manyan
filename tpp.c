@@ -669,7 +669,16 @@ static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; 
 /* The standard order (§7.4). Model values come first; other values of
    different kinds cannot be compared. */
 static int vcmp(Value *a, Value *b) {
+    if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
+    if (a->kind == V_TUPLE && b->kind == V_TUPLE) {
+        if (a->n != b->n) return a->n < b->n ? -1 : 1;
+        for (int i = 0; i < a->n; i++) {
+            int c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+            if (c) return c;
+        }
+        return 0;
+    }
     if (number_set(a) && number_set(b)) return (a->lazy > b->lazy) - (a->lazy < b->lazy);
     if (a->kind == V_MODEL || b->kind == V_MODEL) {
         if (a->kind != b->kind) return a->kind == V_MODEL ? -1 : 1;
