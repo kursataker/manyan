@@ -48,7 +48,7 @@ jobs:
           python3 tests/spec_runner.py "arch -x86_64 ./tpp" --strict
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-macos-universal
-          mkdir $dir && cp tpp README.md CHANGELOG.md $dir
+          mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir
           tar -czf $dir.tar.gz $dir
       - uses: actions/upload-artifact@v4
         with:
@@ -73,7 +73,7 @@ jobs:
           python3 tests/spec_runner.py "./tpp -workers 4" --strict
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
-          mkdir $dir && cp tpp README.md CHANGELOG.md $dir
+          mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir
           tar -czf $dir.tar.gz $dir
       - uses: actions/upload-artifact@v4
         with:
@@ -102,7 +102,7 @@ jobs:
           python3 tests/spec_runner.py "./tpp -workers 4" --strict
       - run: |
           dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
-          mkdir $dir && cp tpp.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md $dir
+          mkdir $dir && cp tpp.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md LICENSE $dir
           zip -qr $dir.zip $dir
       - uses: actions/upload-artifact@v4
         with:

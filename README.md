@@ -123,3 +123,8 @@ tests/tla/             TLA⁺ models of tpp's algorithms
 bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
 CHANGELOG.md           what each release changed; releasing is tagging vX.Y.Z
 ```
+
+## License
+
+MIT; see [LICENSE](LICENSE). The Windows build ships Cygwin's
+`cygwin1.dll`, which is LGPLv3.
