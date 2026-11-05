@@ -1199,13 +1199,10 @@ static Value *held(Value *s) {
 
 static Value *set_union(Value *a, Value *b) {
     if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
-    if (!reducible(a) || !reducible(b)) {
-        a = enumerate(a);
-        return held(set_union(a, enumerate(b)));
-    }
+    int hold = !reducible(a) || !reducible(b);
     a = enumerate(a); b = enumerate(b);
-    if (!b->n) return a;
-    if (!a->n) return b;
+    if (!b->n) return hold ? held(a) : a;
+    if (!a->n) return hold ? held(b) : b;
     /* Both are sorted: merge them. */
     Value *r = mk_set(a->n + b->n);
     Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
@@ -1219,7 +1216,7 @@ static Value *set_union(Value *a, Value *b) {
     while (i < a->n) out[k++] = x[i++];
     while (j < b->n) out[k++] = y[j++];
     r->n = k;
-    return r;
+    return hold ? held(r) : r;
 }
 
 static Value *set_inter(Value *a, Value *b) {
@@ -2422,12 +2419,19 @@ static Expr *parse_primary(void) {
     syntax_error("unexpected token");
 }
 
-/* A primary followed by applications f[a] and fields r.f. */
+/* A primary followed by applications f[a], fields r.f and postfix
+   operators x', in any order: x'[1] is (x')[1]. */
 static Expr *parse_postfix(void) {
     Expr *e = parse_primary();
     for (;;) {
         Tok *t = peek();
-        if (is_op(t, "[")) {
+        const OpInfo *post = op_info(t, POSTFIX);
+        if (post) {
+            next();
+            Expr *p = mk_op(t, intern(post->name), 1, &e);
+            span_from(p, e);
+            e = p;
+        } else if (is_op(t, "[")) {
             Tok *start = t;
             next();
             int saved = P->limit;
