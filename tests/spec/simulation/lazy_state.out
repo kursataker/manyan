@@ -1,0 +1,10 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to enumerate { x \in S : p(x) } when S:
+Nat
+is not enumerable
+exit 255

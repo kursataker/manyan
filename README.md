@@ -1,13 +1,11 @@
 # tpp
 
 TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
-the same specifications and model configurations as TLC and prints the
-same report, the same traces and counterexamples, and the same state
-counts, 4.7 to 28.7 times faster with one worker (`make release`).
+the same specifications and model configurations as TLC and produces same
+outcome, 4.7 to 28.7 times faster with one worker (`make release`).
 
 ```
 $ tpp -workers auto MySpec
-tpp version 0.1.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant Safe is violated.
 Error: The behavior up to this point is:
@@ -23,7 +21,7 @@ State 2: <Next line 7, col 9 to line 7, col 30 of module MySpec>
 
 ## Why
 
-TLC is the reference model checker for TLA⁺, and the oracle tpp is tested
+TLC is the reference model checker for TLA⁺, and tpp is tested
 against. tpp keeps TLC's semantics and output, so it can stand in for TLC
 in scripts and CI, and it starts quickly and spends less time on each
 state:
@@ -79,19 +77,21 @@ exit statuses and the C API.
   `CHECK_DEADLOCK`.
 - Checking: assumptions, invariants, action properties, deadlock, and
   temporal properties under weak and strong fairness, with TLC's
-  counterexamples.
+  counterexamples; random simulation (`-simulate`), drawing the same
+  behaviors as TLC for a seed.
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
 
-Not yet supported: real numbers, `\AA`/`\EE`, simulation and generation
-modes, checkpoints, distributed checking. The proof language is parsed and
-skipped.
+Not yet supported: generation mode, writing simulated behaviors to
+files, checkpoints, distributed checking. Real numbers and `\AA`/`\EE`
+give TLC's errors, as TLC cannot check them either. The proof language is
+parsed and skipped.
 
 ## How it is tested
 
-What tpp must do is written down first, in
-[the tpp TLA⁺ Standard](docs/standards/tla2.md), with TLC 2.19 as the
-oracle for every choice the language leaves open. The tests follow it:
+`tpp` follows [the tpp TLA⁺ Standard](docs/standards/tla2.md),
+with TLC 2.19 as the oracle for every choice the language leaves open.
+The tests follow it:
 
 - `tests/spec`: over 200 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test
@@ -100,6 +100,10 @@ oracle for every choice the language leaves open. The tests follow it:
 - `make test` runs the suite with one worker and with four;
   `make sanitize` runs it under UndefinedBehaviorSanitizer (with Guard
   Malloc on macOS, AddressSanitizer elsewhere).
+- `make fuzz` runs mutated models of the suite under the sanitizers, to
+  find crashes; `make fuzz-oracle` compares what tpp and TLC print for
+  random expressions, and `make fuzz-sim` for random simulations of the
+  suite's models, to find differences. What they find becomes a test.
 - `tests/tla` models parts of tpp's algorithms in TLA⁺, for TLC and tpp to
   check.
 
