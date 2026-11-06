@@ -6,6 +6,9 @@ for it as its notes.
 
 ## 0.3.0
 
+- Under a view, a trace shows the states as TLC rebuilds them from their
+  fingerprints: the first initial state with the view's value, even one
+  outside the constraint, then the first successor of each.
 - A module the user supplies with a standard module's name, such as their
   own `FiniteSets.tla`, has TLC's Java operators where the names match, as
   TLC loads its classes by the module's name; its other operators are its

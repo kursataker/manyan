@@ -1,0 +1,22 @@
+Finished computing initial states: 2 states generated, with 1 of them distinct.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ hidden = 0
+/\ x = 0
+
+State 2: <Next line 11, col 12 to line 11, col 45 of module view_trace_rebuilt>
+/\ hidden = 1
+/\ x = 1
+
+State 3: <Next line 11, col 12 to line 11, col 45 of module view_trace_rebuilt>
+/\ hidden = 2
+/\ x = 2
+
+State 4: <Next line 11, col 12 to line 11, col 45 of module view_trace_rebuilt>
+/\ hidden = 4
+/\ x = 3
+
+8 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12

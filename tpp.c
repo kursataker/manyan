@@ -7189,10 +7189,13 @@ static int cur_action;
 /* TLC rebuilds the states of a trace from their fingerprints by evaluating
    the spec again: all of Init for the first state, then each action in turn
    until one yields the next state. Side effects such as Print happen
-   again, so tpp replays the same evaluations for the same output. */
+   again, so tpp replays the same evaluations for the same output. The
+   state found is the first with the fingerprint, which under a view or
+   symmetry may be another than the one stored. */
 static Value **replay_target;
 static uint64_t replay_fp;
 static int replay_found;
+static Value **replay_match;   /* the state found */
 static int replay_checks;     /* also evaluate the properties and invariants, as TLC does replaying Init */
 static int check_list(Check *list, int n, Value **st);
 static void live_init_lits(void);
@@ -7205,6 +7208,7 @@ static int replay_emit(void) {
         int complete = 1;
         for (int i = 0; i < nvars && complete; i++) complete = gen_target[i] != NULL;
         replay_found = complete && replay_target && fingerprint(gen_target) == replay_fp;
+        if (replay_found) replay_match = memcpy(NEWN(Value *, nvars), gen_target, sizeof(Value *) * (size_t)nvars);
     }
     if (replay_checks) {
         if (ntemporal_props) eval_init_lits(gen_target);
@@ -7223,6 +7227,7 @@ static int replay(Value **from, Value **to) {
     for (int i = 0; i < nvars && replay_target; i++) if (!to[i]) replay_target = NULL;
     if (replay_target) replay_fp = fingerprint(to);
     replay_found = 0;
+    replay_match = to;
     gen_target = st;
     gen_emit = replay_emit;
     if (!from) {
@@ -7277,10 +7282,11 @@ static void print_trace(int s1, Value **s2, int action) {
     int k = n;
     for (int i = s1; i >= 0; i = states[i].parent) path[--k] = i;
     for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
-    for (int i = 0; i + 1 < n; i++) replay(i ? st[i - 1] : NULL, st[i]);
+    /* Each state as TLC rebuilds it, from the one before as rebuilt. */
+    for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i]); st[i] = replay_match; }
     printf("Error: The behavior up to this point is:\n");
     for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i]);
-    if (n > 1) replay(st[n - 2], st[n - 1]);
+    if (n > 1) { replay(st[n - 2], st[n - 1]); st[n - 1] = replay_match; }
     print_numbered(n, states[s1].action, st[n - 1]);
     if (s2) {
         replay(st[n - 1], s2);
