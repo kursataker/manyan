@@ -1,0 +1,7 @@
+{{1, 2, 3}}
+{{}}
+TRUE
+Error: Evaluating assumption line 8, col 8 to line 8, col 50 of module random_set_of_subsets failed.
+The second argument of RandomSetOfSubsets should be a nonnegative integer in range 0..Cardinality(S), but instead it is:
+4
+exit 10

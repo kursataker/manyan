@@ -5940,6 +5940,40 @@ NATIVE(n_randomsubset) {
     return list_set(&l);
 }
 
+/* k subsets of S, each of n elements where it can: as RandomSubset, the
+   first ones, where TLC tosses a coin for each element. */
+NATIVE(n_randomsetofsubsets) {
+    UNUSED;
+    for (int i = 0; i < 2; i++)
+        if (a[i]->kind != V_INT || a[i]->u.i < 0)
+            fail_module("The %s argument of RandomSetOfSubsets should be a nonnegative integer, but instead it is:\n%s",
+                        i ? "second" : "first", pretty(a[i]));
+    if (!is_set(a[2]) || set_is_infinite(a[2]))
+        fail_module("The third argument of RandomSetOfSubsets should be a finite set, but instead it is:\n%s", pretty(a[2]));
+    Value *s = enumerate(a[2]);
+    int64_t k = a[0]->u.i, n = a[1]->u.i;
+    if (s->n < 63 && k > ((int64_t)1 << s->n))
+        fail_module("The first argument of RandomSetOfSubsets should be a nonnegative integer that is smaller than "
+                    "the subset's size of 2^%d, but instead it is:\n%lld", s->n, (long long)k);
+    if (n > s->n)
+        fail_module("The second argument of RandomSetOfSubsets should be a nonnegative integer in range "
+                    "0..Cardinality(S), but instead it is:\n%s", pretty(a[1]));
+    List l = {0};
+    int *idx = NEWN(int, n + 1);
+    for (int i = 0; i < n; i++) idx[i] = i;
+    for (int64_t j = 0; j < k; j++) {
+        Value *t = mk_set((int)n);
+        for (int i = 0; i < n; i++) t->u.set.elems[i] = s->u.set.elems[idx[i]];
+        list_add(&l, t);
+        int i = (int)n - 1;
+        while (i >= 0 && idx[i] == s->n - n + i) i--;
+        if (i < 0) break;
+        idx[i]++;
+        for (int m = i + 1; m < n; m++) idx[m] = idx[m - 1] + 1;
+    }
+    return list_set(&l);
+}
+
 NATIVE(n_any) { UNUSED; return mk_lazy(L_ANY); }
 
 NATIVE(n_tostring) {
@@ -5995,6 +6029,7 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "RandomElement", n_randomelement, J_V, "RandomElement(" J_V ")"},
     {"TLC", "Any", n_any, J_V, "Any()"},
     {"Randomization", "RandomSubset", n_randomsubset, J_V, "RandomSubset(" J_V "," J_V ")"},
+    {"Randomization", "RandomSetOfSubsets", n_randomsetofsubsets, J_V, "RandomSetOfSubsets(" J_V "," J_V "," J_V ")"},
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};

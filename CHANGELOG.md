@@ -6,6 +6,8 @@ for it as its notes.
 
 ## 0.3.0
 
+- `RandomSetOfSubsets` from Randomization is native, as in TLC, with its
+  argument checks; it no longer enumerates `SUBSET SUBSET S`.
 - An invariant with primes or temporal operators is TLC's error (exit
   76), reported before the configuration's other names, as TLC does. A
   call such as `B(Next)` with `B(d) == ENABLED d` is a state predicate.
