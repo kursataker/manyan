@@ -1,7 +1,7 @@
-Finished computing initial states: 3 distinct states generated.
+Finished computing initial states: 1 distinct state generated.
 Model checking completed. No error has been found.
-17 states generated, 7 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 5.
+15 states generated, 6 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 6.
 exit 0
 --- graph.dot
 strict digraph DiskGraph {
@@ -9,28 +9,28 @@ nodesep=0.35;
 subgraph cluster_graph {
 color="white";
 s0 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 0",style = filled]
-s1 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 1",style = filled]
-s2 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 7",style = filled]
 s0 -> s1 [label="Inc",color="black",fontcolor="black"];
+s1 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 1"];
 s0 -> s0 [label="Stay",color="black",fontcolor="black"];
-s1 -> s3 [label="Inc",color="black",fontcolor="black"];
-s3 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 2"];
+s1 -> s2 [label="Inc",color="black",fontcolor="black"];
+s2 [label="/\\ s = \"a\\\"b\\\\\"\n/\\ x = 2"];
 s1 -> s1 [label="Stay",color="black",fontcolor="black"];
-s3 -> s4 [label="Reset",color="black",fontcolor="black"];
-s4 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 0"];
+s2 -> s3 [label="Reset",color="black",fontcolor="black"];
+s3 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 0"];
+s2 -> s2 [label="Stay",color="black",fontcolor="black"];
+s3 -> s4 [label="Inc",color="black",fontcolor="black"];
+s4 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 1"];
 s3 -> s3 [label="Stay",color="black",fontcolor="black"];
 s4 -> s5 [label="Inc",color="black",fontcolor="black"];
-s5 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 1"];
+s5 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 2"];
 s4 -> s4 [label="Stay",color="black",fontcolor="black"];
-s5 -> s6 [label="Inc",color="black",fontcolor="black"];
-s6 [label="/\\ s = <<\"q\", {1}>>\n/\\ x = 2"];
+s5 -> s3 [label="Reset",color="black",fontcolor="black"];
 s5 -> s5 [label="Stay",color="black",fontcolor="black"];
-s6 -> s4 [label="Reset",color="black",fontcolor="black"];
-s6 -> s6 [label="Stay",color="black",fontcolor="black"];
-{rank = same; s0;s1;s2;}
+{rank = same; s0;}
+{rank = same; s1;}
+{rank = same; s2;}
 {rank = same; s3;}
 {rank = same; s4;}
 {rank = same; s5;}
-{rank = same; s6;}
 }
 }
