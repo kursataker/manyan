@@ -6,6 +6,9 @@ for it as its notes.
 
 ## 0.3.0
 
+- `-difftrace` prints each state of a trace after the first as the
+  variables that changed, as TLC does; `TPPOptions.difftrace` in the C
+  API.
 - `TLCGet("level")` in a simulation is the behavior's length so far, and
   as a trace is rebuilt, each step's own level; it was 0, and the level
   the search stopped at.

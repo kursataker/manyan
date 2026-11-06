@@ -45,6 +45,7 @@ built in.
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
+| `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
 | `-metadir DIR` | accepted for TLC's command lines, and ignored: tpp writes no metadata |
 
 A run prints TLC's report on standard output: the initial states, then

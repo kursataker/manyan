@@ -1,0 +1,27 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = "a"
+
+State 2: <A line 8, col 6 to line 8, col 46 of module difftrace>
+/\ x = 1
+
+State 3: <A line 8, col 6 to line 8, col 46 of module difftrace>
+/\ x = 2
+
+State 4: <B line 9, col 6 to line 9, col 60 of module difftrace>
+/\ y = 1
+/\ z = "b"
+
+State 5: <B line 9, col 6 to line 9, col 60 of module difftrace>
+/\ y = 2
+
+Back to state 4: <C line 10, col 6 to line 10, col 42 of module difftrace>
+
+6 states generated, 5 distinct states found, 0 states left on queue.
+exit 13

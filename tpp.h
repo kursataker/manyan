@@ -27,6 +27,7 @@ typedef struct {
     const char *dump;    /* write the state graph in dot format to this file, or NULL */
     int dump_actions;    /* label the dump's steps with their actions (-dump dot,actionlabels) */
     int nowarning;       /* TLC's warnings off, as -nowarning */
+    int difftrace;       /* print only what each step of a trace changes, as -difftrace */
     int workers;         /* processes expanding states; 0 or 1 for one */
     int simulate;        /* random behaviors instead of the state graph, as -simulate */
     long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */

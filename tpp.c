@@ -7458,11 +7458,36 @@ static void replay_error(Value **from) {
     handler = saved;
 }
 
-static void print_numbered(int number, int action, Value **st) {
+static int diff_trace;   /* -difftrace */
+
+/* Whether a variable keeps its value p as v, as TLC compares them: an
+   error comparing, as of a string with a number, is a change. */
+static int unchanged(Value *p, Value *v) {
+    if (!p || !v) return 0;
+    EvalState s = eval_save();
+    ErrorState e = error_save();
+    sigjmp_buf here, *outer = handler;
+    handler = &here;
+    int same = !sigsetjmp(here, 0) && veq(p, v);
+    handler = outer;
+    eval_restore(s);
+    error_restore(&e);
+    return same;
+}
+
+/* State number of a trace, reached by action. With -difftrace, only the
+   variables that changed from prev, unless prev is NULL. */
+static void print_numbered(int number, int action, Value **st, Value **prev) {
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
-    print_state(st);
+    if (diff_trace && prev) {
+        for (int i = 0; i < nvars; i++)
+            if (!unchanged(prev[i], st[i]))
+                printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    } else {
+        print_state(st);
+    }
     printf("\n");
 }
 
@@ -7476,13 +7501,14 @@ static void print_trace_states(int s1, Value **s2, int action) {
     for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
     /* Each state as TLC rebuilds it, from the one before as rebuilt. */
     for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i], i); st[i] = replay_match; }
+    /* The last state is printed whole, as TLC prints it. */
     printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i]);
+    for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL);
     if (n > 1) { replay(st[n - 2], st[n - 1], n - 1); st[n - 1] = replay_match; }
-    print_numbered(n, states[s1].action, st[n - 1]);
+    print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL);
     if (s2) {
         replay(st[n - 1], s2, n);
-        print_numbered(n + 1, action, s2);
+        print_numbered(n + 1, action, s2, NULL);
     }
 }
 
@@ -8455,7 +8481,7 @@ static int sim_print(States *trace) {
             printf("Cannot read field \"state\" because \"currentStateInfo\" is null\n");
             return 0;
         }
-        if (!i || fps[i] != fps[i - 1]) print_numbered(k++, action, trace->a[i]);
+        if (!i || fps[i] != fps[i - 1]) print_numbered(k++, action, trace->a[i], i ? trace->a[i - 1] : NULL);
     }
     handler = outer;
     return 1;
@@ -10224,12 +10250,9 @@ static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed
     return found;
 }
 
-static void print_live_state(int number, int s, int action) {
-    printf("State %d: ", number);
-    action_label(action);
-    printf("\n");
-    print_state(state_values(s));
-    printf("\n");
+/* State number of a counterexample, state s, after the state prev (-1 for none). */
+static void print_live_state(int number, int s, int action, int prev) {
+    print_numbered(number, action, state_values(s), prev < 0 ? NULL : state_values(prev));
 }
 
 /* Prints a lasso through the accepted component: the shortest path to it,
@@ -10263,7 +10286,7 @@ static void print_counterexample(int *inits, int ninits) {
     for (int i = 0; i < path.n; i++) {
         int p = (int)path.v[i]->u.i;
         int act = (int)acts.v[i]->u.i;
-        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act);
+        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state);
     }
     int entry_number = number;
     /* The cycle: from the entry through each required node or edge, back. */
@@ -10327,7 +10350,8 @@ static void print_counterexample(int *inits, int ninits) {
     }
     for (int i = 0; i + 1 < cyc.n; i++) {
         int p = (int)cyc.v[i]->u.i;
-        print_live_state(++number, pnodes[p].state, (int)cacts.v[i]->u.i);
+        int before = (int)(i ? cyc.v[i - 1] : path.v[path.n - 1])->u.i;
+        print_live_state(++number, pnodes[p].state, (int)cacts.v[i]->u.i, pnodes[before].state);
     }
     printf("Back to state %d: ", entry_number);
     action_label((int)cacts.v[cyc.n - 1]->u.i);
@@ -10621,6 +10645,7 @@ int tpp_check(const TPPOptions *o) {
     boolean_set->u.set.elems[1] = TRUEV;
     check_deadlock = o->check_deadlock;
     nowarning = o->nowarning;
+    diff_trace = o->difftrace;
 
     root = parse_text(text, path);
     char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
@@ -10746,6 +10771,7 @@ int main(int argc, char **argv) {
             o.dump = path;
         } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
         else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
+        else if (strcmp(argv[i], "-difftrace") == 0) o.difftrace = 1;
         else if (strcmp(argv[i], "-metadir") == 0 && i + 1 < argc) i++;    /* TLC's; tpp writes no metadata */
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];

@@ -1,0 +1,17 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = "a"
+
+State 2: <A line 8, col 6 to line 8, col 46 of module difftrace>
+/\ x = 1
+
+State 3: <A line 8, col 6 to line 8, col 46 of module difftrace>
+/\ x = 2
+
+State 4: <B line 9, col 6 to line 9, col 51 of module difftrace>
+/\ y = 1
+/\ z = "b"
+exit 12
