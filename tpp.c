@@ -4915,6 +4915,8 @@ static void warn_except(Expr *e) {
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
     if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
+    if (f->kind == V_TUPLE && key->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument %s.", pretty(key));
+    if (f->kind == V_FCN && f->made == MADE_RECORD && key->kind != V_STR) fail("Attempted to apply record to a non-string argument %s.", pretty(key));
     int k = f->kind == V_LAMBDA ? -1 : fcn_index(f, key);
     if (f->kind != V_LAMBDA && k < 0) { warn_except(where->args[0]); return f; }
     Value *old = k >= 0 ? f->u.fcn.vals[k] : fcn_apply(f, key, where);
