@@ -9,7 +9,8 @@ Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
 NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it.
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
-numbered in order of appearance, as fingerprints differ.
+numbered in order of appearance, as fingerprints differ; then the
+behaviors it writes (`-simulate file=FILE`).
 
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
@@ -70,6 +71,8 @@ def dumped(directory):
         for line in dot.read_text().splitlines():
             pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
             text += re.sub(pattern, number, line) + "\n"
+    for behavior in sorted(directory.glob("*_0_*")):   # -simulate file=
+        text += f"--- {behavior.name}\n" + behavior.read_text()
     return text
 
 

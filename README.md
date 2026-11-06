@@ -86,12 +86,11 @@ exit statuses and the C API.
 - Checking: assumptions, invariants, action properties, deadlock, and
   temporal properties under weak and strong fairness, with TLC's
   counterexamples; random simulation (`-simulate`), drawing the same
-  behaviors as TLC for a seed.
+  behaviors as TLC for a seed, and writing them to files (`file=`).
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
 
-Not yet supported: generation mode, writing simulated behaviors to
-files, checkpoints, distributed checking. Real numbers and `\AA`/`\EE`
+Not yet supported: generation mode, checkpoints, distributed checking. Real numbers and `\AA`/`\EE`
 give TLC's errors, as TLC cannot check them either. The proof language is
 parsed and skipped.
 

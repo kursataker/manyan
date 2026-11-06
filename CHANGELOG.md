@@ -6,6 +6,8 @@ for it as its notes.
 
 ## 0.3.0
 
+- `-simulate file=FILE` writes each behavior that ends without an error to
+  `FILE_0_N`, as TLC does; `TPPOptions.trace_file` in the C API.
 - An error comparing the parts of a set, record or tuple that an expression
   made names each of them in the fingerprint stack trace, as TLC does;
   sorting a set compares each new element with those before it, so the

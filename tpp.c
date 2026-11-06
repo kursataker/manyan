@@ -7209,13 +7209,15 @@ static long generated;
 static int max_depth = 1;
 static int expanded;          /* states taken off the queue */
 
-static void print_state(Value **st) {
+static void fprint_state(FILE *f, Value **st) {
     if (nvars == 1) {
-        printf("%s = %s\n", S(vars[0]->name), st[0] ? pretty(st[0]) : "null");
+        fprintf(f, "%s = %s\n", S(vars[0]->name), st[0] ? pretty(st[0]) : "null");
         return;
     }
-    for (int i = 0; i < nvars; i++) printf("/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    for (int i = 0; i < nvars; i++) fprintf(f, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
 }
+
+static void print_state(Value **st) { fprint_state(stdout, st); }
 
 static void action_label(int action) {
     if (action < 0) { printf("<Initial predicate>"); return; }
@@ -8324,6 +8326,24 @@ static void sim_summary(int64_t seed, int64_t aril) {
     printf("Simulation using seed %lld and aril %lld\n", (long long)seed, (long long)aril);
 }
 
+/* Behavior t, ended without an error, as TLC writes it for -simulate
+   file=FILE: a module FILE_0_t (worker 0) that defines each state. */
+static void sim_write(const char *file, long t, States *trace) {
+    Buf name = {0};
+    buf_printf(&name, "%s_0_%ld", file, t);
+    FILE *f = fopen(name.s, "w");
+    if (!f) fail("Cannot write the behavior to %s.", name.s);
+    fprintf(f, "---------------- MODULE %s -----------------\n", name.s);
+    for (int i = 0; i < trace->n; i++) {
+        fprintf(f, "STATE_%d == \n", i + 1);
+        fprint_state(f, trace->a[i]);
+        fprintf(f, "\n\n");
+    }
+    fprintf(f, "=================================================\n");
+    fclose(f);
+    free(name.s);
+}
+
 /* Random simulation (§10.8): TLC's behaviors for the seed, from one worker.
    The initial states are kept for good; a behavior, with all it
    evaluates, until it ends. */
@@ -8454,6 +8474,7 @@ static int simulate(const TPPOptions *o) {
             sim_summary(seed, aril);
             return TPP_VIOLATION_LIVENESS;
         }
+        if (o->trace_file) sim_write(o->trace_file, t, &trace);
     }
     handler = NULL;
     printf("Progress: %ld states checked.\n", generated);
@@ -10503,6 +10524,7 @@ int main(int argc, char **argv) {
             if (i + 1 < argc && (strstr(argv[i + 1], "num=") || strstr(argv[i + 1], "file="))) {
                 for (char *arg = strtok(argv[++i], ","); arg; arg = strtok(NULL, ","))
                     if (strncmp(arg, "num=", 4) == 0) o.traces = atol(arg + 4);
+                    else if (strncmp(arg, "file=", 5) == 0) o.trace_file = arg + 5;
                     else { fprintf(stderr, "tpp: -simulate %s is not supported\n", arg); return TPP_ERROR; }
             }
         }

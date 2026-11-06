@@ -25,7 +25,7 @@ tpp is one C file with no dependencies beyond the C library and POSIX
 
 ```sh
 tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
-tpp -simulate [num=N] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
 ```
 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
@@ -40,6 +40,7 @@ built in.
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
+| `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., as TLC does |
 | `-depth D` | the length of each random behavior, in states (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
@@ -180,8 +181,7 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 ## Limitations
 
 Not supported: the proof language (parsed and skipped), TLC's generation
-mode (`-generate`), writing simulated behaviors to files (`-simulate
-file=`), checkpoints and distributed checking. In a simulation, output
+mode (`-generate`), checkpoints and distributed checking. In a simulation, output
 from `Print` comes in a different order than TLC's, and a temporal
 property is checked on the whole graph of each behavior, where TLC may
 miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
