@@ -6,6 +6,8 @@ for it as its notes.
 
 ## 0.3.0
 
+- A value that is not a sequence checked against `Seq(S)` is the Sequences
+  module's error, reported without the initial state, as TLC does.
 - An instance's variable substituted by a definition that is a variable
   (`m == x`, by default or by `WITH m <- h`) is assigned in `Init`, as
   TLC does; it was an undefined identifier.

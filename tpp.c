@@ -1255,7 +1255,7 @@ static int set_member(Value *v, Value *s) {
         case L_SEQ:
             if (v->kind == V_STR) v = str_chars(v);
             if (!is_fcn(v) || !(fcn_is_tuple(v) || v->n == 0))
-                fail("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
+                fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
             for (int i = 0; i < v->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.a)) return 0;
             return 1;
         case L_FCNSET: {
