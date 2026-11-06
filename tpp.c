@@ -4329,6 +4329,22 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     return d->value;
 }
 
+/* The definition a constant operator stands for, by the substitution of
+   an instance the context is in or by the configuration, with the context
+   it is in; or NULL. */
+static Def *const_operator(Def *d, Ctx c, Ctx *at) {
+    for (Inst *in = c.inst; in; in = in->parent) {
+        Def *id = in->def;
+        for (int i = 0; i < id->nsubst; i++)
+            if (id->subst_decl[i] == d) {
+                Expr *x = id->subst_expr[i];
+                *at = (Ctx){in->env, in->parent};
+                return x->kind == X_OPREF ? x->def : NULL;
+            }
+    }
+    return d->replacement;
+}
+
 /* Bindings of `x \in S, <<a, b>> \in T`: calls fn for each, in TLC's
    order, until it returns nonzero. */
 typedef int (*BindFn)(Ctx c, void *data);
@@ -5679,6 +5695,9 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno) {
    substitutions that stand for it; -1 if none. */
 static int assignable(Expr *lhs, Ctx c) {
     if (!gen_init) {
+        /* A parameter may stand for a primed argument: Op(x') == x = 1. */
+        for (Env *b; lhs->kind == K_BOUND && (b = env_find(c.env, lhs->def)) && b->e; c = (Ctx){b->ctx_env, b->ctx_inst})
+            lhs = b->e;
         if (lhs->kind != K_PRIME) return -1;
         lhs = lhs->args[0];
     }
@@ -5860,6 +5879,19 @@ static int gen(Expr *e, Ctx c, Cont *k) {
             else env = mk_arg(d->params[i], e->args[i], c, env);
         }
         return gen(d->body, (Ctx){env, c.inst}, k);
+    }
+    case K_PARAMCALL: {
+        /* A constant operator that stands for a definition is a call of it. */
+        if (e->def->kind != D_CONST) break;
+        Ctx at = {NULL, NULL};
+        Def *d = const_operator(e->def, c, &at);
+        if (!d || d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
+        Env *env = NULL;
+        for (int i = 0; i < e->n; i++) {
+            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+            else env = mk_arg(d->params[i], e->args[i], c, env);
+        }
+        return gen(d->body, (Ctx){env, at.inst}, k);
     }
     case K_INSTCALL:
         if (e->def->kind != D_OP || e->def->native) break;
