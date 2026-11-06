@@ -1700,7 +1700,7 @@ static int fcn_index(Value *f, Value *a) {
     int lo = 0, hi = f->n;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
-        int c = vcmp(a, f->u.fcn.keys[mid]);
+        int c = vcmp_quick(a, f->u.fcn.keys[mid]);
         if (!c) return mid;
         if (c < 0) hi = mid; else lo = mid + 1;
     }
