@@ -1,0 +1,15 @@
+Finished computing initial states: 3 states generated, with 2 of them distinct.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 14
+
+State 2: <M!Step line 9, col 1 to line 9, col 21 of module instance_assign_definition>
+x = 15
+
+State 3: <M!Step line 9, col 1 to line 9, col 21 of module instance_assign_definition>
+x = 16
+
+13 states generated, 7 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 4.
+exit 11

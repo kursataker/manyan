@@ -6229,34 +6229,36 @@ static int assignable(Expr *lhs, Ctx c) {
         if (lhs->kind != K_PRIME) return -1;
         lhs = lhs->args[0];
     }
-    while (lhs->kind == K_BOUND || (lhs->kind == K_CALL && lhs->n == 0)) {
+    /* Through parameters, definitions and substitutions, as TLC's getVar. */
+    for (;;) {
         Def *d = lhs->def;
-        if (lhs->kind == K_BOUND || d->kind == D_PARAM || d->local == 2) {
-            Env *b = env_find(c.env, d);
-            if (!b || !b->e) return -1;
-            lhs = b->e;
-            c = (Ctx){b->ctx_env, b->ctx_inst};
-        } else if (d->kind == D_OP && !d->native && !d->nparams && !d->replacement) {
-            lhs = d->body;
-            c = (Ctx){NULL, c.inst};
+        if (lhs->kind == K_BOUND || (lhs->kind == K_CALL && lhs->n == 0)) {
+            if (lhs->kind == K_BOUND || d->kind == D_PARAM || d->local == 2) {
+                Env *b = env_find(c.env, d);
+                if (!b || !b->e) return -1;
+                lhs = b->e;
+                c = (Ctx){b->ctx_env, b->ctx_inst};
+            } else if (d->kind == D_OP && !d->native && !d->nparams && !d->replacement) {
+                lhs = d->body;
+                c = (Ctx){NULL, c.inst};
+            } else {
+                return -1;
+            }
+        } else if (lhs->kind == K_DECL) {
+            Expr *sub = NULL;
+            Ctx outer = c;
+            for (Inst *in = c.inst; in && !sub; in = in->parent) {
+                if (in->def == &enabled_mark) return d->kind == D_VAR ? enabled_slot(d) : -1;
+                for (int i = 0; i < in->def->nsubst; i++)
+                    if (in->def->subst_decl[i] == d) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; break; }
+            }
+            if (!sub) return d->kind == D_VAR ? d->var_index : -1;
+            lhs = sub;
+            c = outer;
         } else {
             return -1;
         }
     }
-    while (lhs->kind == K_DECL) {
-        Def *d = lhs->def;
-        Expr *sub = NULL;
-        Ctx outer = c;
-        for (Inst *in = c.inst; in && !sub; in = in->parent) {
-            if (in->def == &enabled_mark) return d->kind == D_VAR ? enabled_slot(d) : -1;
-            for (int i = 0; i < in->def->nsubst; i++)
-                if (in->def->subst_decl[i] == d) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; break; }
-        }
-        if (!sub) return d->kind == D_VAR ? d->var_index : -1;
-        lhs = sub;
-        c = outer;
-    }
-    return -1;
 }
 
 static int gen_assign(int var, Value *v, Cont *k) {

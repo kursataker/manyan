@@ -6,6 +6,9 @@ for it as its notes.
 
 ## 0.3.0
 
+- An instance's variable substituted by a definition that is a variable
+  (`m == x`, by default or by `WITH m <- h`) is assigned in `Init`, as
+  TLC does; it was an undefined identifier.
 - `RandomSetOfSubsets` from Randomization is native, as in TLC, with its
   argument checks; it no longer enumerates `SUBSET SUBSET S`.
 - An invariant with primes or temporal operators is TLC's error (exit
