@@ -807,7 +807,14 @@ static int veq(Value *a, Value *b);
 
 static Value *fcn_key(Value *f, int i) { return f->kind == V_TUPLE ? mk_int(i + 1) : f->u.fcn.keys[i]; }
 
+/* The expression that made a value, as TLC keeps it to name in a
+   fingerprint stack trace when an error arises in one of its methods. */
+static Expr *value_source(Value *v) {
+    return v->kind == V_SET ? v->u.set.source : v->kind == V_TUPLE || v->kind == V_FCN ? v->u.fcn.source : NULL;
+}
+
 static _Noreturn void compare_error(Value *a, Value *b) {
+    fp_enter(value_source(a));
     const char *k = kind_name(a);
     if (a->kind == V_FCN && a->made == MADE_RECORD)
         fail("Attempted to compare record:\n%s\nwith non-record\n%s", pretty(a), pretty(b));
@@ -821,6 +828,9 @@ static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; 
 
 /* TLC's error comparing sets of which one is infinite. */
 static _Noreturn void incomparable(Value *a, Value *b) {
+    /* Two overridden values compare by the first's module. */
+    if (user_set(a) && user_set(b)) fail_module("Attempted to compare %s with the value\n%s", pretty(a), pretty(b));
+    fp_enter(value_source(a));
     if (user_set(a)) fail("Attempted to compare overridden value %s with non-overridden value:\n%s", pretty(a), pretty(b));
     if (user_set(b)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(enumerate(a)), pretty(b));
     enumerate(set_is_infinite(a) ? a : b);   /* fails with TLC's error for that set */
@@ -833,14 +843,19 @@ static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
+    /* Comparing the parts of a value TLC made with a source names it in
+       the fingerprint stack trace of an error there. */
+    Expr *src = value_source(a);
+    int c = 0;
     if (a->kind == V_TUPLE && b->kind == V_TUPLE) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
-        for (int i = 0; i < a->n; i++) {
+        fp_enter(src);
+        for (int i = 0; i < a->n && !c; i++) {
             Value *x = a->u.fcn.vals[i], *y = b->u.fcn.vals[i];
-            int c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
-            if (c) return c;
+            c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
         }
-        return 0;
+        fp_leave(src);
+        return c;
     }
     if (number_set(a) && number_set(b)) return (a->lazy > b->lazy) - (a->lazy < b->lazy);
     if (a->kind == V_MODEL || b->kind == V_MODEL) {
@@ -849,15 +864,13 @@ static int vcmp(Value *a, Value *b) {
     }
     if (is_fcn(a) && is_fcn(b)) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
-        for (int i = 0; i < a->n; i++) {
-            if (!(a->kind == V_TUPLE && b->kind == V_TUPLE)) {
-                int c = vcmp(fcn_key(a, i), fcn_key(b, i));
-                if (c) return c;
-            }
-            int c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
-            if (c) return c;
+        fp_enter(src);
+        for (int i = 0; i < a->n && !c; i++) {
+            if (a->kind != V_TUPLE || b->kind != V_TUPLE) c = vcmp(fcn_key(a, i), fcn_key(b, i));
+            if (!c) c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
         }
-        return 0;
+        fp_leave(src);
+        return c;
     }
     if (is_set(a) && is_set(b)) {
         if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 0;
@@ -865,11 +878,10 @@ static int vcmp(Value *a, Value *b) {
         a = enumerate(a);
         b = enumerate(b);
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
-        for (int i = 0; i < a->n; i++) {
-            int c = vcmp(a->u.set.elems[i], b->u.set.elems[i]);
-            if (c) return c;
-        }
-        return 0;
+        fp_enter(src);
+        for (int i = 0; i < a->n && !c; i++) c = vcmp(a->u.set.elems[i], b->u.set.elems[i]);
+        fp_leave(src);
+        return c;
     }
     if (a->kind != b->kind || a->kind == V_OPER) compare_error(a, b);
     return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
@@ -890,6 +902,7 @@ static inline int vcmp_quick(Value *a, Value *b) {
 }
 
 static _Noreturn void equality_error(Value *a, Value *b) {
+    fp_enter(value_source(a));
     const char *k = kind_name(a);
     if (a->kind == V_BOOL) fail("Attempted to compare equality of boolean %s with non-boolean:\n%s", pretty(a), pretty(b));
     if (a->kind == V_FCN && a->made == MADE_RECORD)
@@ -911,14 +924,17 @@ static int veq(Value *a, Value *b) {
     if (a->kind == V_TUPLE && b->kind == V_STR) return veq(a, str_chars(b));   /* TLC's tuple takes a string as its characters */
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
+    Expr *src = value_source(a);   /* named in an error in its parts, as vcmp */
+    int same = 1;
     if (is_fcn(a) && is_fcn(b)) {
         if (a->made == MADE_RECORD && !as_record(b)) equality_error(a, b);
         if (a->n != b->n) return 0;
-        for (int i = 0; i < a->n; i++) {
-            if (!(a->kind == V_TUPLE && b->kind == V_TUPLE) && !veq(fcn_key(a, i), fcn_key(b, i))) return 0;
-            if (!veq(a->u.fcn.vals[i], b->u.fcn.vals[i])) return 0;
-        }
-        return 1;
+        fp_enter(src);
+        for (int i = 0; i < a->n && same; i++)
+            same = ((a->kind == V_TUPLE && b->kind == V_TUPLE) || veq(fcn_key(a, i), fcn_key(b, i)))
+                && veq(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+        fp_leave(src);
+        return same;
     }
     if (is_set(a) && is_set(b)) {
         if (a->kind == V_INTERVAL && b->kind == V_INTERVAL)
@@ -933,9 +949,10 @@ static int veq(Value *a, Value *b) {
         a = enumerate(a);
         b = enumerate(b);
         if (a->n != b->n) return 0;
-        for (int i = 0; i < a->n; i++)
-            if (!veq(a->u.set.elems[i], b->u.set.elems[i])) return 0;
-        return 1;
+        fp_enter(src);
+        for (int i = 0; i < a->n && same; i++) same = veq(a->u.set.elems[i], b->u.set.elems[i]);
+        fp_leave(src);
+        return same;
     }
     if (a->kind != b->kind || a->kind == V_OPER) equality_error(a, b);
     return a->u.i == b->u.i;
@@ -964,7 +981,7 @@ static Value *set_normalize(Value *s) {
         for (int i = 1; i < n; i++) {
             Value *x = e[i];
             int j = i, c = 1;
-            while (j > 0 && (c = vcmp(e[j - 1], x)) > 0) { e[j] = e[j - 1]; j--; }
+            while (j > 0 && (c = vcmp(x, e[j - 1])) < 0) { e[j] = e[j - 1]; j--; }   /* as TLC: the new one first */
             e[j] = x;
             dup |= c == 0;
         }
@@ -5168,7 +5185,9 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
     List l = {0};
     for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
+    fp_enter(e);   /* comparing its elements */
     Value *s = list_set(&l);
+    fp_leave(e);
     s->u.set.source = e;
     return s;
 }
@@ -8711,7 +8730,7 @@ static Value *constant_value(Expr *e) {
     if (level) return NULL;
     sigjmp_buf here;
     handler = &here;
-    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); return NULL; }
+    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); fp_depth = 0; return NULL; }
     Value *v = eval(e, root_ctx);
     handler = NULL;
     return v;

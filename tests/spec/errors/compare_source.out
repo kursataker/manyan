@@ -1,0 +1,17 @@
+Error: Attempted to compare string "s" with non-string:
+1
+While working on the initial state:
+x = 0
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+2) line 9, col 29 to line 9, col 33 of module compare_source
+1) line 9, col 22 to line 9, col 34 of module compare_source
+0) line 9, col 8 to line 9, col 35 of module compare_source
+
+Reason:
+Attempted to compare string "s" with non-string:
+1
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

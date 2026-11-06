@@ -6,6 +6,11 @@ for it as its notes.
 
 ## 0.3.0
 
+- An error comparing the parts of a set, record or tuple that an expression
+  made names each of them in the fingerprint stack trace, as TLC does;
+  sorting a set compares each new element with those before it, so the
+  message shows the values in TLC's order. Two of TLC's overridden sets
+  (`Nat`, `Any`, `Seq(S)`, ...) compare by the first one's module.
 - EXCEPT on a tuple at a key that is not an integer, or on a record at one
   that is not a string, is TLC's error rather than the warning for a
   missing key.
