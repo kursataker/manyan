@@ -1,0 +1,7 @@
+Warning: Declaring state or action constraints during liveness checking is dangerous: Please read section 14.3.5 on page 247 of Specifying Systems (https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at https://discuss.tlapl.us/msg00994.html for more details.
+(Use the -nowarning option to disable this warning.)
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 0

@@ -25,6 +25,7 @@ typedef struct {
     int check_deadlock;  /* 0 turns deadlock checking off, as -deadlock does */
     const char *dump;    /* write the state graph in dot format to this file, or NULL */
     int dump_actions;    /* label the dump's steps with their actions (-dump dot,actionlabels) */
+    int nowarning;       /* TLC's warnings off, as -nowarning */
     int workers;         /* processes expanding states; 0 or 1 for one */
     int simulate;        /* random behaviors instead of the state graph, as -simulate */
     long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */

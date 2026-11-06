@@ -4480,11 +4480,14 @@ static Value *fcndef_value(Def *d, Ctx c) {
     return fcn_in_full(dom, NULL, d, c, d->where);
 }
 
+static int nowarning;   /* TLC's warnings off (-nowarning) */
+
 /* TLC's warning that an EXCEPT names a key outside the domain. Like TLC it
    prints each message once, and only the first has the -nowarning line. */
 static void warn_except(Expr *e) {
     static char **seen;
     static int nseen;
+    if (nowarning) return;
     if (in_worker) worker_cannot();   /* the search prints in order */
     Buf b = {0};
     buf_puts(&b, "Warning: The EXCEPT was applied to non-existing fields of the value at\n");
@@ -9031,6 +9034,7 @@ int tpp_check(const TPPOptions *o) {
     boolean_set->u.set.elems[0] = FALSEV;
     boolean_set->u.set.elems[1] = TRUEV;
     check_deadlock = o->check_deadlock;
+    nowarning = o->nowarning;
 
     root = parse_text(text, path);
     char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
@@ -9090,6 +9094,12 @@ int tpp_check(const TPPOptions *o) {
     }
     nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
     status = check_temporal_forms();
+    if (!status && !o->simulate && !nowarning && ntemporal_props && (nconstraints || naction_constraints))
+        printf("Warning: Declaring state or action constraints during liveness checking is dangerous: "
+               "Please read section 14.3.5 on page 247 of Specifying Systems "
+               "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
+               "https://discuss.tlapl.us/msg00994.html for more details.\n"
+               "(Use the -nowarning option to disable this warning.)\n");
     if (!status) status = o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();
@@ -9132,7 +9142,7 @@ int main(int argc, char **argv) {
             sprintf(path, "%s%s", file, n >= 4 && strcmp(file + n - 4, ".dot") == 0 ? "" : ".dot");
             o.dump = path;
         } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
-        else if (strcmp(argv[i], "-nowarning") == 0) continue;               /* TLC's; tpp has no such warnings */
+        else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
         else if (strcmp(argv[i], "-metadir") == 0 && i + 1 < argc) i++;    /* TLC's; tpp writes no metadata */
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];

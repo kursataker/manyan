@@ -381,6 +381,7 @@ value unchanged and prints TLC's warning, `Warning: The EXCEPT was applied
 to non-existing fields of the value at` and the location of `f`; the first
 warning of a run adds `(Use the -nowarning option to disable this
 warning.)`, and a warning already printed is not printed again.
+`-nowarning` turns off TLC's warnings: these two, not SANY's.
 
 ### 6.7 Records
 
@@ -592,7 +593,10 @@ step of the next-state action or a stuttering step, that satisfies the
 specification's fairness conditions. A property of the form `[]P` with `P`
 a state predicate is checked as an invariant; `[][A]_v` is checked on
 every transition; other properties are checked over the state graph after
-the search (liveness checking).
+the search (liveness checking). Liveness checking with a `CONSTRAINT` or
+`ACTION_CONSTRAINT` first prints TLC's warning, `Warning: Declaring state
+or action constraints during liveness checking is dangerous: …` and `(Use
+the -nowarning option to disable this warning.)`; a simulation does not.
 
 ### 10.6 Fairness
 
