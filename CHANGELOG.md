@@ -44,6 +44,9 @@ for it as its notes.
 - `UNCHANGED v`, where an instance substitutes an expression for its
   variable `v`, leaves the variables of that expression unchanged; it was
   an error (locks_auxiliary_vars/LockHS from tlaplus/Examples).
+- A specification whose `Init` the configuration replaces (`Init <-
+  MCInit`) reads its initial predicate from the replacement; tpp read the
+  replaced definition (tcp/MCtcp from tlaplus/Examples).
 - Applying a tuple written `<<...>>` outside its domain, in an initial
   state or a step, gives TLC's report that it cannot fingerprint it.
 - Fixed undefined behavior and a read past the end of an array, found by

@@ -8129,7 +8129,11 @@ static Expr *config_call(int name, const char *what, int args) {
 
 /* The body of a definition with no parameters, or the expression. */
 static Expr *unfold(Expr *e) {
-    while (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->nparams == 0) e = e->def->body;
+    while (e->kind == K_CALL && e->n == 0) {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;   /* Init <- MCInit */
+        if (d->kind != D_OP || d->native || d->nparams) break;
+        e = d->body;
+    }
     return e;
 }
 

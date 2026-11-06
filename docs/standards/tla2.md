@@ -509,6 +509,10 @@ evaluated natively.
   `:>`, `@@`, `Permutations`, `SortSeq`, `RandomElement`, `Any`,
   `ToString`, `TLCEval`.
 
+`RandomElement(S)` is the first element of `S` in the standard order
+(§7.4), so a run is repeatable; TLC draws one at random, so its state
+counts for a spec that uses it vary from run to run.
+
 The operators of Sequences read a string as the sequence of its
 characters, each a one-character string: `Head("ab") = "a"`, and `Tail`,
 `SubSeq` and `Append` of a string, and `\o` of two strings, are strings;
