@@ -6718,6 +6718,9 @@ static int init_emit(void) {
     return 0;
 }
 
+/* Whether the state a violation reports was new: as TLC, it is not queued. */
+static int violation_fresh;
+
 static int next_emit(void) {
     succ_count++;
     generated++;
@@ -6746,6 +6749,7 @@ static int next_emit(void) {
         if (depth > max_depth) max_depth = depth;
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
+        violation_fresh = 1;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             print_trace(expanding, st, cur_action);
@@ -6754,6 +6758,7 @@ static int next_emit(void) {
         }
     }
     int bad = check_actions(action_props, naction_props, cur_state, st);
+    violation_fresh = found < 0;
     if (bad >= 0) {
         printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
         print_trace(expanding, st, cur_action);
@@ -6781,7 +6786,7 @@ static int expand_state(int idx) {
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
         if (violation) {
-            print_counts(nstates - expanded - (violation == TPP_VIOLATION_SAFETY ? 1 : 0), 1);
+            print_counts(nstates - expanded - (violation != TPP_FAILURE_EVAL && violation_fresh), 1);
             return violation;
         }
     }
@@ -7824,16 +7829,6 @@ static Expr *unfold(Expr *e) {
     return e;
 }
 
-static void conjuncts(Expr *e, Expr ***out, int *n) {
-    e = unfold(e);
-    if (e->kind == K_AND) {
-        for (int i = 0; i < e->n; i++) conjuncts(e->args[i], out, n);
-        return;
-    }
-    *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 1));
-    (*out)[(*n)++] = e;
-}
-
 /* part, a subexpression of the body of the instance call's definition,
    as the instance sees it. */
 static Expr *in_instance(Expr *call, Expr *part) {
@@ -7849,6 +7844,25 @@ static Expr *in_instance(Expr *call, Expr *part) {
     return e;
 }
 
+/* The conjuncts of a specification or property, each as the instance it
+   is in sees it: a call of an instance's definition is followed into, as
+   TLC does, unless the instance has parameters (IM(y)!Spec). */
+static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n) {
+    e = unfold(e);
+    if (e->kind == K_AND) {
+        for (int i = 0; i < e->n; i++) conjuncts(e->args[i], call, out, n);
+        return;
+    }
+    if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        int plain = 1;
+        for (int i = 0; i < e->ndefs; i++) plain &= e->defs[i]->nparams == 0;
+        if (plain) { conjuncts(e->def->body, e, out, n); return; }
+    }
+    *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 2));
+    (*out)[(*n)++] = e;
+    (*out)[(*n)++] = call;
+}
+
 static Expr *conjoin(Expr **parts, int n) {
     if (n == 1) return parts[0];
     Expr *e = NEW(Expr);
@@ -7862,23 +7876,11 @@ static Expr *conjoin(Expr **parts, int n) {
 
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
 static void use_specification(Expr *spec) {
-    Expr **parts = NULL, *call = spec->kind == K_INSTCALL ? spec : NULL, *body = unfold(spec->def->body);
-    int n = 0;
-    if (!call && body->kind == K_INSTCALL && body->n == 0 && body->def->kind == D_OP && !body->def->native) {
-        /* A specification of an instance: Spec == I!Spec. TLC finds none in
-           an instance with parameters, IM(y)!Spec. */
-        int plain = 1;
-        for (int i = 0; i < body->ndefs; i++) plain &= body->defs[i]->nparams == 0;
-        if (plain) {
-            call = body;
-            body = body->def->body;
-        }
-    }
-    conjuncts(body, &parts, &n);
-    Expr **init = NULL;
-    int ninit = 0;
-    for (int i = 0; i < n; i++) {
-        Expr *e = parts[i];
+    Expr **parts = NULL, **init = NULL;
+    int n = 0, ninit = 0;
+    conjuncts(spec->def->body, spec->kind == K_INSTCALL ? spec : NULL, &parts, &n);
+    for (int i = 0; i < n; i += 2) {
+        Expr *e = parts[i], *call = parts[i + 1];
         if (expr_level(e) <= 1) {
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
             init[ninit++] = in_instance(call, e);
@@ -7897,20 +7899,28 @@ static void use_specification(Expr *spec) {
 }
 
 /* A property: []P as an invariant, [][A]_v as an action property, the
-   rest checked on the state graph (§10.5). */
+   rest checked on the state graph (§10.5). A part of several is named, as
+   TLC names it, by its location. */
 static void use_property(Expr *p) {
     Def *d = p->def;
-    Expr **parts = NULL, *call = p->kind == K_INSTCALL ? p : NULL;
+    Expr **parts = NULL;
     int n = 0;
-    conjuncts(d->body, &parts, &n);
-    for (int i = 0; i < n; i++) {
-        Expr *e = parts[i];
+    conjuncts(d->body, p->kind == K_INSTCALL ? p : NULL, &parts, &n);
+    for (int i = 0; i < n; i += 2) {
+        Expr *e = parts[i], *call = parts[i + 1];
+        int name = d->name;
+        if (n > 2) {
+            Buf b = {0};
+            loc_text(&b, e);
+            name = intern(b.s);
+            free(b.s);
+        }
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
-            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), d->name); continue; }
-            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), d->name); continue; }
+            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), name); continue; }
+            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), name); continue; }
         }
-        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), d->name);
+        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), name);
     }
     free(parts);
 }

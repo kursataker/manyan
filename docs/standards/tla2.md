@@ -594,7 +594,12 @@ step of the next-state action or a stuttering step, that satisfies the
 specification's fairness conditions. A property of the form `[]P` with `P`
 a state predicate is checked as an invariant; `[][A]_v` is checked on
 every transition; other properties are checked over the state graph after
-the search (liveness checking). In a temporal formula, `IF p THEN A ELSE
+the search (liveness checking). A property is split into its
+conjuncts, following definitions and a call of an instance's definition
+without parameters (`I!Spec`); a part of several is named in messages by
+its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
+violated.` A state whose step violates an action property is not left on
+the queue. In a temporal formula, `IF p THEN A ELSE
 B` is `(p /\ A) \/ (~p /\ B)`. Liveness checking with a `CONSTRAINT` or
 `ACTION_CONSTRAINT` first prints TLC's warning, `Warning: Declaring state
 or action constraints during liveness checking is dangerous: …` and `(Use
