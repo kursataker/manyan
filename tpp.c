@@ -8237,6 +8237,12 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         return t;
     }
     case K_NOT: return to_tf(e->args[0], c, !neg);
+    case X_IF: {
+        /* IF p THEN A ELSE B is (p /\ A) \/ (~p /\ B), negated in A and B. */
+        TF *then = tf_new(TF_AND, to_tf(e->args[0], c, 0), to_tf(e->args[1], c, neg));
+        TF *other = tf_new(TF_AND, to_tf(e->args[0], c, 1), to_tf(e->args[2], c, neg));
+        return tf_new(TF_OR, then, other);
+    }
     case K_IMPLIES: {
         TF *a = to_tf(e->args[0], c, !neg), *b = to_tf(e->args[1], c, neg);
         return tf_new(neg ? TF_AND : TF_OR, a, b);

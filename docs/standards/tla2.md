@@ -593,7 +593,8 @@ step of the next-state action or a stuttering step, that satisfies the
 specification's fairness conditions. A property of the form `[]P` with `P`
 a state predicate is checked as an invariant; `[][A]_v` is checked on
 every transition; other properties are checked over the state graph after
-the search (liveness checking). Liveness checking with a `CONSTRAINT` or
+the search (liveness checking). In a temporal formula, `IF p THEN A ELSE
+B` is `(p /\ A) \/ (~p /\ B)`. Liveness checking with a `CONSTRAINT` or
 `ACTION_CONSTRAINT` first prints TLC's warning, `Warning: Declaring state
 or action constraints during liveness checking is dangerous: …` and `(Use
 the -nowarning option to disable this warning.)`; a simulation does not.
