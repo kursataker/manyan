@@ -9559,13 +9559,13 @@ static void use_property(Expr *p) {
     free(parts);
 }
 
+static Value *def_body(Def *d) { return d->kind == D_FCN ? fcndef_value(d, (Ctx){NULL, NULL}) : eval(d->body, (Ctx){NULL, NULL}); }
+
 /* The value of a constant definition, normalized, which TLC computes once.
    What computing it made is dropped once the value is copied out; a value
    holding its context, as a lazy function does, is computed again where it
    is kept, with the same draws, printing nothing again. After an error it
    is kept: it may be named. */
-static Value *def_body(Def *d) { return d->kind == D_FCN ? fcndef_value(d, (Ctx){NULL, NULL}) : eval(d->body, (Ctx){NULL, NULL}); }
-
 static Value *def_value(Def *d) {
     Arena *saved = arena, made = {0};
     JRandom draw = *drawing;

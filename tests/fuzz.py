@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import spec_runner  # noqa: E402
 
-STATUSES = {0, 10, 11, 12, 13, 14, 75, 76, 150, 151, 255}
+STATUSES = {0, 10, 11, 12, 13, 14, 75, 76, 77, 150, 151, 255}
 STRINGS = ['"a"', '"b"', '"ab"', '""']
 TOKEN = re.compile(r"\\[A-Za-z]+|[A-Za-z_][A-Za-z0-9_]*|\d+|\"[^\"\n]*\"|<<|>>|\|->|==|/\\|\\/|[^\s\w]|\s+")
 
