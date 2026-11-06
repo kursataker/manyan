@@ -417,8 +417,16 @@ static Value *mk_interval(int64_t lo, int64_t hi) {
     v->kind = V_INTERVAL;
     v->u.range.lo = lo;
     v->u.range.hi = hi;
-    v->n = hi >= lo ? (int)(hi - lo + 1) : 0;
+    v->n = hi < lo ? 0 : hi - lo + 1 > INT32_MAX ? -1 : (int)(hi - lo + 1);
     return v;
+}
+
+/* The number of elements of an interval, which TLC keeps in 32 bits. */
+static int interval_size(Value *v) {
+    if (v->n < 0)
+        fail("Size of interval value exceeds the maximum representable size (32bits): %lld..%lld.",
+             (long long)v->u.range.lo, (long long)v->u.range.hi);
+    return v->n;
 }
 
 static Value *mk_lazy(int kind) {
@@ -914,7 +922,7 @@ static int veq(Value *a, Value *b) {
     }
     if (is_set(a) && is_set(b)) {
         if (a->kind == V_INTERVAL && b->kind == V_INTERVAL)
-            return a->n == b->n && (a->n == 0 || a->u.range.lo == b->u.range.lo);
+            return interval_size(a) == interval_size(b) && (a->n == 0 || a->u.range.lo == b->u.range.lo);
         if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 1;
         if (number_set(a) && number_set(b)) return 0;
         if (set_is_infinite(a) || set_is_infinite(b)) {
@@ -1048,7 +1056,7 @@ static _Noreturn void sort_error(Value *a, Value *b);
 static Value *enumerate(Value *s) {
     if (s->kind == V_SET) return s;
     if (s->kind == V_INTERVAL) {
-        Value *r = mk_set(s->n);
+        Value *r = mk_set(interval_size(s));
         for (int i = 0; i < s->n; i++) r->u.set.elems[i] = mk_int(s->u.range.lo + i);
         return r;
     }
@@ -1181,6 +1189,7 @@ static void realize_both(Value **a, Value **b) {
 /* The number of elements of a finite set, without enumerating a product of
    sets, or -1 when it is not a 32-bit int, TLC's count. */
 static int64_t set_size(Value *s) {
+    if (s->kind == V_INTERVAL) return interval_size(s);
     if (s->kind != V_LAZY || (s->lazy != L_SUBSET && s->lazy != L_FCNSET && s->lazy != L_RCDSET && s->lazy != L_TIMES))
         return enumerate(s)->n;
     int64_t n = 1, k;
@@ -4730,19 +4739,27 @@ static Def *const_operator(Def *d, Ctx c, Ctx *at) {
 typedef int (*BindFn)(Ctx c, void *data);
 
 /* The set a bound ranges over, enumerated. */
-static Value *bound_set(Bound *b, Ctx c) {
+static Value *bound_value(Bound *b, Ctx c) {
     if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
     Value *s = eval(b->set, c);
     if (!is_set(s) || user_set(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
-    return enumerate(s);
+    return s;
 }
+
+static Value *bound_set(Bound *b, Ctx c) { return enumerate(bound_value(b, c)); }
 
 /* As TLC, the sets are enumerated first, and the first variable varies
    fastest. */
 static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
     if (nb == 1 && bs[0].n == 1 && !bs[0].tuple) {
-        /* x \in S, the common case. */
-        Value *s = bound_set(&bs[0], c);
+        /* x \in S, the common case; an interval, as TLC, one by one. */
+        Value *s = bound_value(&bs[0], c);
+        if (s->kind == V_INTERVAL) {
+            for (int64_t x = s->u.range.lo; x <= s->u.range.hi; x++)
+                if (fn((Ctx){mk_binding(bs[0].defs[0], mk_int(x), c.env), c.inst}, data)) return 1;
+            return 0;
+        }
+        s = enumerate(s);
         for (int i = 0; i < s->n; i++)
             if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
         return 0;
@@ -6726,9 +6743,11 @@ static uint64_t value_hash(Value *v) {
     uint64_t sum = 0;
     switch (v->kind) {
     case V_BOOL: case V_INT: case V_STR: case V_MODEL: return elem_hash(v);
-    case V_INTERVAL:
+    case V_INTERVAL: {
+        uint64_t n = (uint64_t)interval_size(v);
         for (int64_t i = v->u.range.lo; i <= v->u.range.hi; i++) sum += fmix(atom_word(V_INT, i));
-        return fmix(sum ^ (0x05 | (uint64_t)(v->u.range.hi >= v->u.range.lo ? v->u.range.hi - v->u.range.lo + 1 : 0) << 8));
+        return fmix(sum ^ (0x05 | n << 8));
+    }
     case V_SET: case V_LAZY: {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
         Value *set = enumerate(v);

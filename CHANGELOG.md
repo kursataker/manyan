@@ -6,6 +6,10 @@ for it as its notes.
 
 ## 0.3.0
 
+- An interval of 2^31 elements or more is TLC's error ("Size of interval
+  value exceeds the maximum representable size") where its size is needed;
+  it overflowed and could exhaust memory. A quantifier over an interval
+  goes through it without making the set.
 - Under a view, a trace shows the states as TLC rebuilds them from their
   fingerprints: the first initial state with the view's value, even one
   outside the constraint, then the first successor of each.

@@ -1,0 +1,4 @@
+<<TRUE, TRUE>>
+Error: Evaluating assumption line 8, col 8 to line 8, col 23 of module interval_too_large failed.
+Size of interval value exceeds the maximum representable size (32bits): 0..2147483647.
+exit 10
