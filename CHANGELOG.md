@@ -58,6 +58,26 @@ for it as its notes.
   violated by the initial state:`; tpp checked it as a temporal property,
   and printed the symmetry warning for it (GermanProtocol and Paxos from
   tlaplus/Examples). A simulation ignores it, as TLC's does.
+- `TLCGet` of a key TLC 2.19 does not know, such as `"config"`, is TLC's
+  error that it is undefined, and of a value that is no string or
+  nonnegative integer TLC's error about its argument (DieHard and
+  FiniteMonotonic from tlaplus/Examples).
+- A constant in a temporal property is treated as TLC treats it: folded
+  through `/\` and `\/`, and, under `[]` or `<>` other than in `[]<>c` or
+  `<>[]c`, never evaluated, so its `FALSE` holds there: `<>TRUE \/ <>P`
+  is violated where `P` never holds, as TLC reports.
+- A constant constraint or action constraint is evaluated as the
+  configuration is read, as TLC does: `FALSE` is an error, and `TRUE` is
+  dropped, so it draws no warning about constraints in liveness checking.
+  That warning, and the one about symmetry, come before the assumptions
+  are checked, as in TLC (FiniteMonotonic from tlaplus/Examples). A
+  constraint whose value is a numeral, not a boolean, is named by it.
+- `TLCGet` fails while TLC starts, so a definition that uses it, such as
+  `TLCGet("level") < 3`, is evaluated in each state, not once as a
+  constant: as an invariant or constraint it was checked in no state, and
+  a search it bounds did not end (TLCGetLevel from TLC's tests). The
+  configuration's constraints are read after its properties, as TLC
+  reads them.
 - Applying a tuple written `<<...>>` outside its domain, in an initial
   state or a step, gives TLC's report that it cannot fingerprint it.
 - Fixed undefined behavior and a read past the end of an array, found by

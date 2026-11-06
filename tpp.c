@@ -1487,6 +1487,7 @@ struct Def {
     int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
     int level_checked;
     Value *cache;         /* a constant definition without parameters, once evaluated */
+    int uncached;         /* one that failed as TLC started: evaluated each time, as in TLC */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
@@ -5422,7 +5423,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     }
     if (n == 0 && !c.inst) {
         if (d->cache) return d->cache;
-        if (def_level(d) == 0 && !keep_lazy) {
+        if (def_level(d) == 0 && !keep_lazy && !d->uncached) {
             Arena *saved = arena;
             arena = &perm_arena;
             sigjmp_buf *outer = handler, here;
@@ -5675,12 +5676,22 @@ static Value *decode(const char **p);
    the state being expanded. */
 static Buf *registers;
 static int nregisters;
+static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
 
 NATIVE(n_tlcget) {
     UNUSED;
-    if (a[0]->kind == V_STR && strcmp(S(a[0]->u.i), "level") == 0) return mk_int(cur_level);
-    if (a[0]->kind != V_INT) fail_module("TLCGet(%s) is not supported.", pretty(a[0]));
-    if (a[0]->u.i < 0 || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail_module("TLCGet(%s) was undefined.", pretty(a[0]));
+    if (starting) fail_module("TLCGet is evaluated before TLC starts checking.");
+    if (a[0]->kind == V_STR) {
+        const char *key = S(a[0]->u.i);
+        if (!strcmp(key, "level")) return mk_int(cur_level);
+        static const char *const counters[] = {"diameter", "distinct", "queue", "duration"};
+        for (size_t i = 0; i < sizeof counters / sizeof *counters; i++)
+            if (!strcmp(key, counters[i])) fail_module("TLCGet(\"%s\") is not supported.", key);
+        fail_module("TLCGet(%s) was undefined.", key);
+    }
+    if (a[0]->kind != V_INT || a[0]->u.i < 0)
+        fail_module("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
+    if (a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail_module("TLCGet(%s) was undefined.", pretty(a[0]));
     const char *p = registers[a[0]->u.i].s;
     return decode(&p);
 }
@@ -6970,7 +6981,7 @@ static int check_list(Check *list, int n, Value **st) {
             Expr *body = list[i].def && list[i].def->body ? list[i].def->body : list[i].expr;
             error_reset();
             buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
-            loc_text(&error_message, body);
+            node_text(&error_message, body);
             error_status = TPP_FAILURE_EVAL;
             raise_error();
         }
@@ -8331,8 +8342,10 @@ static void evaluate_constants(Module *m) {
             materialize(v);
             d->cache = v;
         }
-        if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0 && !sigsetjmp(here, 0))
-            call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0) {
+            if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+            else d->uncached = 1;
+        }
         eval_restore(s);
     }
     arena = saved;
@@ -8596,8 +8609,9 @@ static int setup_model(void) {
         }
     order_variables();
     Expr *spec = NULL, *init = NULL, *next = NULL, *e;
-    /* TLC takes the constants, then the invariants, then the rest. */
-    for (int pass = 0; pass < 3; pass++) {
+    /* TLC takes the constants, then the invariants, then the rest but the
+       constraints, then the constraints, then the action constraints. */
+    for (int pass = 0; pass < 5; pass++) {
     if (pass == 1)
         for (int i = 0; i < root->ndecls; i++) {
             Def *d = root->decls[i];
@@ -8607,7 +8621,8 @@ static int setup_model(void) {
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
         const char *k = it->keyword;
-        if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : 2)) continue;
+        if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : strncmp(k, "CONSTRAINT", 10) == 0 ? 3
+                     : strncmp(k, "ACTION_CONSTRAINT", 17) == 0 ? 4 : 2)) continue;
         if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
@@ -8638,10 +8653,10 @@ static int setup_model(void) {
             if (config_check(e, "property")) use_property(e);
         } else if (strncmp(k, "CONSTRAINT", 10) == 0) {
             e = config_call(it->name, "constraint", 'r');
-            add_check(&constraints, &nconstraints, e->def, e, e->def->name);
+            if (config_check(e, "constraint")) add_check(&constraints, &nconstraints, e->def, e, e->def->name);
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
             e = config_call(it->name, "action constraint", 'r');
-            add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
+            if (config_check(e, "action constraint")) add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
         } else if (strcmp(k, "VIEW") == 0) view_expr = config_call(it->name, "view function", 'r');
         else if (strcmp(k, "SYMMETRY") == 0) {
             /* As TLC: an undefined name is reported, any other error as no set of functions. */
@@ -8705,6 +8720,13 @@ static TF **atoms;
 static int natoms;
 
 static TF *tf_new(int op, TF *a, TF *b) {
+    if (op == TF_AND || op == TF_OR) {   /* TLC simplifies a junction with a constant */
+        int unit = op == TF_AND ? TF_TRUE : TF_FALSE;
+        if (a->op == unit) return b;
+        if (b->op == unit) return a;
+        if (a->op == TF_TRUE + TF_FALSE - unit) return a;
+        if (b->op == TF_TRUE + TF_FALSE - unit) return b;
+    }
     TF *t = NEW(TF);
     t->op = op; t->a = a; t->b = b;
     if (op == TF_EVENTUALLY) {
@@ -9468,6 +9490,24 @@ static int check_property(TF *negated) {
     return 0;
 }
 
+/* TLC checks []<>c and <>[]c, joined at the top, without its tableau;
+   in the tableau a constant is never evaluated, so FALSE there is TRUE. */
+static TF *tableau_constants(TF *t, int top) {
+    switch (t->op) {
+    case TF_FALSE: return top ? t : tf_new(TF_TRUE, NULL, NULL);
+    case TF_AND: case TF_OR:
+        t->a = tableau_constants(t->a, top);
+        t->b = tableau_constants(t->b, top);
+        return t;
+    case TF_ALWAYS: case TF_EVENTUALLY:
+        if (top && (t->a->op == TF_ALWAYS || t->a->op == TF_EVENTUALLY) && t->a->op != t->op &&
+            (t->a->a->op == TF_TRUE || t->a->a->op == TF_FALSE)) return t;
+        t->a = tableau_constants(t->a, 0);
+        return t;
+    default: return t;
+    }
+}
+
 static void collect_fairnesses(void) {
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
 }
@@ -9487,7 +9527,7 @@ static int live_violated(void) {
         free(pnode_table);
         pnode_table = NULL;
         pnode_size = 0;
-        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
+        TF *neg = tableau_constants(to_tf(temporal_props[p].expr, root_ctx, 1), 1);
         free(state_atom_cache);
         state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
         if (check_property(neg)) return 1;
@@ -9613,10 +9653,22 @@ int tpp_check(const TPPOptions *o) {
         }
     }
     bind_natives();
+    starting = 1;
     read_config(config_text, 0);
     setup_model();
 
     for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);
+    starting = 0;
+    if (!o->simulate && !nowarning && ntemporal_props) {   /* as TLC's checker starts, before the assumptions */
+        if (nsymmetry)
+            warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
+                    "violations of the stated liveness properties. Please check liveness without symmetry defined.");
+        if (nconstraints || naction_constraints)
+            warning("Declaring state or action constraints during liveness checking is dangerous: "
+                    "Please read section 14.3.5 on page 247 of Specifying Systems "
+                    "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
+                    "https://discuss.tlapl.us/msg00994.html for more details.");
+    }
     int status = 0;
     for (int i = 0; i < nmodules && !status; i++) {
         Module *m = modules[i];
@@ -9655,16 +9707,6 @@ int tpp_check(const TPPOptions *o) {
     }
     nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
     status = check_temporal_forms(o->simulate);
-    if (!status && !o->simulate && !nowarning && ntemporal_props) {
-        if (nsymmetry)
-            warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
-                    "violations of the stated liveness properties. Please check liveness without symmetry defined.");
-        if (nconstraints || naction_constraints)
-            warning("Declaring state or action constraints during liveness checking is dangerous: "
-                    "Please read section 14.3.5 on page 247 of Specifying Systems "
-                    "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
-                    "https://discuss.tlapl.us/msg00994.html for more details.");
-    }
     if (!status) status = o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();

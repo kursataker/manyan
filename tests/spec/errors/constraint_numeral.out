@@ -1,0 +1,6 @@
+Error: TLC expected a boolean value, but did not find one. 3
+While working on the initial state:
+x = 0
+
+1 states generated, 0 distinct states found, 0 states left on queue.
+exit 75

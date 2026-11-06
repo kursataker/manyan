@@ -526,7 +526,10 @@ the sets in it, so an infinite `S \cup T` or `S \ T` is an error there.
 `Any` is the set of every value; it prints as `ANY`. `TLCSet(i, v)`, for
 a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 `TLCGet(i)` yields it, and is an error when nothing was kept;
-`TLCGet("level")` is the depth of the current state.
+`TLCGet("level")` is the depth of the current state. `TLCGet` fails while the
+model is read, before the assumptions are checked, as TLC's does before
+its checker exists: a definition that uses it is not evaluated once as a
+constant, but each time it is used.
 
 ## 9 Model configuration
 
@@ -642,8 +645,14 @@ without parameters (`I!Spec`); a part of several is named in messages by
 its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
 violated.` A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
-B` is `(p /\ A) \/ (~p /\ B)`. Liveness checking with a `CONSTRAINT` or
-`ACTION_CONSTRAINT` first prints TLC's warning, `Warning: Declaring state
+B` is `(p /\ A) \/ (~p /\ B)`. As TLC checks the negation of a property,
+a constant in it is folded through `/\` and `\/`; `[]<>c` and `<>[]c`
+joined at its top by them are checked with `c`'s value, but a constant
+under any other `[]` or `<>` is in TLC's tableau, which never evaluates
+it: `FALSE` there holds, so `<>TRUE \/ <>(x = 1)` is violated by a
+behavior in which `x` is never 1. Liveness checking with a `CONSTRAINT` or
+`ACTION_CONSTRAINT` prints TLC's warning, after the constant definitions
+are evaluated and before the assumptions, `Warning: Declaring state
 or action constraints during liveness checking is dangerous: …`, and with a
 `SYMMETRY`, before it, `Warning: Declaring symmetry during liveness
 checking is dangerous. …`; a simulation does not. Only the first warning of
@@ -800,7 +809,7 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), `FALSE` folded through `/\`, `\/` and `<>` but not `[]`, in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | an invariant with primes or temporal operators, checked before the configuration's other names | `Error: The invariant Inv is not a state predicate (one with no primes or temporal operators).` | 76 |
-| a constant invariant or property, other than a literal, that is not `TRUE` (one that is is dropped); constant as TLC bounds levels, every argument of a call counting, used or not | `Error: The invariant of Inv is equal to v`, `property` for a property | 151 |
+| a constant invariant, property, constraint or action constraint, other than a literal, that is not `TRUE` (one that is is dropped); constant as TLC bounds levels, every argument of a call counting, used or not | `Error: The invariant of Inv is equal to v`, `property`, `constraint` or `action constraint` for the others | 151 |
 | a temporal formula evaluated as a predicate or action | `Error: TLC encountered a temporal formula ([]A) when evaluating a predicate or action.`, the operator as `[]A`, `<>A`, `a ~> b`, `a -+-> formula`, `WF`, `SF`, `\EE` or `\AA` | 75 |
 | action composition `A \cdot B` | `The current version of TLC does not support action composition.` | 75 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |
