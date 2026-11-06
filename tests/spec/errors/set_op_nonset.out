@@ -1,0 +1,10 @@
+Error: Evaluating assumption line 7, col 8 to line 7, col 25 of module set_op_nonset failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLC.PrintT(tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to enumerate S \cup T when S:
+{1}
+and T:
+1
+are not both enumerable
+exit 10

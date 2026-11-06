@@ -1,0 +1,16 @@
+Error: Attempted to check equality of integer 0 with non-integer:
+"s"
+While working on the initial state:
+x = 0
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0) line 12, col 18 to line 12, col 24 of module error_initial_then_invariant
+
+Reason:
+Attempted to enumerate S \ T when S:
+0
+is not enumerable.
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

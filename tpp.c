@@ -222,10 +222,19 @@ static int error_module;
    TLC wraps any error inside one, but an EvalException, in a preamble. */
 static const char *java_frames[64];
 static int java_depth;
-/* The function constructors being computed in full, outermost first: an
-   error raised inside one is one TLC cannot fingerprint (§11.3). */
+/* The values TLC made with a source being worked on, outermost first: the
+   function constructors computed in full, and set operations it keeps as
+   their definitions. An error raised inside one is one TLC cannot
+   fingerprint (§11.3). */
 static Expr *fp_trace[64];
 static int fp_depth;
+
+static void fp_enter(Expr *where) {
+    if (!where) return;
+    if (fp_depth < 64) fp_trace[fp_depth] = where;
+    fp_depth++;
+}
+static void fp_leave(Expr *where) { fp_depth -= where != NULL; }
 
 static void error_reset(void) {
     error_message.n = 0;
@@ -335,8 +344,8 @@ struct Value {
            stored */
         /* hash: the sum of the elements' or pairs' hashes, once known; else 0 */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
-        struct { Value *a, *b; union { Value **names; Value *cup; }; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
-        /* cup: an L_CUP's elements, once enumerated */
+        struct { Value *a, *b; union { Value **names; Value *set; }; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
+        /* set: an L_CUP, L_CAP or L_DIFF's elements, once enumerated */
         /* V_LAMBDA: [x \in a |-> expr] in env, with b for @, then n EXCEPT pairs (key, value);
            made_in: in a simulation, the current and next state it was made in */
         struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
@@ -480,6 +489,16 @@ static int set_is_infinite(Value *s);
 static int64_t set_size(Value *s);
 static Value *enumerate(Value *s);
 static int kinds_differ(Value *a, Value *b);
+static int enumerable(Value *s);
+static Value *select_members(Value *s, Value *t, int in);
+
+/* Whether TLC enumerates S \cup T, S \cap T or S \ T it keeps as its
+   definition, printing it. */
+static int set_op_enumerable(Value *v) {
+    Value *a = v->u.l.a, *b = v->u.l.b;
+    if (v->lazy == L_CUP) return enumerable(a) && enumerable(b) && !kinds_differ(enumerate(a), enumerate(b));
+    return enumerable(a) || (v->lazy == L_CAP && enumerable(b));
+}
 
 /* A lazy set TLC prints by its elements; others it prints as written. */
 static int expandable(Value *v) {
@@ -539,11 +558,7 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_ANY) { buf_puts(b, "ANY"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
         if (v->lazy == L_UNION) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
-        if (v->lazy == L_CUP && !set_is_infinite(v) && !kinds_differ(enumerate(v->u.l.a), enumerate(v->u.l.b))) {
-            print_value(b, enumerate(v));
-            return;
-        }
-        if (v->lazy >= L_CUP) {
+        if (v->lazy >= L_CUP && !set_op_enumerable(v)) {
             print_value(b, v->u.l.a);
             buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
             print_value(b, v->u.l.b);
@@ -1079,19 +1094,6 @@ static Value *enumerate(Value *s) {
         if (!s->perm || arena == &perm_arena) s->u.l.b = set;
         return set;
     }
-    case L_CUP: {
-        /* TLC makes S \cup T from whichever of them is enumerated. */
-        Value *a = s->u.l.a, *b = s->u.l.b;
-        if (!set_is_infinite(a) && !set_is_infinite(b)) {
-            if (s->u.l.cup) return s->u.l.cup;
-            if (kinds_differ(enumerate(a), enumerate(b))) sort_error(a, b);
-            Value *set = cup_merge(a, b);
-            if (!s->perm || arena == &perm_arena) s->u.l.cup = set;
-            return set;
-        }
-        if (a->kind == V_LAZY && b->kind != V_LAZY) { Value *t = a; a = b; b = t; }
-        fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
-    }
     case L_UNION:
         /* As TLC: each element enumerated, unless it is a set it defines. */
         s->u.l.a = set_normalize(s->u.l.a);
@@ -1103,10 +1105,28 @@ static Value *enumerate(Value *s) {
             for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
         }
         return list_set(&l);
-    case L_CAP:
-        fail("Attempted to enumerate S \\cap T when neither S:\n%s\nnor T:\n%s\nis enumerable", pretty(s->u.l.a), pretty(s->u.l.b));
-    case L_DIFF:
-        fail("Attempted to enumerate S \\ T when S:\n%s\nis not enumerable.", pretty(s->u.l.a));
+    case L_CUP: case L_CAP: case L_DIFF: {
+        /* As TLC: S \cup T of both, S \cap T of an enumerable one, S \ T of S. */
+        if (s->u.l.set) return s->u.l.set;
+        Value *a = s->u.l.a, *b = s->u.l.b, *set;
+        fp_enter(s->u.l.expr);
+        if (s->lazy == L_CUP) {
+            if (!enumerable(a) || !enumerable(b))
+                fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
+            if (kinds_differ(enumerate(a), enumerate(b))) sort_error(a, b);
+            set = cup_merge(a, b);
+        } else if (s->lazy == L_CAP) {
+            if (enumerable(a)) set = select_members(a, b, 1);
+            else if (enumerable(b)) set = select_members(b, a, 1);
+            else fail("Attempted to enumerate S \\cap T when neither S:\n%s\nnor T:\n%s\nis enumerable", pretty(a), pretty(b));
+        } else {
+            if (!enumerable(a)) fail("Attempted to enumerate S \\ T when S:\n%s\nis not enumerable.", pretty(a));
+            set = select_members(a, b, 0);
+        }
+        fp_leave(s->u.l.expr);
+        if (!s->perm || arena == &perm_arena) s->u.l.set = set;
+        return set;
+    }
     default:
         fail("TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
     }
@@ -1248,9 +1268,13 @@ static int set_member(Value *v, Value *s) {
             s->u.l.a = set_normalize(s->u.l.a);
             for (int i = 0; i < s->u.l.a->n; i++) if (set_member(v, s->u.l.a->u.set.elems[i])) return 1;
             return 0;
-        case L_CUP: return set_member(v, s->u.l.a) || set_member(v, s->u.l.b);
-        case L_CAP: return set_member(v, s->u.l.a) && set_member(v, s->u.l.b);
-        case L_DIFF: return set_member(v, s->u.l.a) && !set_member(v, s->u.l.b);
+        case L_CUP: case L_CAP: case L_DIFF: {
+            fp_enter(s->u.l.expr);
+            int in = set_member(v, s->u.l.a);
+            if (s->lazy == L_CUP ? !in : in) in = set_member(v, s->u.l.b) == (s->lazy != L_DIFF);
+            fp_leave(s->u.l.expr);
+            return in;
+        }
         }
         return 0;
     default:
@@ -1363,25 +1387,26 @@ static Value *set_union(Value *a, Value *b) {
     return reducible(b) ? lazy_op(L_CUP, b, a) : lazy_op(L_CUP, a, b);
 }
 
-static Value *set_inter(Value *a, Value *b) {
-    if (set_is_infinite(a)) {
-        if (set_is_infinite(b)) return lazy_op(L_CAP, a, b);
-        Value *t = a; a = b; b = t;
-    }
-    int hold = !reducible(a) && !reducible(b);
-    a = enumerate(a);
+static int enumerable(Value *s) { return is_set(s) && !set_is_infinite(s); }
+
+/* The elements of s that are in t, or not. */
+static Value *select_members(Value *s, Value *t, int in) {
+    s = enumerate(s);
     List l = {0};
-    for (int i = 0; i < a->n; i++) if (set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
-    return hold ? held(list_set(&l)) : list_set(&l);
+    for (int i = 0; i < s->n; i++) if (set_member(s->u.set.elems[i], t) == in) list_add(&l, s->u.set.elems[i]);
+    return list_set(&l);
+}
+
+/* As TLC: S \cap T and S \ T of an enumerated set are its elements in T,
+   or not; others are kept as their definitions. */
+static Value *set_inter(Value *a, Value *b) {
+    if (reducible(a)) return select_members(a, b, 1);
+    if (reducible(b)) return select_members(b, a, 1);
+    return lazy_op(L_CAP, a, b);
 }
 
 static Value *set_minus(Value *a, Value *b) {
-    if (set_is_infinite(a)) return lazy_op(L_DIFF, a, b);
-    int hold = !reducible(a);
-    a = enumerate(a);
-    List l = {0};
-    for (int i = 0; i < a->n; i++) if (!set_member(a->u.set.elems[i], b)) list_add(&l, a->u.set.elems[i]);
-    return hold ? held(list_set(&l)) : list_set(&l);
+    return reducible(a) ? select_members(a, b, 0) : lazy_op(L_DIFF, a, b);
 }
 
 /* ---------------------------------------------------------------- functions */
@@ -1420,10 +1445,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     int i = fcn_index(f, a);
     if (i >= 0) return f->u.fcn.vals[i];
     if (f->kind == V_TUPLE) {
-        if (f->u.fcn.source) {   /* TLC cannot fingerprint the tuple */
-            if (fp_depth < 64) fp_trace[fp_depth] = f->u.fcn.source;
-            fp_depth++;
-        }
+        fp_enter(f->u.fcn.source);   /* TLC cannot fingerprint the tuple */
         if (a->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument.");
         fail("Attempted to apply tuple\n%s\nto integer %lld which is out of domain.", pretty(f), (long long)a->u.i);
     }
@@ -4777,8 +4799,7 @@ static Value *fcndef_apply(Def *d, Value *a, Ctx c) {
 /* [x \in S |-> e], or the function definition d, computed in full over
    dom; an error meanwhile is one TLC cannot fingerprint at `where`. */
 static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
-    if (fp_depth < 64) fp_trace[fp_depth] = where;
-    fp_depth++;
+    fp_enter(where);
     dom = enumerate(dom);
     Value *f = mk_fcn(dom->n);
     memcpy(f->u.fcn.keys, dom->u.set.elems, sizeof(Value *) * (size_t)dom->n);
@@ -4790,7 +4811,7 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
         f->u.fcn.vals[i] = d ? fcndef_apply(d, k, c)
                              : eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, k, c.env, e), c.inst});
     }
-    fp_depth--;
+    fp_leave(where);
     if (!dom->n) f->empty_fcn = 1;
     if (!d) f->made = params ? MADE_PARAMS : MADE_LAMBDA;
     return f;
@@ -5004,13 +5025,9 @@ static __attribute__((noinline)) Value *ev_cup(Expr *e, Ctx c) {
         if (!is_set(a) || user_set(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
         return BOOLV(all_members(a, b));
     }
-    if (!is_set(a) || !is_set(b))
-        fail_at(e, "Attempted to apply a set operator to the non-set:\n%s", pretty(is_set(a) ? b : a));
-    switch (e->kind) {
-    case K_CUP: return set_union(a, b);
-    case K_CAP: return set_inter(a, b);
-    default: return set_minus(a, b);
-    }
+    Value *r = e->kind == K_CUP ? set_union(a, b) : e->kind == K_CAP ? set_inter(a, b) : set_minus(a, b);
+    if (r != a && r != b && r->kind == V_LAZY && r->lazy >= L_CUP) r->u.l.expr = e;   /* its source */
+    return r;
 }
 
 static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
@@ -7802,7 +7819,8 @@ static int search(void) {
                 print_state(error_state);
                 printf("\n");
             }
-            replay_error(NULL);
+            /* After an error in a property TLC went on as it replays Init. */
+            if (!live_init_failed) replay_error(NULL);
             print_unfingerprinted(fps, nfp);
             print_counts(nstates, 0);
             return status;

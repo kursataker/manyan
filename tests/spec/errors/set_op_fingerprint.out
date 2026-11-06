@@ -1,0 +1,27 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to enumerate S \cap T when neither S:
+0
+nor T:
+Nat
+is enumerable
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0) line 8, col 19 to line 8, col 28 of module set_op_fingerprint
+
+Reason:
+Attempted to enumerate S \cap T when neither S:
+0
+nor T:
+Nat
+is enumerable
+1 states generated, 1 distinct states found, 0 states left on queue.
+exit 75

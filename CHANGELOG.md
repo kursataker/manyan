@@ -110,6 +110,14 @@ for it as its notes.
   syntax error (a byte capture from omi-tlaplus-definitions), a `CASE` of
   more than 127 arms lost the others, and more than 32 bound names
   overran the parser's stack.
+- `S \cup T`, `S \cap T` and `S \ T` of a value that is not a set fail
+  only where TLC fails, enumerating the result or looking in it, with
+  TLC's messages; tpp failed at once, with a message of its own. Kept as
+  their definitions, they are values TLC cannot fingerprint when it
+  replays a step or `Init`.
+- After an error in a property on an initial state, the invariant is
+  checked as TLC checks it replaying `Init`, and its error reported once
+  (CBCCasperSpec from Isaac-DeFrain/TLAplusFun).
 - Several constants without a value, or substituted by undefined names,
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before
