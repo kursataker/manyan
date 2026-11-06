@@ -2702,6 +2702,8 @@ static Def *parse_definition(int local) {
         Tok *start = peek();
         next();
         Def *inst = parse_instance(start, d->name);
+        inst->where->l1 = d->where->l1;   /* the statement, from the name */
+        inst->where->c1 = d->where->c1;
         inst->nparams = np;
         inst->params = d->params;
         inst->local = local;
@@ -2749,6 +2751,7 @@ static Def *parse_instance(Tok *start, int name) {
     d->subst_expr = NEWN(Expr *, n);
     memcpy(d->subst_decl, decls, sizeof(Def *) * (size_t)n);
     memcpy(d->subst_expr, exprs, sizeof(Expr *) * (size_t)n);
+    finish(d->where);
     return d;
 }
 
@@ -6048,10 +6051,23 @@ static void split_action(Expr *e, Ctx c, int name) {
         split_action(d->body, (Ctx){env, c.inst}, d->name);
         return;
     }
-    case K_INSTCALL:
+    case K_INSTCALL: {
         if (e->def->kind != D_OP || e->def->native) break;
-        split_action(e->def->body, instance_ctx(e, c), e->def->name);
+        /* As TLC, a definition seen through an instance that substitutes is
+           one action, named I!A and located at the INSTANCE statement. */
+        Buf b = {0};
+        Def *in = NULL;
+        for (int i = 0; i < e->ndefs; i++) {
+            if (!in && e->defs[i]->nsubst) in = e->defs[i];
+            if (e->defs[i]->name) buf_printf(&b, "%s!", S(e->defs[i]->name));
+        }
+        buf_puts(&b, S(e->def->name));
+        int qualified = intern(b.s);
+        free(b.s);
+        if (in) { add_action(e, c, qualified, in->where); return; }
+        split_action(e->def->body, instance_ctx(e, c), qualified);
         return;
+    }
     default:
         break;
     }
@@ -7759,21 +7775,26 @@ static void parse_config(const char *text) {
 
 static Sym *root_sym(int name) { return module_lookup(root, name); }
 
-static Expr *call_expr(Def *d) {
+/* A call of the definition the configuration names, through the instances
+   it is reached by. */
+static Expr *config_call(int name, const char *what, const char *role) {
+    Sym *s = root_sym(name);
+    if (!s || (s->def->kind != D_OP && s->def->kind != D_FCN))
+        config_error("The %s %s specified in the configuration file\nis not defined in the specification.", what, S(name));
+    if (s->def->nparams) config_error("TLC requires the %s %s to take no arguments.", role, S(name));
+    Def *d = s->def;
     Expr *e = NEW(Expr);
     e->kind = K_CALL;
     e->def = d;
     e->mod = d->mod;
     if (d->where) { e->l1 = d->where->l1; e->c1 = d->where->c1; e->l2 = d->where->l2; e->c2 = d->where->c2; }
+    if (s->npath) {
+        e->kind = K_INSTCALL;
+        e->defs = s->path;
+        e->ndefs = e->nseg = s->npath;
+        e->segs = NEWN(Seg, s->npath);
+    }
     return e;
-}
-
-static Def *config_def(int name, const char *what, const char *role) {
-    Sym *s = root_sym(name);
-    if (!s || (s->def->kind != D_OP && s->def->kind != D_FCN))
-        config_error("The %s %s specified in the configuration file\nis not defined in the specification.", what, S(name));
-    if (s->def->nparams) config_error("TLC requires the %s %s to take no arguments.", role, S(name));
-    return s->def;
 }
 
 /* The body of a definition with no parameters, or the expression. */
@@ -7819,10 +7840,10 @@ static Expr *conjoin(Expr **parts, int n) {
 }
 
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
-static void use_specification(Def *spec) {
-    Expr **parts = NULL, *call = NULL, *body = unfold(spec->body);
+static void use_specification(Expr *spec) {
+    Expr **parts = NULL, *call = spec->kind == K_INSTCALL ? spec : NULL, *body = unfold(spec->def->body);
     int n = 0;
-    if (body->kind == K_INSTCALL && body->n == 0 && body->def->kind == D_OP && !body->def->native) {
+    if (!call && body->kind == K_INSTCALL && body->n == 0 && body->def->kind == D_OP && !body->def->native) {
         /* A specification of an instance: Spec == I!Spec. TLC finds none in
            an instance with parameters, IM(y)!Spec. */
         int plain = 1;
@@ -7856,18 +7877,19 @@ static void use_specification(Def *spec) {
 
 /* A property: []P as an invariant, [][A]_v as an action property, the
    rest checked on the state graph (§10.5). */
-static void use_property(Def *d) {
-    Expr **parts = NULL;
+static void use_property(Expr *p) {
+    Def *d = p->def;
+    Expr **parts = NULL, *call = p->kind == K_INSTCALL ? p : NULL;
     int n = 0;
     conjuncts(d->body, &parts, &n);
     for (int i = 0; i < n; i++) {
         Expr *e = parts[i];
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
-            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, body, d->name); continue; }
-            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, body, d->name); continue; }
+            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), d->name); continue; }
+            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), d->name); continue; }
         }
-        add_check(&temporal_props, &ntemporal_props, d, e, d->name);
+        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), d->name);
     }
     free(parts);
 }
@@ -8092,7 +8114,7 @@ static int setup_model(void) {
             vars[nvars++] = root->decls[i];
         }
     order_variables();
-    Def *spec = NULL, *init = NULL, *next = NULL;
+    Expr *spec = NULL, *init = NULL, *next = NULL, *e;
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
         const char *k = S(it->keyword);
@@ -8107,23 +8129,22 @@ static int setup_model(void) {
                 if (!t) config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(it->name), S(it->target));
                 d->replacement = t->def;
             }
-        } else if (strcmp(k, "INIT") == 0) init = config_def(it->name, "initial predicate", "initial predicate");
-        else if (strcmp(k, "NEXT") == 0) next = config_def(it->name, "next state action", "next-state action");
-        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_def(it->name, "specification", "specification");
+        } else if (strcmp(k, "INIT") == 0) init = config_call(it->name, "initial predicate", "initial predicate");
+        else if (strcmp(k, "NEXT") == 0) next = config_call(it->name, "next state action", "next-state action");
+        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "specification", "specification");
         else if (strncmp(k, "INVARIANT", 9) == 0) {
-            Def *d = config_def(it->name, "invariant", "invariant");
-            add_check(&invariants, &ninvariants, d, call_expr(d), d->name);
-        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_def(it->name, "property", "property"));
+            e = config_call(it->name, "invariant", "invariant");
+            add_check(&invariants, &ninvariants, e->def, e, e->def->name);
+        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_call(it->name, "property", "property"));
         else if (strncmp(k, "CONSTRAINT", 10) == 0) {
-            Def *d = config_def(it->name, "constraint", "constraint");
-            add_check(&constraints, &nconstraints, d, call_expr(d), d->name);
+            e = config_call(it->name, "constraint", "constraint");
+            add_check(&constraints, &nconstraints, e->def, e, e->def->name);
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
-            Def *d = config_def(it->name, "action constraint", "action constraint");
-            add_check(&action_constraints, &naction_constraints, d, call_expr(d), d->name);
-        } else if (strcmp(k, "VIEW") == 0) view_expr = call_expr(config_def(it->name, "view", "view"));
+            e = config_call(it->name, "action constraint", "action constraint");
+            add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
+        } else if (strcmp(k, "VIEW") == 0) view_expr = config_call(it->name, "view", "view");
         else if (strcmp(k, "SYMMETRY") == 0) {
-            Def *d = config_def(it->name, "symmetry", "symmetry");
-            Value *s = permutation_group(enumerate(eval(call_expr(d), root_ctx)));
+            Value *s = permutation_group(enumerate(eval(config_call(it->name, "symmetry", "symmetry"), root_ctx)));
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
@@ -8137,8 +8158,8 @@ static int setup_model(void) {
     }
     if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
     if (spec) use_specification(spec);
-    if (init) init_expr = call_expr(init);
-    if (next) next_expr = call_expr(next);
+    if (init) init_expr = init;
+    if (next) next_expr = next;
     return 0;
 }
 
@@ -8424,7 +8445,7 @@ static Successors *real_successors(int s) {
     Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
     int (*saved_emit)(void) = gen_emit;
     Value **st = NEWN(Value *, nvars);
-    real_found.n = 0;
+    real_found = (List){0};   /* its storage is the arena's, which a simulation resets */
     gen_emit = real_emit;
     gen_target = st;
     cur_state = state_values(s);
@@ -9091,7 +9112,7 @@ int tpp_check(const TPPOptions *o) {
         print_error_message();
         return TPP_FAILURE_EVAL;
     }
-    split_action(next_expr, root_ctx, next_expr->kind == K_CALL ? next_expr->def->name : intern("Next"));
+    split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Next"));
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
