@@ -160,6 +160,12 @@ for it as its notes.
   that is itself substituted for, sides with different numbers of
   arguments (tpp crashed applying one), a module the specification does
   not have, and an undefined name or missing operator in `<- [M]`.
+- Definitions that refer to each other forever, as a substitution such
+  as `Init <- ReDefInit` can make them, are TLC's StackOverflowError;
+  tpp crashed reading the specification or splitting the next-state
+  action into actions.
+- A constant view is TLC's error, and "1 state generated, with 0 of them
+  distinct" is singular, as TLC prints it.
 
 ## 0.2.0
 

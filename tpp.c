@@ -219,6 +219,7 @@ static int error_status;   /* the exit status the error implies */
    EvalException of a standard module's operator; 2, a TLCRuntimeException,
    with the exit status of its error code. */
 static int error_module;
+static int overflowed;        /* the error is TLC's StackOverflowError */
 /* The Java methods of the standard operators being applied, innermost last.
    TLC wraps any error inside one, but an EvalException, in a preamble. */
 static const char *java_frames[64];
@@ -243,6 +244,7 @@ static void error_reset(void) {
     error_expr = NULL;
     error_status = TPP_ERROR;
     error_module = 0;
+    overflowed = 0;
 }
 
 static _Noreturn void raise_error(void) {
@@ -4351,9 +4353,22 @@ static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to appl
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
 
-/* The body of a definition: only calls nest without bound. */
+/* A definition's body is entered: only calls nest without bound. Past
+   the bound, TLC's Java stack has overflowed. */
+static void deeper(void) {
+    if (++eval_depth <= 5000) return;
+    eval_depth = 0;
+    error_reset();
+    buf_puts(&error_message, "This was a Java StackOverflowError. It was probably the result\n"
+             "of an incorrect recursive function definition that caused TLC to enter\n"
+             "an infinite loop when trying to compute the function or its application\n"
+             "to an element in its putative domain.");
+    overflowed = 1;
+    raise_error();
+}
+
 static Value *eval_body(Expr *body, Ctx c) {
-    if (++eval_depth > 5000) { eval_depth = 0; fail_at(body, "The evaluation nested too deeply (infinite recursion?)."); }
+    deeper();
     Value *v = eval(body, c);
     eval_depth--;
     return v;
@@ -6346,7 +6361,10 @@ static int gen(Expr *e, Ctx c, Cont *k) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
             else env = mk_arg(d->params[i], e->args[i], c, env);
         }
-        return gen(d->body, (Ctx){env, c.inst}, k);
+        deeper();
+        int r = gen(d->body, (Ctx){env, c.inst}, k);
+        eval_depth--;
+        return r;
     }
     case K_PARAMCALL: {
         /* A constant operator that stands for a definition is a call of it. */
@@ -6537,7 +6555,9 @@ static void split_action(Expr *e, Ctx c, int name) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
             else env = mk_arg(d->params[i], e->args[i], c, env);
         }
+        deeper();
         split_action(d->body, (Ctx){env, c.inst}, d->name);
+        eval_depth--;
         return;
     }
     case K_INSTCALL: {
@@ -7171,11 +7191,11 @@ static void print_counts(int queued, int with_depth) {
 }
 
 /* TLC's report of a Java exception, up to its message. */
-static void print_exception(const char *cls) {
+static void print_exception(const char *cls, const char *then) {
     printf("Error: TLC threw an unexpected exception.\n"
            "This was probably caused by an error in the spec or model.\n"
            "See the User Output or TLC Console for clues to what happened.\n"
-           "The exception was a %s\n: ", cls);
+           "The exception was a %s\n%s", cls, then);
 }
 
 static void print_error_message(void) {
@@ -7841,6 +7861,7 @@ static int search(void) {
     if (sigsetjmp(here, 0)) {
         handler = NULL;
         int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
+        int over = overflowed;   /* TLC's StackOverflowError, with an empty call stack */
         int nfp = fp_depth < 64 ? fp_depth : 64;
         Expr *fps[64];
         memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
@@ -7854,9 +7875,14 @@ static int search(void) {
             }
             /* After an error in a property TLC went on as it replays Init. */
             if (!live_init_failed) replay_error(NULL);
-            print_unfingerprinted(fps, nfp);
+            if (!over) print_unfingerprinted(fps, nfp);
             print_counts(nstates, 0);
             return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
+        }
+        if (over) {   /* TLC prints its Java stack */
+            print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
+            print_counts(nstates - expanded - checking_invariant(), checking_invariant());
+            return checking_invariant() ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking_invariant()) {
             /* An invariant of a new state failed to evaluate. */
@@ -7869,7 +7895,7 @@ static int search(void) {
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
         if (status == TPP_FAILURE_EVAL && error_module != 1)
-            print_exception("java.lang.RuntimeException");
+            print_exception("java.lang.RuntimeException", ": ");
         else
             printf("Error: ");
         print_error_text();
@@ -7899,7 +7925,7 @@ static int search(void) {
     if (generated == nstates)
         printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
     else
-        printf("Finished computing initial states: %ld states generated, with %d of them distinct.\n", generated, nstates);
+        printf("Finished computing initial states: %ld state%s generated, with %d of them distinct.\n", generated, generated == 1 ? "" : "s", nstates);
     fflush(stdout);
     if (!next_expr) {
         printf("Error: No next state actions defined to generate successor states from.\n");
@@ -8055,7 +8081,7 @@ static void sim_exception(void) {
         print_error_text();
         return;
     }
-    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException");
+    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
     print_error_text();
 }
 
@@ -8199,7 +8225,7 @@ static int simulate(const TPPOptions *o) {
                         printf("Error: Successor state is not completely specified by the next-state action.\n\n");
                         if (!sim_print(&trace)) return TPP_ERROR;
                         printf("\n");
-                        print_exception("java.lang.NullPointerException");
+                        print_exception("java.lang.NullPointerException", ": ");
                         printf("Cannot invoke \"tlc2.value.IValue.fingerPrint(long)\" because \"minVals[i]\" is null\n");
                         return TPP_ERROR;
                     }
@@ -8252,7 +8278,7 @@ typedef struct { const char *s; int pos, line, tline; } CfgLexer;
 
 /* A configuration TLC cannot read: its ConfigFileException. */
 static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
-    print_exception("tlc2.tool.ConfigFileException");
+    print_exception("tlc2.tool.ConfigFileException", ": ");
     printf("TLC found an error in the configuration file at line %d\n", L->tline);
     va_list ap;
     va_start(ap, fmt);
@@ -8466,7 +8492,7 @@ static Expr *config_call(int name, const char *what, int args) {
 
 /* The body of a definition with no parameters, or the expression. */
 static Expr *unfold(Expr *e) {
-    while (e->kind == K_CALL && e->n == 0) {
+    for (int i = 0; i < 5000 && e->kind == K_CALL && e->n == 0; i++) {   /* a cycle by substitution is left to fail */
         Def *d = e->def->replacement ? e->def->replacement : e->def;   /* Init <- MCInit */
         if (d->kind != D_OP || d->native || d->nparams) break;
         e = d->body;
@@ -8518,8 +8544,10 @@ static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
         return;
     }
     e = unfold(e);
-    if (e->kind == K_AND) {
+    if (e->kind == K_AND && eval_depth < 5000) {   /* as unfold */
+        eval_depth++;
         for (int i = 0; i < e->n; i++) conjuncts(e->args[i], call, out, n, spec);
+        eval_depth--;
         return;
     }
     if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
@@ -8915,7 +8943,7 @@ static Def **tlc_constants(int *n) {
 /* Whether the configuration substitutes for name, in module (0: the root). */
 static int substituted(int name, int module) {
     for (int i = 0; i < ncfg; i++)
-        if (cfg[i].op != '=' && cfg[i].name == name && cfg[i].module == module) return 1;
+        if (cfg[i].op == '<' && cfg[i].name == name && cfg[i].module == module) return 1;
     return 0;
 }
 
@@ -9004,7 +9032,10 @@ static int setup_model(void) {
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
             e = config_call(it->name, "action constraint", 'r');
             if (config_check(e, "action constraint")) add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
-        } else if (strcmp(k, "VIEW") == 0) view_expr = config_call(it->name, "view function", 'r');
+        } else if (strcmp(k, "VIEW") == 0) {
+            view_expr = config_call(it->name, "view function", 'r');
+            if (!literal_def(view_expr) && constant_value(view_expr)) config_error("The view function %s cannot be a constant.", S(it->name));
+        }
         else if (strcmp(k, "SYMMETRY") == 0) {
             /* As TLC: an undefined name is reported, any other error as no set of functions. */
             sigjmp_buf here;
@@ -9012,7 +9043,7 @@ static int setup_model(void) {
             if (sigsetjmp(here, 0)) {
                 handler = NULL;
                 if (error_status == TPP_ERROR_CONFIG) { print_error_message(); exit(TPP_ERROR_CONFIG); }
-                print_exception("java.lang.RuntimeException");
+                print_exception("java.lang.RuntimeException", ": ");
                 printf("The symmetry operator must specify a set of functions.\n");
                 exit(TPP_ERROR);
             }
@@ -9020,7 +9051,7 @@ static int setup_model(void) {
             handler = NULL;
             for (int j = 0; j < g->n; j++)
                 if (!is_fcn(realize(g->u.set.elems[j]))) {
-                    print_exception("java.lang.RuntimeException");
+                    print_exception("java.lang.RuntimeException", ": ");
                     printf("The symmetry values must be function records.\n");
                     exit(TPP_ERROR);
                 }
@@ -9134,7 +9165,10 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         if (d->kind != D_OP || d->native) break;
         Env *env = d->local == 2 ? env_find(c.env, d)->ctx_env : NULL;
         for (int i = 0; i < e->n; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
-        return to_tf(d->body, (Ctx){env, c.inst}, neg);
+        deeper();
+        TF *t = to_tf(d->body, (Ctx){env, c.inst}, neg);
+        eval_depth--;
+        return t;
     }
     case K_INSTCALL:
         if (e->def->kind != D_OP || e->def->native) break;
