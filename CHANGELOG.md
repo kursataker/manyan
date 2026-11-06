@@ -192,6 +192,8 @@ for it as its notes.
   parses it: `[A]_[a |-> x]` was a parse error.
 - A part of a property is named as TLC names it: by the definition it
   calls, as `Init2` in `P == Init2 /\ [][A]_v`, or else by its location.
+- No initial predicate is TLC's error when there are invariants or
+  properties to check, not only variables.
 
 ## 0.2.0
 

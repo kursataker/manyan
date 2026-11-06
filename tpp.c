@@ -10344,9 +10344,10 @@ int tpp_check(const TPPOptions *o) {
     if (!status) check_assumptions(root, &status);
     if (status) return status;
     if (!init_expr) {
-        if (nvars) config_error("The configuration file did not specify the initial state predicate.\n"
-                               "Can also be caused by trying to run TLC on a specification from\n"
-                               "a module imported with a parameterized INSTANCE statement.");
+        if (nvars || ninvariants || nimplied_inits || naction_props || ntemporal_props)
+            config_error("The configuration file did not specify the initial state predicate.\n"
+                         "Can also be caused by trying to run TLC on a specification from\n"
+                         "a module imported with a parameterized INSTANCE statement.");
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
         print_counts(0, 1);
