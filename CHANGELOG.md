@@ -19,6 +19,9 @@ for it as its notes.
   (MCDisruptor_MPMC now matches TLC, in 0.6 s; it timed out after 60 s).
 - Cartesian products, record sets and function sets are generated in
   order instead of sorted afterwards (GameOfLife 11.9 → 6.1 s).
+- Fixed: `ENABLED` computed the spec's constant definitions again instead
+  of using their value, so one drawn with `RandomElement` could differ
+  inside it (SpanTreeRandom reported a false violation of `Safety`).
 - Comparing a set with a set that cannot be enumerated, as sorting
   `UNION {Nat, {-1}}` does, reports TLC's "Attempted to compare the set"
   error.

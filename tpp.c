@@ -5603,6 +5603,10 @@ static void materialize(Value *v) {
     for (int i = 0; i < v->n; i++) materialize(v->u.fcn.vals[i]);
 }
 
+/* ENABLED marks the instance chain where it is evaluated. As in TLC, a
+   variable reached from there is not substituted (§6.9). */
+static Def enabled_mark;
+
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
@@ -5636,7 +5640,9 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
             vals[i] = d->params[i]->arity ? eval_operator_arg(args[i], c) : eval(args[i], c);
         return call_native(d, call, vals, c);
     }
-    if (n == 0 && !c.inst) {
+    Inst *in = c.inst;
+    while (in && in->def == &enabled_mark) in = in->parent;
+    if (n == 0 && !in) {   /* a definition of the spec, computed once if constant */
         if (d->cache) return d->cache;
         if (def_level(d) == 0 && !keep_lazy && !d->uncached) {
             Arena *saved = arena;
@@ -6343,11 +6349,9 @@ static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
     return k;
 }
 
-/* ENABLED marks the instance chain where it is evaluated. As in TLC, a
-   variable reached from there, not through an argument from outside, is
-   not substituted: it is bound by name, in a slot past the state's own
-   when no state variable has that name (§6.9). */
-static Def enabled_mark;
+/* A variable reached from where ENABLED marks the chain, not through an
+   argument from outside, is bound by name, in a slot past the state's own
+   when no state variable has that name. */
 static int enabled_names[16], nenabled_names;
 
 static int enabled_slot(Def *d) {
