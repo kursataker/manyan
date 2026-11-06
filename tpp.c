@@ -7950,7 +7950,7 @@ static int search(void) {
         handler = &live;
         if (sigsetjmp(live, 0)) return live_error();
         if (live_violated()) {
-            print_counts(0, 0);
+            print_counts(exit_requested ? nstates - expanded : 0, 0);
             return TPP_VIOLATION_LIVENESS;
         }
         handler = &here;
@@ -9495,9 +9495,11 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
 }
 
 /* Each edge of the state graph, and the stuttering step unless an edge is
-   one. */
+   one. A state the search stopped before expanding (TLCSet("exit")) has
+   none, as TLC's graph has no such node. */
 static void pnode_successors(int p) {
     StateRec *r = &states[pnodes[p].state];
+    if (exit_requested && pnodes[p].state >= expanded) { pnode_steps(p, NULL, 0, 0); return; }
     int self = 0;
     for (int e = 0; e < r->nedges; e++) self |= r->edges[2 * e] == pnodes[p].state;
     pnode_steps(p, r->edges, r->nedges, !self);

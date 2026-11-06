@@ -166,6 +166,9 @@ for it as its notes.
   action into actions.
 - A constant view is TLC's error, and "1 state generated, with 0 of them
   distinct" is singular, as TLC prints it.
+- After `TLCSet("exit", TRUE)` the temporal properties are checked on the
+  states expanded, as TLC checks them; a state found but not expanded
+  stuttered forever, a false counterexample.
 
 ## 0.2.0
 
