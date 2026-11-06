@@ -1,0 +1,2 @@
+Error: Temporal formula is a tautology (its negation is unsatisfiable).
+exit 77

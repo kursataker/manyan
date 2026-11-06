@@ -117,6 +117,7 @@ seed is drawn at random unless one is given.
 | 14 | an `Assert` failed |
 | 75 | an evaluation error |
 | 76 | an invariant cannot be evaluated in a state the search reached |
+| 77 | a temporal property is a tautology |
 | 150 | the spec does not parse or fails semantic checks |
 | 151 | the configuration names what the spec does not have |
 | 255 | another error, such as a configuration that does not parse |

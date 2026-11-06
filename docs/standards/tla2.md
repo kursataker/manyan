@@ -755,6 +755,9 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | fingerprinting an initial state that holds a function over an infinite domain | `Attempted to compute the number of elements in the overridden value Nat.` (TLC's error counting the domain), then `While working on the initial state:` and the state | 75 |
 | error evaluating an invariant in a new state | `Error: Evaluating invariant Inv failed.`, the evaluation message, and the trace to the new state | 76 |
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
+| no next-state action, and no invariant or property | `Finished computing initial states: ...`, then `Error: No next state actions defined to generate successor states from.` | 75 |
+| a property part that is an action not under `[]` | `Error: The property P is not correctly defined.`, the part named as properties are (§10.5) | 151 |
+| every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |
 | parse or semantic error | `Error: Parsing or semantic analysis failed.` | 150 |

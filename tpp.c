@@ -8317,7 +8317,10 @@ static int tf_bound_fn(Ctx c, void *data) {
 /* The formula e (negated when neg) in negation normal form. */
 static TF *to_tf(Expr *e, Ctx c, int neg) {
     if (expr_level(e) <= 2) {
-        if (e->kind == X_BOOL) return tf_new((e->num != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
+        if (expr_level(e) == 0) {   /* as TLC, a constant is its value */
+            Value *v = eval(e, c);
+            if (v->kind == V_BOOL) return tf_new((v->u.i != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
+        }
         return tf_atom(e, c, neg);
     }
     switch (e->kind) {
@@ -9062,13 +9065,28 @@ static int live_violated(void) {
 /* As TLC does before it checks a model: a property that is no formula it
    can check, such as \EE x : F, is an error. Other errors are left for
    the check. */
-static int check_temporal_forms(void) {
+/* Whether a formula is FALSE whatever the behavior, its constants alone
+   deciding it. */
+static int tf_false(TF *t) {
+    switch (t->op) {
+    case TF_FALSE: return 1;
+    case TF_AND: return tf_false(t->a) || tf_false(t->b);
+    case TF_OR: return tf_false(t->a) && tf_false(t->b);
+    case TF_ALWAYS: case TF_EVENTUALLY: return tf_false(t->a);
+    default: return 0;
+    }
+}
+
+/* simulating: TLC finds no tautology then. */
+static int check_temporal_forms(int simulating) {
+    int temporal = 0, unsatisfiable = 0;
     for (int p = 0; p < ntemporal_props; p++) {
         EvalState s = eval_save();
         sigjmp_buf here;
         handler = &here;
         tf_unhandled = NULL;
-        if (!sigsetjmp(here, 0)) to_tf(temporal_props[p].expr, root_ctx, 1);
+        TF *negated = NULL;
+        if (!sigsetjmp(here, 0)) negated = to_tf(temporal_props[p].expr, root_ctx, 1);
         eval_restore(s);
         if (tf_unhandled) {
             Buf b = {0};
@@ -9076,6 +9094,14 @@ static int check_temporal_forms(void) {
             printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
             return TPP_ERROR;
         }
+        if (expr_level(temporal_props[p].expr) == 3) {   /* a predicate on the initial states is no tautology */
+            temporal++;
+            unsatisfiable += negated && tf_false(negated);
+        }
+    }
+    if (temporal && unsatisfiable == temporal && !simulating) {
+        printf("Error: Temporal formula is a tautology (its negation is unsatisfiable).\n");
+        return TPP_FAILURE_LIVENESS_EVAL;
     }
     return 0;
 }
@@ -9195,7 +9221,7 @@ int tpp_check(const TPPOptions *o) {
         dump_actions = o->dump_actions;
     }
     nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
-    status = check_temporal_forms();
+    status = check_temporal_forms(o->simulate);
     if (!status && !o->simulate && !nowarning && ntemporal_props && (nconstraints || naction_constraints))
         printf("Warning: Declaring state or action constraints during liveness checking is dangerous: "
                "Please read section 14.3.5 on page 247 of Specifying Systems "
