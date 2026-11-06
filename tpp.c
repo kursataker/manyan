@@ -7687,12 +7687,15 @@ static void dump_close(void) {
 /* An initial state checked as TLC checks it: the invariants, then the
    properties that are state predicates. Returns the exit status of a
    violation, which it reports, or 0. */
+static int keep_going;   /* -continue: a violated invariant or action property is reported, and the search goes on */
+
 static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
         print_state(st);
-        return TPP_VIOLATION_SAFETY;
+        if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
+        printf("\n");
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
@@ -7734,6 +7737,7 @@ static int action_violated(Value **st) {
     if (bad < 0) return 0;
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
     print_trace(expanding, st, cur_action);
+    if (keep_going) return 0;
     violation = TPP_VIOLATION_LIVENESS;
     return 1;
 }
@@ -7767,8 +7771,10 @@ static int next_emit(void) {
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             print_trace(expanding, st, cur_action);
-            violation = TPP_VIOLATION_SAFETY;
-            return 1;
+            if (!keep_going) {
+                violation = TPP_VIOLATION_SAFETY;
+                return 1;
+            }
         }
         return action_violated(st);
     }
@@ -7789,8 +7795,10 @@ static int next_emit(void) {
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             print_trace(expanding, st, cur_action);
-            violation = TPP_VIOLATION_SAFETY;
-            return 1;
+            if (!keep_going) {
+                violation = TPP_VIOLATION_SAFETY;
+                return 1;
+            }
         }
     }
     if (action_violated(st)) return 1;
@@ -8634,12 +8642,13 @@ static int simulate(const TPPOptions *o) {
     collect_fairnesses();
     arena = &scratch_arena;
     drawing = &draw_behaviors;   /* TLC's worker thread */
+    int reported = 0;            /* -continue: a behavior ended in a violation */
     for (long t = 0; !o->traces || t < o->traces; t++) {
         arena_reset(&scratch_arena);
         trace.n = 0;
         Value **st = current = init.a[rng_index(init.n)];
-        int in_model = check_list(constraints, nconstraints, st) < 0;
-        for (long d = 0; d < depth; d++) {
+        int in_model = check_list(constraints, nconstraints, st) < 0, ended = 0;
+        for (long d = 0; d < depth && !ended; d++) {
             sim_push(&trace, st);
             cur_level = d + 1;
             if (!in_model) break;
@@ -8673,12 +8682,16 @@ static int simulate(const TPPOptions *o) {
                 sim_push(&trace, s1);
                 if (!sim_print(&trace)) return TPP_ERROR;
                 sim_summary(seed, aril);
-                return status;
+                if (!keep_going) return status;
+                reported = ended = 1;   /* as TLC, the behavior ends; the next begins */
+                break;
             }
+            if (ended) break;
             Value **s1 = sim_found.a[rng_index(sim_found.n)];
             in_model = check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, st, s1) < 0;
             st = current = s1;
         }
+        if (ended) continue;
         if (ntemporal_props && sim_violates(&trace)) {
             sim_summary(seed, aril);
             return TPP_VIOLATION_LIVENESS;
@@ -8687,7 +8700,7 @@ static int simulate(const TPPOptions *o) {
     }
     handler = NULL;
     printf("Progress: %ld states checked.\n", generated);
-    return TPP_OK;
+    return reported ? TPP_ERROR : TPP_OK;   /* TLC 2.19's exit after reporting */
 }
 
 /* ---------------------------------------------------------------- configuration */
@@ -10646,6 +10659,7 @@ int tpp_check(const TPPOptions *o) {
     check_deadlock = o->check_deadlock;
     nowarning = o->nowarning;
     diff_trace = o->difftrace;
+    keep_going = o->keep_going;
 
     root = parse_text(text, path);
     char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
@@ -10725,7 +10739,8 @@ int tpp_check(const TPPOptions *o) {
         fputs("strict digraph DiskGraph {\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
         dump_actions = o->dump_actions;
     }
-    nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
+    /* A simulation is TLC's with one worker; -continue reports in the search's order. */
+    nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
     status = check_temporal_forms(o->simulate);
     if (!status) status = o->simulate ? simulate(o) : search();
     handler = NULL;
@@ -10772,6 +10787,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
         else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
         else if (strcmp(argv[i], "-difftrace") == 0) o.difftrace = 1;
+        else if (strcmp(argv[i], "-continue") == 0) o.keep_going = 1;
         else if (strcmp(argv[i], "-metadir") == 0 && i + 1 < argc) i++;    /* TLC's; tpp writes no metadata */
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];

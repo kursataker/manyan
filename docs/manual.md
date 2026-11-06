@@ -45,6 +45,7 @@ built in.
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
+| `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
 | `-metadir DIR` | accepted for TLC's command lines, and ignored: tpp writes no metadata |
 

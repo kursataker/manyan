@@ -1,0 +1,22 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module continue>
+x = 2
+
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module continue>
+x = 2
+exit 255

@@ -1,0 +1,99 @@
+Error: Invariant Inv is violated by the initial state:
+/\ x = 5
+/\ y = 0
+
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 1
+/\ y = 0
+
+State 3: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 3
+/\ y = 3
+
+State 5: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 4
+/\ y = 6
+
+State 6: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 5
+/\ y = 10
+
+Error: Invariant Inv2 is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 1
+/\ y = 0
+
+State 3: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 3
+/\ y = 3
+
+State 5: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 4
+/\ y = 6
+
+State 6: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 5
+/\ y = 10
+
+State 7: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 6
+/\ y = 15
+
+Error: Invariant Inv2 is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 1
+/\ y = 0
+
+State 3: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 3
+/\ y = 3
+
+State 5: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 4
+/\ y = 6
+
+State 6: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 5
+/\ y = 10
+
+State 7: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 6
+/\ y = 15
+
+State 8: <Next line 7, col 9 to line 7, col 41 of module continue_initial>
+/\ x = 7
+/\ y = 21
+
+Model checking completed. No error has been found.
+11 states generated, 11 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 8.
+exit 0

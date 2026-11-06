@@ -6,6 +6,8 @@ for it as its notes.
 
 ## 0.3.0
 
+- `-continue` goes on after a violated invariant or action property,
+  reporting each as TLC does; `TPPOptions.keep_going` in the C API.
 - `-difftrace` prints each state of a trace after the first as the
   variables that changed, as TLC does; `TPPOptions.difftrace` in the C
   API.

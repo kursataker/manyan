@@ -28,6 +28,7 @@ typedef struct {
     int dump_actions;    /* label the dump's steps with their actions (-dump dot,actionlabels) */
     int nowarning;       /* TLC's warnings off, as -nowarning */
     int difftrace;       /* print only what each step of a trace changes, as -difftrace */
+    int keep_going;      /* report each violated invariant and action property, and go on (-continue) */
     int workers;         /* processes expanding states; 0 or 1 for one */
     int simulate;        /* random behaviors instead of the state graph, as -simulate */
     long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */
