@@ -14,6 +14,19 @@ for it as its notes.
   a run says how to turn them off.
 - A counterexample whose cycle is one state, returned to by an action, ends
   in stuttering, as TLC prints it.
+- A constant invariant or property is evaluated as the configuration is
+  read, as TLC does: one that is `TRUE` is dropped, another value is an
+  error.
+- SANY's level rules for built-in operators: `=`, `\in`, set and tuple
+  constructors, `CHOOSE`, `EXCEPT` and the ranges of bounds take at most
+  actions, and `/\`, `\/`, `=>`, `<=>` may not join a temporal formula and
+  an action. A temporal formula evaluated as a predicate, and action
+  composition, give TLC's messages.
+- A proof's steps (`<1>1.`) end the statement of a theorem: a module with
+  proofs, such as Paxos.tla, failed to parse.
+- When extended modules or an instance give a name two definitions, the
+  first is used and SANY's warning printed, as SANY does; tpp rejected
+  the module, or used an instance's definition.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 

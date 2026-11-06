@@ -1,0 +1,24 @@
+Semantic errors in global context:
+
+*** Warnings: 1
+
+line 2, col 1 to line 2, col 6 of module ConflictA
+
+Warning: the definition of 'R' conflicts with
+its definition at line 2, col 1 to line 2, col 6 of module ConflictB.
+
+Semantic errors:
+
+*** Warnings: 1
+
+line 5, col 1 to line 5, col 24 of module extends_conflict
+
+Multiple declarations or definitions for symbol R.
+This duplicates the one at line 2, col 1 to line 2, col 6 of module ConflictB.
+
+2
+Finished computing initial states: 0 distinct states generated.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

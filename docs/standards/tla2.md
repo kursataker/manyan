@@ -203,6 +203,14 @@ is, each location in the module of its file. After processing each
 module of a file, dependencies first, SANY prints every warning so far,
 under `Semantic errors:` and `*** Warnings: N`.
 
+When two extended modules define one name differently, the first
+definition is the one used, and SANY warns of the other, `Warning: the
+definition of 'R' conflicts with` and where the first is, under `Semantic
+errors in global context:`; a definition an instance brings in gives way
+too, with `Multiple declarations or definitions for symbol R.`, located
+at the definition, or at the statement of a `LOCAL INSTANCE`. A
+definition's location runs from its name to the end of its body.
+
 ### 5.7 Labels and subexpressions
 
 `lab :: e` or `lab(x, y) :: e`, at the start of an expression, labels `e`
@@ -245,11 +253,19 @@ operator `N == e` without parameters.
 Each expression has a level: 0 constant, 1 state (it reads variables), 2
 action (it primes), 3 temporal. An operand of `'` or `UNCHANGED` must be of
 level at most 1, of `ENABLED` and `\cdot` at most 2; in `[A]_v`,
-`<<A>>_v`, `WF_v(A)` and `SF_v(A)`, `A` at most 2 and `v` at most 1. A
-parameter of a definition allows, for its argument, the least level its
-uses allow, and a declaration of a module the same for what an `INSTANCE`
-substitutes for it; an argument or a substitute of higher level is an
-error (§11.3).
+`<<A>>_v`, `WF_v(A)` and `SF_v(A)`, `A` at most 2 and `v` at most 1. The
+operands of the other built-in operators are at most actions: of `=`, `#`,
+`\in`, the set operators, set and tuple constructors, function
+application, `.f`, `EXCEPT` and its keys, `CHOOSE`, `{x \in S : P}` and
+`{e : x \in S}`, and the ranges of every bound; the operands of the logical
+operators, `IF`, `CASE`, records `[f |-> e]`, and the bodies of `\A`, `\E`
+and `[x \in S |-> e]` may be temporal. `/\`, `\/`, `=>` and `<=>` may not
+join a temporal formula and an action. A parameter of a definition allows,
+for its argument, the least level its uses allow, and a declaration of a
+module the same for what an `INSTANCE` substitutes for it; an argument or a
+substitute of higher level is an error (§11.3). A call's level is that of
+its definition and of the arguments for the parameters it uses outside
+`ENABLED`, so `B(Next)` with `B(d) == ENABLED d` is a state predicate.
 
 ## 6 Expressions
 
@@ -584,7 +600,14 @@ they are produced. A state is new when no explored state has the same
 fingerprint: its value, or the value of the `VIEW` if one is given, up to
 the group the `SYMMETRY` permutations generate (so `Permutations(A) \cup
 Permutations(B)` relates the states either relates and their
-compositions). Each new state that satisfies the state
+compositions). TLC warns of a set of a symmetry that permutes nothing,
+`Warning: The set S has been defined to be a symmetry set but contains less
+than two elements.`, with `sets` and `have` for several, joined by `, and
+`: it reads the arguments of the `SYMMETRY` definition's body, and names
+all of them when they are as many as the permutations, else each
+`Permutations(S)` of a constant set no model value of which a permutation
+moves; a set is named by its text without spaces, or by the constant the
+configuration replaces with it (`C <- S`). Each new state that satisfies the state
 constraints, reached by a transition that satisfies the action constraints,
 is checked against the invariants and queued. A reachable state with no
 successor is a deadlock unless `CHECK_DEADLOCK` is `FALSE`.
@@ -610,8 +633,12 @@ violated.` A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
 B` is `(p /\ A) \/ (~p /\ B)`. Liveness checking with a `CONSTRAINT` or
 `ACTION_CONSTRAINT` first prints TLC's warning, `Warning: Declaring state
-or action constraints during liveness checking is dangerous: …` and `(Use
-the -nowarning option to disable this warning.)`; a simulation does not.
+or action constraints during liveness checking is dangerous: …`, and with a
+`SYMMETRY`, before it, `Warning: Declaring symmetry during liveness
+checking is dangerous. …`; a simulation does not. Only the first warning of
+a run is followed by `(Use the -nowarning option to disable this
+warning.)`. A counterexample whose cycle is one state, with a step back to
+it by any action, ends `State n: Stuttering`.
 
 ### 10.6 Fairness
 
@@ -759,6 +786,10 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | a property part that is an action not under `[]` | `Error: The property P is not correctly defined.`, the part named as properties are (§10.5) | 151 |
 | every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
+| an invariant with primes or temporal operators, checked before the configuration's other names | `Error: The invariant Inv is not a state predicate (one with no primes or temporal operators).` | 76 |
+| a constant invariant or property, other than a literal, that is not `TRUE` (one that is is dropped) | `Error: The invariant of Inv is equal to v`, `property` for a property | 151 |
+| a temporal formula evaluated as a predicate or action | `Error: TLC encountered a temporal formula ([]A) when evaluating a predicate or action.`, the operator as `[]A`, `<>A`, `a ~> b`, `a -+-> formula`, `WF`, `SF`, `\EE` or `\AA` | 75 |
+| action composition `A \cdot B` | `The current version of TLC does not support action composition.` | 75 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |
 | parse or semantic error | `Error: Parsing or semantic analysis failed.` | 150 |
 | a decimal in the spec (§3.5) | `Error: TLC can't handle real numbers.` and the decimal as written | 151 |

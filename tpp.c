@@ -1369,7 +1369,7 @@ static Value *fcn_update(Value *f, int i, Value *key, Value *val) {
 
 /* ---------------------------------------------------------------- syntax */
 
-enum { T_EOF, T_IDENT, T_NUM, T_STR, T_OP, T_KW, T_SEP, T_END };
+enum { T_EOF, T_IDENT, T_NUM, T_STR, T_OP, T_KW, T_SEP, T_END, T_STEP };   /* T_STEP: a proof step, <1>2. */
 
 typedef struct {
     int kind;
@@ -1406,6 +1406,7 @@ typedef struct {
     Def **defs;     /* filled by the resolver */
     int tuple;      /* <<a, b>> \in S */
     Expr *set;      /* NULL for an unbounded binding */
+    int line, col;  /* of its first name */
 } Bound;
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
@@ -1416,7 +1417,7 @@ enum { SEL_LL = -1, SEL_GG = -2, SEL_COLON = -3, SEL_AT = -4, SEL_NULL = -5 };
 /* lab(x, y) :: e names e, with the bound identifiers x and y, for selectors. */
 typedef struct { int name; int n; int *names; Def **defs; } Label;
 
-typedef struct { int n; Expr **keys; int *fields; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f */
+typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f; line and col of its ! */
 
 struct Expr {
     short kind;
@@ -1593,6 +1594,16 @@ static int digit_value(int c) {
 
 /* The tokens of a file's outermost module, interning identifiers and
    numerals in the order they appear (§7.5). */
+/* The length of the proof step s begins with, as <1>, <2>3., <*>; 0 if none. */
+static int proof_step(const char *s) {
+    if (s[0] != '<') return 0;
+    int len = isdigit((unsigned char)s[1]) ? 1 + (int)strspn(s + 1, "0123456789") : s[1] == '*' || s[1] == '+' ? 2 : 0;
+    if (!len || s[len] != '>') return 0;
+    for (len++; id_char(s[len]); len++) {}
+    while (s[len] == '.') len++;
+    return len;
+}
+
 static Tok *lex(const char *src, const char *file, int *count) {
     Lexer L = {src, file, 0, 1, 1};
     Tok *toks = NULL;
@@ -1683,6 +1694,9 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 t->kind = T_OP;
                 t->id = intern_n(s, len);
             }
+        } else if ((len = proof_step(s))) {
+            t->kind = T_STEP;
+            t->id = intern_n(s, len);
         } else {
             for (int i = 0; symbols[i]; i++) {
                 int l = (int)strlen(symbols[i]);
@@ -1983,16 +1997,16 @@ static void parse_bounds(Expr *e, int allow_unbounded) {
         memset(b, 0, sizeof *b);
         int names[32];
         int n = 0;
-        if (is_op(peek(), "<<")) {
-            next();
-            b->tuple = 1;
+        b->tuple = is_op(peek(), "<<");
+        if (b->tuple) next();
+        b->line = peek()->line;
+        b->col = peek()->col;
+        if (b->tuple) {
             do names[n++] = expect_ident(); while (is_op(peek(), ",") && next());
             expect_op(">>");
         } else {
             names[n++] = expect_ident();
-            while (is_op(peek(), ",") && peek_at(1)->kind == T_IDENT && !b->tuple) {
-                Tok *after = peek_at(2);
-                (void)after;
+            while (is_op(peek(), ",") && peek_at(1)->kind == T_IDENT) {
                 next();
                 names[n++] = expect_ident();
             }
@@ -2391,6 +2405,8 @@ static Expr *parse_primary(void) {
                 Path paths[256];
                 int n = 0;
                 do {
+                    paths[n].line = peek()->line;
+                    paths[n].col = peek()->col;
                     expect_op("!");
                     Expr *keys[32];
                     int fields[32];
@@ -2811,8 +2827,7 @@ static void hide_facts(void) {
     while (!at_unit_start() && !is_kw(peek(), "DEF") && !is_kw(peek(), "DEFS")) {
         Tok *t = next();
         if (is_kw(t, "MODULE")) next();
-        else if (is_op(t, "<")) { while (!at_unit_start() && !is_op(next(), ">")) continue; next(); }
-        else if (t->kind != T_IDENT)
+        else if (t->kind != T_IDENT && t->kind != T_STEP)
             semantic_error(mk_expr(X_NAME, t), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
         while (is_op(peek(), "!") && !at_unit_start()) { next(); next(); }
         if (!is_op(peek(), ",")) return;
@@ -2862,6 +2877,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         int local = 0;
+        Tok *first = t;   /* a statement begins at its LOCAL */
         if (is_kw(t, "LOCAL")) { local = 1; next(); t = peek(); }
         if (is_kw(t, "CONSTANT") || is_kw(t, "CONSTANTS") || is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES")) {
             int var = is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES");
@@ -2896,7 +2912,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
-            is_kw(t, "OMITTED") || (is_op(t, "<") && peek_at(1)->kind == T_NUM)) {
+            is_kw(t, "OMITTED") || t->kind == T_STEP) {
             next();
             if (is_kw(t, "HIDE")) hide_facts();
             skip_proof();
@@ -2909,7 +2925,7 @@ static Module *parse_module(Module *outer) {
         }
         if (is_kw(t, "INSTANCE")) {
             next();
-            Def *d = parse_instance(t, 0);
+            Def *d = parse_instance(first, 0);
             d->local = local;
             add_unit(m, 1, d, NULL, NULL, local);
             continue;
@@ -3277,14 +3293,57 @@ static void check_outer(Module *m, Def *d) {
     file->nwarnings++;
 }
 
-/* SANY's warnings so far, printed as each file's module is processed. */
-static Buf warnings;
-static int nwarnings;
+/* SANY's warnings so far, printed as each file's module is processed;
+   those of its global context, of definitions two extended modules give
+   a name, before them. */
+static Buf warnings, context_warnings;
+static int nwarnings, ncontext_warnings;
 
 static void print_warnings(Module *m) {
     buf_add(&warnings, m->warnings.s ? m->warnings.s : "", m->warnings.n);
     nwarnings += m->nwarnings;
+    if (ncontext_warnings) printf("Semantic errors in global context:\n\n\n*** Warnings: %d\n\n%s", ncontext_warnings, context_warnings.s);
     if (nwarnings) printf("Semantic errors:\n\n*** Warnings: %d\n\n%s\n", nwarnings, warnings.s);
+}
+
+static Sym *own_sym(Module *m, int name) {
+    for (int i = 0; i < m->nsyms; i++) if (m->syms[i].name == name) return &m->syms[i];
+    return NULL;
+}
+
+/* A definition's location as SANY gives it: from its name to the end of its body. */
+static Expr def_span(Def *d) {
+    Expr e = *d->where;
+    Expr *b = d->body;
+    if (b) { e.l2 = b->pl2 ? b->pl2 : b->l2; e.c2 = b->pl2 ? b->pc2 : b->c2; }
+    return e;
+}
+
+/* Whether the definition d, which m extends or, with instance, instantiates,
+   gives way to another of its name m has: as SANY, with a warning, keeping
+   the first. A declaration conflicts. The warning is at d, or at a LOCAL
+   INSTANCE. */
+static int inherited_conflict(Module *m, Def *d, Def *instance) {
+    Sym *old = own_sym(m, d->name);
+    if (!old || old->def == d || d->kind == D_CONST || d->kind == D_VAR || old->def->kind == D_CONST || old->def->kind == D_VAR)
+        return 0;
+    Buf here = {0}, there = {0};
+    Expr at = instance && instance->local ? *instance->where : def_span(d), span = def_span(old->def);
+    file_loc_text(&here, &at);
+    file_loc_text(&there, &span);
+    if (instance) {
+        Module *file = file_module(m);
+        buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+                   here.s, S(d->name), there.s);
+        file->nwarnings++;
+    } else {
+        buf_printf(&context_warnings, "%s\n\nWarning: the definition of '%s' conflicts with \nits definition at %s.\n\n\n",
+                   here.s, S(d->name), there.s);
+        ncontext_warnings++;
+    }
+    free(here.s);
+    free(there.s);
+    return 1;
 }
 
 static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
@@ -3825,7 +3884,8 @@ static void resolve_module(Module *m) {
     for (int i = 0; i < m->nextends; i++) {
         Module *x = load_module(m->extends[i], m);
         for (int k = 0; k < x->nsyms; k++)
-            if (!x->syms[k].local) add_sym(m, x->syms[k].name, x->syms[k].def, x->syms[k].path, x->syms[k].npath, 0, NULL);
+            if (!x->syms[k].local && !inherited_conflict(m, x->syms[k].def, NULL))
+                add_sym(m, x->syms[k].name, x->syms[k].def, x->syms[k].path, x->syms[k].npath, 0, NULL);
         for (int k = 0; k < x->ndecls; k++) add_decl(m, x->decls[k]);
     }
     /* A name is defined before it is used; RECURSIVE declares a definition to come. */
@@ -3869,6 +3929,7 @@ static void resolve_module(Module *m) {
             for (int k = 0; k < t->nsyms; k++) {
                 Sym *s = &t->syms[k];
                 if (s->local || s->def->kind == D_CONST || s->def->kind == D_VAR) continue;
+                if (inherited_conflict(m, s->def, d)) continue;
                 Def **path = NEWN(Def *, s->npath + 1);
                 path[0] = d;
                 if (s->npath) memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
@@ -3912,6 +3973,51 @@ static void check_operands(Expr *e, int first, int rest, int max) {
     for (int i = 0; i < e->n; i++) check_argument(e, S(e->op), i, e->args[i], i ? rest : first, max);
 }
 
+/* SANY's name for a built-in operator whose arguments may be at most
+   actions; the body of a function constructor or a quantifier may be
+   temporal, as their bounds may not. */
+static const char *sany_op(Expr *e) {
+    switch (e->kind) {
+    case K_EQ: return "=";
+    case K_NEQ: return "/=";
+    case K_IN: return "\\in";
+    case K_NOTIN: return "\\notin";
+    case K_CUP: return "\\union";
+    case K_CAP: return "\\intersect";
+    case K_SETMINUS: return "\\";
+    case K_SUBSETEQ: return "\\subseteq";
+    case K_SUBSET: return "SUBSET";
+    case K_UNION: return "UNION";
+    case K_DOMAIN: return "DOMAIN";
+    case K_TIMES: return "$CartesianProd";
+    case X_SETENUM: return "$SetEnumerate";
+    case X_TUPLE: return "$Tuple";
+    case X_RCDSET: return "$SetOfRcds";
+    case X_FCNSET: return "$SetOfFcns";
+    case X_APPLY: return "$FcnApply";
+    case X_DOT: return "$RcdSelect";
+    case X_EXCEPT: return "$Except";
+    case X_CHOOSE: return e->bounds[0].set ? "$BoundedChoose" : "$UnboundedChoose";
+    case X_FILTER: return "$SubsetOf";
+    case X_MAP: return "$SetOfAll";
+    case X_FCN: return "$FcnConstructor";
+    case X_FORALL: return "$BoundedForall";
+    case X_EXISTS: return "$BoundedExists";
+    default: return NULL;
+    }
+}
+
+/* SANY's name for a connective that may not join a temporal formula and an action. */
+static const char *sany_connective(int kind) {
+    switch (kind) {
+    case K_AND: return "\\land";
+    case K_OR: return "\\lor";
+    case K_IMPLIES: return "=>";
+    case K_EQUIV: return "\\equiv";
+    default: return NULL;
+    }
+}
+
 /* Checks e, where its level may be at most max, and records that limit for
    the parameters and declarations it uses. */
 static void check_levels(Expr *e, int max) {
@@ -3922,7 +4028,8 @@ static void check_levels(Expr *e, int max) {
         if (max < level_max(d)) d->level_max = max + 1;
         return;
     case K_PRIME: case K_UNCHANGED: check_operands(e, 1, 1, max); return;
-    case K_ENABLED: case K_CDOT: check_operands(e, 2, 2, max); return;
+    case K_ENABLED: check_operands(e, 2, 2, 2); return;   /* a state predicate of any action */
+    case K_CDOT: check_operands(e, 2, 2, max); return;
     case X_SQACT: case X_ANGLEACT: check_operands(e, 2, 1, max); return;   /* [A]_v */
     case X_WF: case X_SF: check_operands(e, 1, 2, max); return;            /* WF_v(A) */
     case K_CALL: case K_INSTCALL:
@@ -3941,12 +4048,37 @@ static void check_levels(Expr *e, int max) {
         check_levels(e->args[0], max);
         return;
     case X_LAMBDA: check_def_levels(d); return;
-    default:
-        for (int i = 0; i < e->n; i++) check_levels(e->args[i], max);
-        for (int i = 0; i < e->nb; i++) check_levels(e->bounds[i].set, max);
-        for (int i = 0; e->kind == X_EXCEPT && i < e->n - 1; i++)
-            for (int k = 0; k < e->paths[i].n; k++) check_levels(e->paths[i].keys[k], max);
+    default: {
+        const char *op = sany_op(e), *conn = sany_connective(e->kind);
+        int inner = op && max > 2 ? 2 : max;
+        for (int i = 0; i < e->nb; i++) {
+            Bound *b = &e->bounds[i];
+            if (op && b->set && expr_level(b->set) > 2) {
+                Expr at = {.mod = e->mod, .l1 = b->line, .c1 = b->col, .l2 = b->line, .c2 = b->col + (int)strlen(S(b->names[0])) - 1};
+                Buf loc = {0};
+                loc_text(&loc, &at);
+                semantic_error(e, "Level error in applying operator %s:\nThe level of the range for the bounded variable %s \nexceeds the maximum level allowed by the operator.", op, loc.s);
+            }
+            check_levels(b->set, inner);
+        }
+        for (int i = 0; e->kind == X_EXCEPT && i < e->n - 1; i++) {
+            Path *p = &e->paths[i];
+            Expr at = *e->args[i + 1];   /* the update, from its ! to its value's end */
+            at.l1 = p->line;
+            at.c1 = p->col;
+            for (int k = 0; k < p->n; k++) check_argument(&at, "$Seq", k, p->keys[k], 2, max);
+        }
+        if (conn) {
+            int temporal = 0, action = 0;
+            for (int i = 0; i < e->n; i++) { int l = expr_level(e->args[i]); temporal |= l == 3; action |= l == 2; }
+            if (temporal && action) semantic_error(e, "%s has both temporal formula and action as arguments.", conn);
+        }
+        int free = e->kind == X_FCN || e->kind == X_FORALL || e->kind == X_EXISTS;
+        for (int i = 0; i < e->n; i++)
+            if (op && !free) check_argument(e, op, i, e->args[i], 2, max);
+            else check_levels(e->args[i], max);
         return;
+    }
     }
 }
 
@@ -5019,7 +5151,14 @@ EVAL(ev_or) { return junction(e, c, 0); }
 EVAL(ev_enabled) { return BOOLV(enabled(e->args[0], c)); }
 EVAL(ev_lambda) { return mk_oper(e->def, c); }
 EVAL(ev_opref) { return mk_oper(e->def, (Ctx){NULL, c.inst}); }
-EVAL(ev_temporal) { UNUSED_C; fail_at(e, "TLC cannot evaluate this temporal formula as a value."); }
+EVAL(ev_temporal) {
+    UNUSED_C;
+    const char *what = e->kind == K_ALWAYS ? "[]A" : e->kind == K_EVENTUALLY ? "<>A" : e->kind == K_LEADSTO ? "a ~> b"
+                     : e->kind == K_WHILE ? "a -+-> formula" : e->kind == X_WF ? "WF" : e->kind == X_SF ? "SF"
+                     : e->kind == X_TFORALL ? "\\AA" : "\\EE";
+    fail_at(e, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
+}
+EVAL(ev_cdot) { UNUSED_C; (void)e; fail("The current version of TLC does not support action composition."); }
 #undef UNUSED_C
 #undef EVAL
 
@@ -5087,7 +5226,7 @@ static const EvalFn eval_kind[K_WHILE + 1] = {
     [K_EVENTUALLY] = ev_temporal,
     [K_LEADSTO] = ev_temporal,
     [K_TIMES] = ev_times,
-    [K_CDOT] = ev_temporal,
+    [K_CDOT] = ev_cdot,
     [K_WHILE] = ev_temporal,
 };
 
@@ -8270,6 +8409,22 @@ static void warn_symmetry_sets(Expr *body, Value *g) {
     free(names.s);
 }
 
+/* Whether to check the invariant or property e the configuration names.
+   As TLC, a constant definition is evaluated as the configuration is read,
+   unless it is a literal or fails: TRUE is dropped, another value is an
+   error. */
+static int config_check(Expr *e, const char *what) {
+    Def *d = e->def;
+    if (expr_level(e) || d->body->kind == X_NUM || d->body->kind == X_STR) return 1;
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); return 1; }
+    Value *v = eval(e, root_ctx);
+    handler = NULL;
+    if (v->kind == V_BOOL && v->u.i) return 0;
+    config_error("The %s of %s is equal to %s", what, S(d->name), pretty(v));
+}
+
 static int setup_model(void) {
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
@@ -8310,9 +8465,11 @@ static int setup_model(void) {
                 printf("Error: The invariant %s is not a state predicate (one with no primes or temporal operators).\n", S(it->name));
                 exit(TPP_FAILURE_SAFETY_EVAL);
             }
-            add_check(&invariants, &ninvariants, e->def, e, e->def->name);
-        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_call(it->name, "property", 's'));
-        else if (strncmp(k, "CONSTRAINT", 10) == 0) {
+            if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, e->def->name);
+        } else if (strncmp(k, "PROPERT", 7) == 0) {
+            e = config_call(it->name, "property", 's');
+            if (config_check(e, "property")) use_property(e);
+        } else if (strncmp(k, "CONSTRAINT", 10) == 0) {
             e = config_call(it->name, "constraint", 'r');
             add_check(&constraints, &nconstraints, e->def, e, e->def->name);
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
