@@ -20,7 +20,8 @@ for it as its notes.
 - Cartesian products, record sets and function sets are generated in
   order instead of sorted afterwards (GameOfLife 11.9 → 6.1 s).
 - Each string has one value, made once, instead of a new one each time a
-  literal or a record field is evaluated (MCBakery 4.5 → 3.5 s).
+  literal or a record field is evaluated, and a set of literals such as
+  `{"ncs", "e1"}` is computed once (MCBakery 4.5 → 2.6 s).
 - Fixed: `ENABLED` computed the spec's constant definitions again instead
   of using their value, so one drawn with `RandomElement` could differ
   inside it (SpanTreeRandom reported a false violation of `Safety`).

@@ -1708,6 +1708,7 @@ struct Expr {
     Module *mod;
     int l1, c1, l2, c2;
     int pl1, pc1, pl2, pc2;   /* with the parentheses around it, if any */
+    Value *value;         /* X_SETENUM of literals of one kind: its value, once computed */
 };
 
 enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM };   /* D_THM: a theorem's or assumption's name */
@@ -5258,6 +5259,20 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
 }
 
 static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
+    if (e->value) return e->value;
+    int literal = e->n > 0;
+    for (int i = 0; i < e->n && literal; i++)
+        literal = e->args[i]->kind == e->args[0]->kind && (e->args[i]->kind == X_STR || e->args[i]->kind == X_NUM);
+    if (literal) {   /* its elements compare without error */
+        Arena *saved = arena;
+        arena = &perm_arena;
+        List l = {0};
+        for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
+        e->value = list_set(&l);
+        e->value->u.set.source = e;
+        arena = saved;
+        return e->value;
+    }
     List l = {0};
     for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
     fp_enter(e);   /* comparing its elements */
