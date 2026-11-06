@@ -6,6 +6,10 @@ for it as its notes.
 
 ## 0.3.0
 
+- A module the user supplies with a standard module's name, such as their
+  own `FiniteSets.tla`, has TLC's Java operators where the names match, as
+  TLC loads its classes by the module's name; its other operators are its
+  own.
 - An error fingerprinting a successor, such as a set TLC keeps as its
   definition, is TLC's unexpected exception without the behavior; the
   fingerprint stack names the records, tuples and sets that hold it, and

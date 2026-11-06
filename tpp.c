@@ -6042,19 +6042,28 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};
 
-/* Attaches the native operators to the standard modules that were read
-   from tla2tools' text (a module the user supplies keeps its own). */
+/* The number of arguments of a native's Java method. */
+static int native_arity(const char *method) {
+    const char *p = strchr(method, '(');
+    int n = p[1] != ')';
+    for (; *p; p++) n += *p == ',';
+    return n;
+}
+
+/* Attaches the native operators to the modules of the standard modules'
+   names, as TLC loads its classes by the module's name: one the user
+   supplies too, where an operator of the native's arity is the native. */
 static void bind_natives(void) {
     int integers = 0;
-    for (int i = 0; i < nmodules; i++) integers |= modules[i]->standard && strcmp(S(modules[i]->name), "Integers") == 0;
+    for (int i = 0; i < nmodules; i++) integers |= strcmp(S(modules[i]->name), "Integers") == 0;
     for (int i = 0; i < nmodules; i++) {
         Module *m = modules[i];
-        if (!m->standard) continue;
         for (int u = 0; u < m->nunits; u++) {
             Def *d = m->units[u].def;
             if (m->units[u].kind != 0 || !d) continue;
             for (int k = 0; natives[k].module; k++)
-                if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0) {
+                if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0
+                    && d->nparams == native_arity(natives[k].method)) {
                     d->native = natives[k].fn;
                     /* With Integers loaded, TLC takes Naturals' operators from its class too. */
                     const char *cls = strcmp(natives[k].module, "Naturals") == 0 && integers ? "Integers" : natives[k].module;
