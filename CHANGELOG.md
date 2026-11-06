@@ -6,6 +6,10 @@ for it as its notes.
 
 ## 0.3.0
 
+- An error fingerprinting a successor, such as a set TLC keeps as its
+  definition, is TLC's unexpected exception without the behavior; the
+  fingerprint stack names the records, tuples and sets that hold it, and
+  EXCEPT no longer fingerprints the new value early.
 - A value that is not a sequence checked against `Seq(S)` is the Sequences
   module's error, reported without the initial state, as TLC does.
 - An instance's variable substituted by a definition that is a variable

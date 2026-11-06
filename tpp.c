@@ -340,11 +340,11 @@ struct Value {
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
-        struct { Value **elems; uint64_t hash; } set;           /* V_SET, sorted, distinct */
+        struct { Value **elems; uint64_t hash; Expr *source; } set;   /* V_SET, sorted, distinct */
         struct { Value **keys, **vals; uint64_t hash; Expr *source; } fcn;
-        /* V_TUPLE has no keys; source: the <<...>> that made it, which TLC
-           names when applying it fails, until the state holding it is
-           stored */
+        /* V_TUPLE has no keys; source: the <<...>>, [...] or {...} that
+           made it, which TLC names when applying or fingerprinting it
+           fails, until the state holding it is stored */
         /* hash: the sum of the elements' or pairs' hashes, once known; else 0 */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
         struct { Value *a, *b; union { Value **names; Value *set; }; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
@@ -1527,7 +1527,12 @@ static Value *fcn_update(Value *f, int i, Value *key, Value *val) {
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     g->u.fcn.vals[i] = val;
     g->u.fcn.source = NULL;   /* a tuple TLC makes anew */
-    if (f->u.fcn.hash) g->u.fcn.hash = f->u.fcn.hash - pair_hash(f, i, f->u.fcn.vals[i]) + pair_hash(f, i, val);
+    /* Kept up to date only with a hash known: TLC hashes a set when it
+       fingerprints the state, where an error is its own. */
+    int known = val->kind <= V_MODEL || (val->kind == V_SET ? val->u.set.hash != 0
+              : (val->kind == V_TUPLE || val->kind == V_FCN) && val->u.fcn.hash != 0);
+    if (f->u.fcn.hash && known) g->u.fcn.hash = f->u.fcn.hash - pair_hash(f, i, f->u.fcn.vals[i]) + pair_hash(f, i, val);
+    else g->u.fcn.hash = 0;
     return g;
 }
 
@@ -5144,7 +5149,9 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
     List l = {0};
     for (int i = 0; i < e->n; i++) list_add(&l, eval(e->args[i], c));
-    return list_set(&l);
+    Value *s = list_set(&l);
+    s->u.set.source = e;
+    return s;
 }
 
 static __attribute__((noinline)) Value *ev_tuple(Expr *e, Ctx c) {
@@ -5159,6 +5166,7 @@ static __attribute__((noinline)) Value *ev_record(Expr *e, Ctx c) {
     for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
     Value *r = mk_fcn_from(&keys, &vals);
     r->made = MADE_RECORD;
+    r->u.fcn.source = e;
     return r;
 }
 
@@ -6716,7 +6724,9 @@ static uint64_t value_hash(Value *v) {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
         Value *set = enumerate(v);
         if (!(sum = set->u.set.hash)) {
+            fp_enter(set->u.set.source);
             for (int i = 0; i < set->n; i++) sum += elem_hash(set->u.set.elems[i]);
+            fp_leave(set->u.set.source);
             set->u.set.hash = sum;
         }
         return fmix(sum ^ (0x05 | (uint64_t)set->n << 8));
@@ -6725,7 +6735,9 @@ static uint64_t value_hash(Value *v) {
     case V_TUPLE: case V_FCN:
         if (v->made >= MADE_LAMBDA) v->made = MADE_PLAIN;   /* TLC normalizes what it fingerprints */
         if (!(sum = v->u.fcn.hash)) {
+            fp_enter(v->u.fcn.source);
             for (int i = 0; i < v->n; i++) sum += pair_hash(v, i, v->u.fcn.vals[i]);
+            fp_leave(v->u.fcn.source);
             v->u.fcn.hash = sum;
         }
         return fmix(sum ^ (0x06 | (uint64_t)v->n << 8));
@@ -7476,6 +7488,9 @@ static int action_violated(Value **st) {
     return 1;
 }
 
+/* Whether a successor is being fingerprinted: TLC does it outside Next. */
+static int fingerprinting;
+
 static int next_emit(void) {
     succ_count++;
     generated++;
@@ -7507,7 +7522,9 @@ static int next_emit(void) {
         }
         return action_violated(st);
     }
+    fingerprinting = 1;
     uint64_t fp = fingerprint(st);
+    fingerprinting = 0;
     int found = fp_find(fp);
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
     if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
@@ -7999,12 +8016,14 @@ static int search(void) {
             print_counts(nstates - expanded - checking_invariant(), checking_invariant());
             return checking_invariant() ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
-        if (checking(constraints, nconstraints) || checking(action_constraints, naction_constraints)) {
+        int outside = fingerprinting;
+        fingerprinting = 0;
+        if (outside || checking(constraints, nconstraints) || checking(action_constraints, naction_constraints)) {
             /* TLC: an unexpected exception, without the behavior */
             print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": util.Assert$TLCRuntimeException: ");
             print_error_text();
             if (!over) print_unfingerprinted(fps, nfp);
-            print_counts(0, 0);
+            print_counts(outside ? nstates - expanded : 0, 0);
             return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking(action_props, naction_props)) {
