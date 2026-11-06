@@ -5761,6 +5761,28 @@ static int collect_fn(Ctx c, void *data) {
 }
 
 /* UNCHANGED e: each variable of e keeps its value. */
+/* Whether e' = e, comparing each variable with the value it has been
+   assigned: in ENABLED, a variable of an instance by name, as TLC does. */
+static int unchanged_now(Expr *e, Ctx c) {
+    if (e->kind == X_TUPLE) {
+        for (int i = 0; i < e->n; i++) if (!unchanged_now(e->args[i], c)) return 0;
+        return 1;
+    }
+    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
+        return unchanged_now(e->def->body, (Ctx){NULL, c.inst});
+    if (e->kind == K_DECL) {
+        Expr prime = {.kind = K_PRIME, .n = 1, .args = &e};
+        int var = assignable(&prime, c);
+        if (var >= 0 && gen_target[var]) return veq(eval(e, c), gen_target[var]);
+    }
+    Value *now = eval(e, c);
+    int saved = primed;
+    primed = 1;
+    Value *then = eval(e, c);
+    primed = saved;
+    return veq(now, then);
+}
+
 static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     if (e->kind == X_TUPLE) {
         for (int i = e->n - 1; i >= 1; i--) {
@@ -5789,12 +5811,7 @@ static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
             return gen_assign(var, v, k);
         }
     }
-    Value *now = eval(e, c);
-    int saved = primed;
-    primed = 1;
-    Value *then = eval(e, c);
-    primed = saved;
-    return veq(now, then) ? gen_cont(k) : 0;
+    return unchanged_now(e, c) ? gen_cont(k) : 0;
 }
 
 static _Noreturn void not_boolean(Expr *e, Value *v) {
@@ -5946,6 +5963,10 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         not->args[0] = u;
         return gen(e->args[0], c, mk_cont(not, c, k));
     }
+    case K_NOT:
+        /* The step of <<A>>_v changes v. */
+        if (e->args[0]->kind != K_UNCHANGED) break;
+        return unchanged_now(e->args[0]->args[0], c) ? 0 : gen_cont(k);
     default:
         break;
     }

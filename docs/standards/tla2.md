@@ -403,7 +403,8 @@ is composition.
 Inside `ENABLED`, as in TLC, a primed variable of an instantiated module
 written in `A` itself is not replaced by its substitution: `x' = e` gives
 the variable named `x` a value, so with `INSTANCE M WITH x <- z, y <- z`,
-`ENABLED (x' = 0 /\ y' = 1)` in `M` is true. An action passed to an
+`ENABLED (x' = 0 /\ y' = 1)` in `M` is true; `UNCHANGED x` and the change
+`<<A>>_v` requires of `v` compare that variable likewise. An action passed to an
 operator argument from outside the instance keeps its substitutions.
 
 ### 6.10 Temporal operators
