@@ -6652,8 +6652,8 @@ typedef struct { Def *def; Expr *expr; int name; } Check;
 
 static Expr *init_expr, *next_expr;
 static Ctx root_ctx;
-static Check *invariants, *constraints, *action_constraints, *action_props, *temporal_props;
-static int ninvariants, nconstraints, naction_constraints, naction_props, ntemporal_props;
+static Check *invariants, *implied_inits, *constraints, *action_constraints, *action_props, *temporal_props;
+static int ninvariants, nimplied_inits, nconstraints, naction_constraints, naction_props, ntemporal_props;
 static Expr *view_expr;
 static Value **symmetry;     /* permutations of model values */
 static int nsymmetry;
@@ -7060,6 +7060,25 @@ static void dump_close(void) {
     dump_nranked = 0;
 }
 
+/* An initial state checked as TLC checks it: the invariants, then the
+   properties that are state predicates. Returns the exit status of a
+   violation, which it reports, or 0. */
+static int check_initial(Value **st) {
+    int bad = check_list(invariants, ninvariants, st);
+    if (bad >= 0) {
+        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+        print_state(st);
+        return TPP_VIOLATION_SAFETY;
+    }
+    bad = check_list(implied_inits, nimplied_inits, st);
+    if (bad >= 0) {
+        printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
+        print_state(st);
+        return TPP_VIOLATION_LIVENESS;
+    }
+    return 0;
+}
+
 static int init_emit(void) {
     for (int i = 0; i < nvars; i++)
         if (!succ[i]) fail("The variable %s was not assigned a value by the initial predicate.", S(vars[i]->name));
@@ -7073,14 +7092,8 @@ static int init_emit(void) {
     if (fp_find(fp) >= 0) return 0;
     int idx = add_state(st, fp, -1, -1, 1);
     if (dump_file) dump_node(idx, st);
-    int bad = check_list(invariants, ninvariants, st);
-    if (bad >= 0) {
-        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
-        print_state(st);
-        violation = TPP_VIOLATION_SAFETY;
-        return 1;
-    }
-    return 0;
+    violation = check_initial(st);
+    return violation != 0;
 }
 
 /* Whether the state a violation reports was new: as TLC, it is not queued. */
@@ -7811,6 +7824,7 @@ static int simulate(const TPPOptions *o) {
     int64_t aril = rng_aril;
     rng_seed(rng_long());
     long depth = o->depth ? o->depth : 100;
+    nimplied_inits = 0;   /* TLC's simulator ignores the properties that are state predicates */
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
     handler = &here;
@@ -7872,12 +7886,8 @@ static int simulate(const TPPOptions *o) {
                 print_state(st);
                 return TPP_ERROR;
             }
-        int bad = check_list(invariants, ninvariants, st);
-        if (bad >= 0) {
-            printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
-            print_state(st);
-            return TPP_VIOLATION_SAFETY;
-        }
+        int violated = check_initial(st);
+        if (violated) return violated;
     }
     if (!init.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
@@ -8271,6 +8281,7 @@ static void use_property(Expr *p) {
             name = intern(b.s);
             free(b.s);
         }
+        if (expr_level(e) <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), name); continue; }
         if (expr_level(e) == 2) config_error("The property %s is not correctly defined.", S(name));   /* an action, not under [] */
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);

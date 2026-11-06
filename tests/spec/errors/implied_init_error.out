@@ -1,0 +1,7 @@
+Error: Attempted to check equality of integer 0 with non-integer:
+{}
+While working on the initial state:
+x = 0
+
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

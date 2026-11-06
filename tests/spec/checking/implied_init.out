@@ -1,0 +1,3 @@
+Error: Property Q is violated by the initial state:
+x = 0
+exit 13

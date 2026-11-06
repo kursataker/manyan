@@ -1,0 +1,3 @@
+Error: Property line 8, col 35 to line 8, col 39 of module implied_init_conjunct is violated by the initial state:
+x = 0
+exit 13

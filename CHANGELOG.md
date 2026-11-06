@@ -53,6 +53,11 @@ for it as its notes.
   assign variables. byzpaxos/VoteProof from tlaplus/Examples generated
   27727 states where TLC generates 318877. An argument outside its domain
   there is reported as TLC reports it.
+- A property that is a state predicate, or a conjunct of one that is, is
+  checked on the initial states as TLC checks it, `Error: Property P is
+  violated by the initial state:`; tpp checked it as a temporal property,
+  and printed the symmetry warning for it (GermanProtocol and Paxos from
+  tlaplus/Examples). A simulation ignores it, as TLC's does.
 - Applying a tuple written `<<...>>` outside its domain, in an initial
   state or a step, gives TLC's report that it cannot fingerprint it.
 - Fixed undefined behavior and a read past the end of an array, found by

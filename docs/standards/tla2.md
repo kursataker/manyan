@@ -630,7 +630,11 @@ A `PROPERTY` holds when every behavior of the specification satisfies it.
 A behavior is an infinite sequence of states, each transition of which is a
 step of the next-state action or a stuttering step, that satisfies the
 specification's fairness conditions. A property of the form `[]P` with `P`
-a state predicate is checked as an invariant; `[][A]_v` is checked on
+a state predicate is checked as an invariant; a state predicate `P` is
+checked on each initial state, after the invariants, as TLC checks it
+while it computes them: `Error: Property P is violated by the initial
+state:` and the state, with no counts (exit 13), or an error evaluating it
+as one of an invariant there; `[][A]_v` is checked on
 every transition; other properties are checked over the state graph after
 the search (liveness checking). A property is split into its
 conjuncts, following definitions and a call of an instance's definition
@@ -672,7 +676,9 @@ long seeds the generator that draws the behaviors. `num=N` bounds the
 number of behaviors (unbounded if not given) and `-depth D` their length
 in states (100).
 
-The initial states are computed and checked first. Each behavior starts at
+The initial states are computed and checked first, against the
+invariants; a property that is a state predicate is not checked at all,
+as TLC's simulation ignores it. Each behavior starts at
 an initial state drawn at random. In each state, an action (§10.3) is drawn
 at random, then a prime from a fixed list of 1341, and the actions are
 tried in steps of that prime until one has successors. Every successor is
