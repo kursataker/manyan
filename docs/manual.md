@@ -69,7 +69,8 @@ VIEW Abstract
 CHECK_DEADLOCK FALSE
 ```
 
-`CONSTANT C <- Def` replaces a constant or operator by a definition.
+`CONSTANT C <- Def` replaces a constant or operator by a definition, and
+`CONSTANT D <- [M] Def` or `D = [M] v` a definition `D` of module `M`.
 `SPECIFICATION` takes a
 formula `Init /\ [][Next]_vars /\ Fairness`; its `WF_` and `SF_`
 conjuncts are the fairness assumptions temporal properties are checked
@@ -117,8 +118,8 @@ seed is drawn at random unless one is given.
 | 75 | an evaluation error |
 | 76 | an invariant cannot be evaluated in a state the search reached |
 | 150 | the spec does not parse or fails semantic checks |
-| 151 | the configuration is wrong |
-| 255 | another error |
+| 151 | the configuration names what the spec does not have |
+| 255 | another error, such as a configuration that does not parse |
 
 ## Workers
 

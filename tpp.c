@@ -2049,15 +2049,21 @@ static Expr *parse_junction(Tok *bullet) {
     return list;
 }
 
+/* The v of WF_v(A), [A]_v and <<A>>_v: a name, I!v, or a tuple or
+   parenthesized expression. */
 static Expr *parse_subscript(void) {
     Tok *t = peek();
     if (t->kind == T_IDENT) {
         Expr *e = mk_expr(X_NAME, t);
-        next();
-        e->segs = NEW(Seg);
-        e->segs->name = t->id;
-        e->nseg = 1;
-        e->op = t->id;
+        Seg segs[32];
+        int n = 0;
+        do segs[n++] = (Seg){.name = expect_ident()};
+        while (n < 32 && is_op(peek(), "!") && peek_at(1)->kind == T_IDENT && next());
+        e->segs = NEWN(Seg, n);
+        memcpy(e->segs, segs, sizeof(Seg) * (size_t)n);
+        e->nseg = n;
+        e->op = segs[n - 1].name;
+        finish(e);
         return e;
     }
     if (is_op(t, "<<") || is_op(t, "(")) return parse_binary(16);
@@ -7611,7 +7617,7 @@ static int simulate(const TPPOptions *o) {
 /* ---------------------------------------------------------------- configuration */
 
 /* A configuration statement (§9). */
-typedef struct { int keyword; int name; int op; Value *value; int target, module; } CfgItem;   /* module: of name, in <- [M] */
+typedef struct { const char *keyword; int name; int op; Value *value; int target, module; } CfgItem;   /* module: of name, in <- [M] */
 
 static CfgItem *cfg;
 static int ncfg;
@@ -7626,20 +7632,37 @@ static _Noreturn void config_error(const char *fmt, ...) {
     exit(TPP_ERROR_CONFIG);
 }
 
-typedef struct { const char *s; int pos; } CfgLexer;
+/* line: where the lexer is; tline: the line of the token last read. */
+typedef struct { const char *s; int pos, line, tline; } CfgLexer;
+
+/* A configuration TLC cannot read: its ConfigFileException. */
+static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
+    printf("Error: TLC threw an unexpected exception.\n"
+           "This was probably caused by an error in the spec or model.\n"
+           "See the User Output or TLC Console for clues to what happened.\n"
+           "The exception was a tlc2.tool.ConfigFileException\n"
+           ": TLC found an error in the configuration file at line %d\n", L->tline);
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+    exit(TPP_ERROR);
+}
 
 static void cfg_space(CfgLexer *L) {
     for (;;) {
         const char *s = L->s + L->pos;
-        if (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') { L->pos++; continue; }
+        if (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') { L->line += *s == '\n'; L->pos++; continue; }
         if (s[0] == '\\' && s[1] == '*') { while (L->s[L->pos] && L->s[L->pos] != '\n') L->pos++; continue; }
         if (s[0] == '(' && s[1] == '*') {
             int depth = 0;
             do {
-                if (!L->s[L->pos]) config_error("Unterminated comment in the configuration file.");
-                if (L->s[L->pos] == '(' && L->s[L->pos + 1] == '*') { depth++; L->pos += 2; }
-                else if (L->s[L->pos] == '*' && L->s[L->pos + 1] == ')') { depth--; L->pos += 2; }
-                else L->pos++;
+                const char *t = L->s + L->pos;
+                if (!*t) config_error("Unterminated comment in the configuration file.");
+                if (t[0] == '(' && t[1] == '*') { depth++; L->pos += 2; }
+                else if (t[0] == '*' && t[1] == ')') { depth--; L->pos += 2; }
+                else { L->line += *t == '\n'; L->pos++; }
             } while (depth > 0);
             continue;
         }
@@ -7647,38 +7670,31 @@ static void cfg_space(CfgLexer *L) {
     }
 }
 
-static const char *cfg_keywords_list[] = {
-    "CONSTANT", "CONSTANTS", "INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS", "PROPERTY",
-    "PROPERTIES", "CONSTRAINT", "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "SYMMETRY",
-    "VIEW", "CHECK_DEADLOCK", "POSTCONDITION", "ALIAS", NULL};
+static const char *cfg_keywords[] = {
+    "CONSTANT", "CONSTANTS", "INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES", "CONSTRAINT",
+    "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS",          /* lists */
+    "INIT", "NEXT", "SPECIFICATION", "SYMMETRY", "VIEW", "CHECK_DEADLOCK", NULL};
+enum { CFG_LISTS = 10 };
 
-/* The next token: kind 'a' name, 'n' number, 's' string, 'p' punctuation,
-   0 end. A name's text is in cfg_text; it is interned unless cfg_scanning. */
+/* The next token: kind 'a' name, 'n' number (cfg_num), 's' string
+   (cfg_str, interned unless cfg_scanning), 'p' punctuation, 0 end. Its
+   text is cfg_text. */
 static const char *cfg_text;
-static int cfg_len, cfg_scanning;
+static int cfg_len, cfg_str, cfg_scanning;
+static int64_t cfg_num;
 
-static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
+static int cfg_token(CfgLexer *L) {
     cfg_space(L);
     const char *s = L->s + L->pos;
     if (!*s) return 0;
+    L->tline = L->line;
+    cfg_text = s;
     if (id_char(*s)) {
-        int n = 0;
-        while (id_char(s[n])) n++;
-        int digits = 1;
-        for (int i = 0; i < n; i++) if (!isdigit((unsigned char)s[i])) digits = 0;
-        L->pos += n;
-        if (digits) { *num = strtoll(s, NULL, 10); return 'n'; }
-        cfg_text = s;
-        cfg_len = n;
-        *id = cfg_scanning ? -1 : intern_n(s, n);
+        int n = 0, digits = 1;
+        while (id_char(s[n])) digits &= isdigit((unsigned char)s[n++]) != 0;
+        L->pos += cfg_len = n;
+        if (digits) { cfg_num = strtoll(s, NULL, 10); return 'n'; }
         return 'a';
-    }
-    if (*s == '-' && isdigit((unsigned char)s[1])) {
-        int n = 1;
-        while (isdigit((unsigned char)s[n])) n++;
-        *num = strtoll(s, NULL, 10);
-        L->pos += n;
-        return 'n';
     }
     if (*s == '"') {
         int n = 1;
@@ -7688,151 +7704,121 @@ static int cfg_token(CfgLexer *L, int *id, int64_t *num) {
             buf_add(&b, s + n, 1);
             n++;
         }
-        L->pos += n + 1;
-        *id = cfg_scanning ? -1 : intern_n(b.s ? b.s : "", (int)b.n);
+        L->pos += cfg_len = n + 1;
+        cfg_str = cfg_scanning ? -1 : intern_n(b.s ? b.s : "", (int)b.n);
         free(b.s);
         return 's';
     }
-    if (s[0] == '<' && s[1] == '-') { L->pos += 2; cfg_text = s; cfg_len = 2; *id = cfg_scanning ? -1 : intern("<-"); return 'p'; }
-    L->pos++;
-    cfg_text = s;
-    cfg_len = 1;
-    *id = cfg_scanning ? -1 : intern_n(s, 1);
+    L->pos += cfg_len = s[0] == '<' && s[1] == '-' ? 2 : 1;
     return 'p';
 }
 
-/* Where a name is expected, an operator symbol is one too: `++`, `\o`.
-   Joins the token just read with the characters that continue it. */
-static int cfg_operator(CfgLexer *L, int kind, int *id) {
-    if (kind != 'p' || cfg_scanning) return kind;
-    const char *s = L->s + L->pos - 1;
-    int n = 1;
-    if (*s == '\\') while (isalpha((unsigned char)s[n])) n++;
-    else while (s[n] && strchr("+-*/<>=!@#$%^&|~:.", s[n])) n++;
-    L->pos += n - 1;
-    *id = intern_n(s, n);
-    return 'a';
+static int cfg_is(int kind, const char *text) {
+    return kind && (int)strlen(text) == cfg_len && memcmp(cfg_text, text, (size_t)cfg_len) == 0;
 }
 
-/* TLC makes the configuration's model values before it reads a module, so
-   their names are interned first (§7.5). */
-static void intern_model_values(const char *text) {
-    CfgLexer L = {text, 0};
-    int id, after_eq = 0, in_constants = 0;
-    int64_t num;
-    cfg_scanning = 1;
-    for (int kind; (kind = cfg_token(&L, &id, &num));) {
-        if (kind == 'a') {
-            char name[256];
-            snprintf(name, sizeof name, "%.*s", cfg_len, cfg_text);
-            int keyword = 0;
-            for (int i = 0; cfg_keywords_list[i]; i++) if (strcmp(name, cfg_keywords_list[i]) == 0) keyword = 1;
-            if (keyword) { in_constants = strncmp(name, "CONSTANT", 8) == 0; after_eq = 0; continue; }
-            if (in_constants && after_eq && strcmp(name, "TRUE") && strcmp(name, "FALSE")) intern_n(cfg_text, cfg_len);
-            if (in_constants && after_eq == 1) after_eq = 0;
-        } else if (kind == 'p' && cfg_text[0] == '=' && in_constants) {
-            after_eq = 1;
-        } else if (kind == 'p' && cfg_text[0] == '{' && after_eq) {
-            after_eq = 2;
-        } else if (kind == 'p' && cfg_text[0] == '}' && after_eq == 2) {
-            after_eq = 0;
-        } else if (after_eq == 1) {
-            after_eq = 0;
+/* The keyword the token is, if it is one. */
+static int cfg_keyword(int kind) {
+    for (int i = 0; kind == 'a' && cfg_keywords[i]; i++) if (cfg_is(kind, cfg_keywords[i])) return i;
+    return -1;
+}
+
+/* The token as a name, interned unless cfg_scanning: TLC takes any token
+   where a name is expected, and an operator symbol is one, joined from the
+   characters that continue it: `++`, `\o`. */
+static int cfg_name(CfgLexer *L, int kind) {
+    if (kind == 'p') {
+        int n = cfg_len;
+        if (*cfg_text == '\\') while (isalpha((unsigned char)cfg_text[n])) n++;
+        else while (cfg_text[n] && strchr("+-*/<>=!@#$%^&|~:.", cfg_text[n])) n++;
+        L->pos += n - cfg_len;
+        cfg_len = n;
+    }
+    return cfg_scanning ? -1 : intern_n(cfg_text, cfg_len);
+}
+
+/* A value: a number, a string, TRUE, FALSE, a set {v, ...}, or a model
+   value, as TLC takes any other token. TLC makes the model values before
+   it reads a module, so their names are interned even when cfg_scanning,
+   when no value is made (§7.5). */
+static Value *cfg_value(CfgLexer *L, int kind) {
+    if (!kind) cfg_fail(L, "It was expecting a value, but did not find it.");
+    if (cfg_is(kind, "{")) {
+        List l = {0};
+        kind = cfg_token(L);
+        if (!cfg_is(kind, "}"))
+            for (;;) {
+                list_add(&l, cfg_value(L, kind));
+                kind = cfg_token(L);
+                if (cfg_is(kind, "}")) break;
+                if (!cfg_is(kind, ",")) cfg_fail(L, "It was expecting }, but did not find it.");
+                kind = cfg_token(L);
+            }
+        return cfg_scanning ? NULL : list_set(&l);
+    }
+    if (cfg_scanning && (kind == 'n' || kind == 's' || cfg_is(kind, "TRUE") || cfg_is(kind, "FALSE"))) return NULL;
+    if (kind == 'n') return mk_int(cfg_num);
+    if (kind == 's') return mk_str(cfg_str);
+    if (cfg_is(kind, "TRUE")) return TRUEV;
+    if (cfg_is(kind, "FALSE")) return FALSEV;
+    int name = intern_n(cfg_text, cfg_len);
+    return cfg_scanning ? NULL : mk_model(name);
+}
+
+static void cfg_add(const char *keyword, int name, int op, Value *v, int target, int module) {
+    if (cfg_scanning) return;
+    cfg = xrealloc(cfg, sizeof(CfgItem) * (size_t)(ncfg + 1));
+    cfg[ncfg++] = (CfgItem){keyword, name, op, v, target, module};
+}
+
+/* Reads the configuration as TLC does. TLC reads it before any module, so
+   a first pass, scanning, checks it and interns the model values' names;
+   the second, after the modules, makes its statements. */
+static void read_config(const char *text, int scanning) {
+    CfgLexer L = {text, 0, 1, 1};
+    int seen[16] = {0};
+    cfg_scanning = scanning;
+    int kind = cfg_token(&L);
+    while (kind) {
+        int key = cfg_keyword(kind);
+        if (key < 0) cfg_fail(&L, "It was expecting a keyword, but did not find it.");
+        const char *k = cfg_keywords[key];
+        kind = cfg_token(&L);
+        if (key < 2) {
+            while (kind && cfg_keyword(kind) < 0) {
+                int name = cfg_name(&L, kind), module = 0;
+                kind = cfg_token(&L);
+                if (cfg_is(kind, "(")) {   /* an operator constant's parameters: skipped */
+                    while (kind && !cfg_is(kind, ")")) kind = cfg_token(&L);
+                    if (!kind) cfg_fail(&L, "It was expecting a value, but did not find it.");
+                    kind = cfg_token(&L);
+                }
+                int op = cfg_is(kind, "=") ? '=' : cfg_is(kind, "<-") ? '<' : 0;
+                if (!op) cfg_fail(&L, "It was expecting = or <-, but did not find it.");
+                kind = cfg_token(&L);
+                if (cfg_is(kind, "[")) {   /* name = [M] value, name <- [M] target: name of module M */
+                    module = cfg_name(&L, cfg_token(&L));
+                    if (!cfg_is(cfg_token(&L), "]")) cfg_fail(&L, "It was expecting ], but did not find it.");
+                    kind = cfg_token(&L);
+                }
+                if (op == '=') cfg_add(k, name, op, cfg_value(&L, kind), 0, module);
+                else if (!kind) cfg_fail(&L, module ? "Expected an identifier after <-[mod]." : "Expected an identifier after <-.");
+                else cfg_add(k, name, op, NULL, cfg_name(&L, kind), module);
+                kind = cfg_token(&L);
+            }
+        } else if (key < CFG_LISTS) {
+            for (; kind && cfg_keyword(kind) < 0; kind = cfg_token(&L)) cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0);
+        } else {
+            if (!kind) cfg_fail(&L, "The keyword %s was not followed by an identifier.", k);
+            if (seen[key]++) cfg_fail(&L, "The keyword %s appeared twice.", k);
+            if (strcmp(k, "CHECK_DEADLOCK") == 0) {
+                if (!cfg_is(kind, "TRUE") && !cfg_is(kind, "FALSE")) cfg_fail(&L, "It was expecting TRUE or FALSE, but did not find it.");
+                cfg_add(k, 0, 0, cfg_is(kind, "TRUE") ? TRUEV : FALSEV, 0, 0);
+            } else cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0);
+            kind = cfg_token(&L);
         }
     }
     cfg_scanning = 0;
-}
-
-
-static int is_cfg_keyword(int id) {
-    for (int i = 0; cfg_keywords_list[i]; i++) if (strcmp(S(id), cfg_keywords_list[i]) == 0) return 1;
-    return 0;
-}
-
-static Value *cfg_value(CfgLexer *L, int kind, int id, int64_t num) {
-    if (kind == 'n') return mk_int(num);
-    if (kind == 's') return mk_str(id);
-    if (kind == 'a') {
-        if (strcmp(S(id), "TRUE") == 0) return TRUEV;
-        if (strcmp(S(id), "FALSE") == 0) return FALSEV;
-        return mk_model(id);
-    }
-    if (kind == 'p' && strcmp(S(id), "{") == 0) {
-        List l = {0};
-        int k = cfg_token(L, &id, &num);
-        if (k == 'p' && strcmp(S(id), "}") == 0) return list_set(&l);
-        for (;;) {
-            list_add(&l, cfg_value(L, k, id, num));
-            k = cfg_token(L, &id, &num);
-            if (k == 'p' && strcmp(S(id), "}") == 0) break;
-            if (!(k == 'p' && strcmp(S(id), ",") == 0)) config_error("TLC found an error in the configuration file: expected , or }.");
-            k = cfg_token(L, &id, &num);
-        }
-        return list_set(&l);
-    }
-    config_error("TLC found an error in the configuration file: expected a value.");
-}
-
-static void cfg_add(int keyword, int name, int op, Value *v, int target) {
-    cfg = xrealloc(cfg, sizeof(CfgItem) * (size_t)(ncfg + 1));
-    cfg[ncfg] = (CfgItem){keyword, name, op, v, target, 0};
-    ncfg++;
-}
-
-static void parse_config(const char *text) {
-    CfgLexer L = {text, 0};
-    int id = 0, keyword = -1;
-    int64_t num = 0;
-    int kind = cfg_token(&L, &id, &num);
-    while (kind) {
-        if (kind == 'a' && is_cfg_keyword(id)) {
-            keyword = id;
-            kind = cfg_token(&L, &id, &num);
-            continue;
-        }
-        if (keyword < 0) config_error("TLC found an error in the configuration file at line 1\nIt was expecting a keyword, but did not find it.");
-        const char *k = S(keyword);
-        if (strncmp(k, "CONSTANT", 8) == 0) {
-            if (!(kind == 'p' && (strcmp(S(id), "=") == 0 || strcmp(S(id), "<-") == 0))) kind = cfg_operator(&L, kind, &id);
-            if (kind != 'a') config_error("TLC found an error in the configuration file: expected a constant name.");
-            int name = id;
-            kind = cfg_token(&L, &id, &num);
-            if (kind == 'p' && strcmp(S(id), "(") == 0) {
-                /* an operator constant's parameters: skip them */
-                while (kind && !(kind == 'p' && strcmp(S(id), ")") == 0)) kind = cfg_token(&L, &id, &num);
-                kind = cfg_token(&L, &id, &num);
-            }
-            if (kind == 'p' && strcmp(S(id), "=") == 0) {
-                kind = cfg_token(&L, &id, &num);
-                cfg_add(keyword, name, '=', cfg_value(&L, kind, id, num), 0);
-            } else if (kind == 'p' && strcmp(S(id), "<-") == 0) {
-                kind = cfg_token(&L, &id, &num);
-                int module = 0;
-                if (kind == 'p' && strcmp(S(id), "[") == 0) {   /* name <- [M] target: name of module M */
-                    if (cfg_token(&L, &id, &num) != 'a') config_error("TLC found an error in the configuration file: expected a module name after [.");
-                    module = id;
-                    cfg_token(&L, &id, &num);
-                    kind = cfg_token(&L, &id, &num);
-                }
-                kind = cfg_operator(&L, kind, &id);
-                if (kind != 'a') config_error("TLC found an error in the configuration file: expected an operator after <-.");
-                cfg_add(keyword, name, '<', NULL, id);
-                cfg[ncfg - 1].module = module;
-            } else {
-                config_error("TLC found an error in the configuration file: expected = or <- after %s.", S(name));
-            }
-            kind = cfg_token(&L, &id, &num);
-            continue;
-        }
-        if (strcmp(k, "CHECK_DEADLOCK") == 0) {
-            cfg_add(keyword, 0, 0, cfg_value(&L, kind, id, num), 0);
-            kind = cfg_token(&L, &id, &num);
-            continue;
-        }
-        if (kind != 'a') config_error("TLC found an error in the configuration file: expected a name after %s.", k);
-        cfg_add(keyword, id, 0, NULL, 0);
-        kind = cfg_token(&L, &id, &num);
-    }
 }
 
 /* ---------------------------------------------------------------- model setup */
@@ -8186,7 +8172,7 @@ static int setup_model(void) {
     Expr *spec = NULL, *init = NULL, *next = NULL, *e;
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
-        const char *k = S(it->keyword);
+        const char *k = it->keyword;
         if (strncmp(k, "CONSTANT", 8) == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
@@ -9103,6 +9089,7 @@ int tpp_check(const TPPOptions *o) {
     }
     char *config_text = read_file(config_path);
     if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
+    read_config(config_text, 1);
     char *text = read_file(path);
     if (!text) {
         printf("Error: Cannot find source file %s.\n", path);
@@ -9110,7 +9097,6 @@ int tpp_check(const TPPOptions *o) {
         return TPP_ERROR_PARSE;
     }
 
-    intern_model_values(config_text);
     for (int i = 0; builtin_names[i]; i++) intern(builtin_names[i]);
     for (int i = -1; i < 1023; i++) {
         Value *v = NEW(Value);
@@ -9143,7 +9129,7 @@ int tpp_check(const TPPOptions *o) {
         }
     }
     bind_natives();
-    parse_config(config_text);
+    read_config(config_text, 0);
     setup_model();
 
     for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);

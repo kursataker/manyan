@@ -513,12 +513,19 @@ a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 ### 9.1 Syntax
 
 A configuration is a sequence of statements; `\*` and `(* *)` comments as
-in §3.3. The keywords, each followed by one or more names (or, for
-`CONSTANT`, assignments):
+in §3.3. The keywords: `CONSTANT` is followed by assignments; `INIT`,
+`NEXT`, `SPECIFICATION`, `SYMMETRY`, `VIEW` and `CHECK_DEADLOCK` by one
+name or value each, and may each appear once; the others by any number of
+names. As in TLC, any token stands where a name is expected, and the
+configuration is read before any module, so its errors come first, each
+as TLC's `ConfigFileException` at the line it is found: a word that is not
+a keyword where one is expected (`ALIAS` and `POSTCONDITION` are not TLC's
+keywords), a keyword repeated or followed by nothing, an assignment without
+`=` or `<-`, a set without its `}`.
 
 | Statement | Meaning |
 |---|---|
-| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
+| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
 | `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
@@ -531,8 +538,9 @@ in §3.3. The keywords, each followed by one or more names (or, for
 
 ### 9.2 Values
 
-A value in a configuration is a number, a string, `TRUE`, `FALSE`, a
-model value (any other name), or a set `{v1, ..., vn}` of values. A model
+A value in a configuration is a natural number, a string, `TRUE`,
+`FALSE`, a model value (any other name), or a set `{v1, ..., vn}` of
+values. As in TLC, `-1` is two tokens: the model value `-`, then a name. A model
 value equals only itself.
 
 ## 10 Model checking
