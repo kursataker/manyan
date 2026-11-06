@@ -31,7 +31,7 @@ typedef struct {
     int simulate;        /* random behaviors instead of the state graph, as -simulate */
     long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */
     long depth;          /* simulation: states in a behavior, 0 for 100 (-depth) */
-    long long seed;      /* simulation: the seed, when seed_given (-seed) */
+    long long seed;      /* the seed, when seed_given (-seed): a simulation's, and model checking's for RandomElement */
     int seed_given;
     long long aril;      /* simulation: draws to skip after seeding (-aril) */
     const char *trace_file;  /* simulation: write behavior N to FILE_0_N, or NULL (-simulate file=FILE) */

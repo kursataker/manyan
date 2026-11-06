@@ -186,5 +186,8 @@ from `Print` comes in a different order than TLC's, and a temporal
 property is checked on the whole graph of each behavior, where TLC may
 miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
-check them either. `RandomElement(S)` is the first element of `S`,
-and `RandomSubset(k, S)` its first k, where TLC draws them at random.
+check them either. `RandomElement`, `RandomSubset` and
+`RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
+and constants when model checking. In `Init` and `Next`, TLC seeds each
+state's draws with its fingerprint, which tpp computes differently, so
+tpp draws other values there.

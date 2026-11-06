@@ -15,6 +15,7 @@
 #include "tpp.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -343,7 +344,8 @@ struct Value {
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
-        struct { Value **elems; uint64_t hash; Expr *source; } set;   /* V_SET, sorted, distinct */
+        struct { Value **elems; uint64_t hash; Expr *source; Value *product; } set;   /* V_SET, sorted, distinct */
+        /* product: the s1 \X ... \X sn TLC keeps, held enumerated */
         struct { Value **keys, **vals; uint64_t hash; Expr *source; } fcn;
         /* V_TUPLE has no keys; source: the <<...>>, [...] or {...} that
            made it, which TLC names when applying or fingerprinting it
@@ -5182,7 +5184,10 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
         if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
         s->u.l.names[e->n + i] = a;
     }
-    return expandable(s) ? held(enumerate(s)) : s;
+    if (!expandable(s)) return s;
+    Value *t = held(enumerate(s));
+    t->u.set.product = s;   /* as TLC, RandomElement draws each part */
+    return t;
 }
 
 static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
@@ -5969,28 +5974,152 @@ NATIVE(n_sortseq) {
     return t;
 }
 
-NATIVE(n_randomelement) {
-    UNUSED;
-    Value *s = enumerate(a[0]);
-    if (!s->n) fail_module("Attempted to compute RandomElement of the empty set.");
-    return s->u.set.elems[0];
+/* java.util.Random, the generator TLC draws from. */
+typedef struct { uint64_t s; } JRandom;
+#define JRANDOM(seed) {((uint64_t)(seed) ^ 0x5DEECE66DULL) & ((1ULL << 48) - 1)}
+
+static void jr_seed(JRandom *r, int64_t seed) { *r = (JRandom)JRANDOM(seed); }
+
+static int32_t jr_next(JRandom *r, int bits) {
+    r->s = (r->s * 0x5DEECE66DULL + 0xB) & ((1ULL << 48) - 1);
+    return (int32_t)(uint32_t)(r->s >> (48 - bits));
 }
 
-/* k elements of S: as RandomElement, the first ones, where TLC draws them. */
+static int64_t jr_long(JRandom *r) {
+    uint64_t hi = (uint64_t)(int64_t)jr_next(r, 32);
+    return (int64_t)((hi << 32) + (uint64_t)(int64_t)jr_next(r, 32));
+}
+
+static double jr_double(JRandom *r) { return (double)(((int64_t)jr_next(r, 26) << 27) + jr_next(r, 27)) * 0x1.0p-53; }
+
+/* Below bound, as nextInt(bound). */
+static int jr_int(JRandom *r, int bound) {
+    int32_t x = jr_next(r, 31), m = bound - 1;
+    if (!(bound & m)) return (int)(((int64_t)bound * x) >> 31);
+    for (int32_t u = x; (int32_t)((uint32_t)u - (uint32_t)(x = u % bound) + (uint32_t)m) < 0; u = jr_next(r, 31)) {}
+    return x;
+}
+
+/* What RandomElement and the Randomization module draw from: TLC's
+   RandomEnumerableValues. A simulation draws as TLC 2.19's threads do,
+   from java.util.Random(0): one for the model and the initial states,
+   another for the behaviors. Model checking draws from java.util.Random
+   seeded with -seed, again for Init and for each state expanded, xored
+   with the state's fingerprint so that a trace can be rebuilt; tpp's
+   fingerprints are not TLC's, so there the draws are not TLC's. */
+static JRandom draw_model = JRANDOM(0), draw_behaviors = JRANDOM(0), *drawing = &draw_model;
+static int64_t draw_seed;
+static Value **draw_from;   /* the state expanded, NULL for Init */
+static int draw_due;        /* to seed at the next draw */
+static uint64_t fingerprint(Value **st);
+
+static void draw_restart(Value **from) { draw_from = from; draw_due = 1; }
+
+static JRandom *draws(void) {
+    if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? fingerprint(draw_from) : 0));
+    draw_due = 0;
+    return drawing;
+}
+
+/* A set of functions, records or tuples: TLC draws an element of each
+   part's set. Its parts' sets, in its element's order, for n_parts. */
+static int is_product(Value *s) { return s->kind == V_LAZY && (s->lazy == L_FCNSET || s->lazy == L_RCDSET || s->lazy == L_TIMES); }
+
+static Value **product_parts(Value *s, int *n) {
+    if (s->lazy != L_FCNSET) { *n = s->n; return s->u.l.names + s->n; }
+    *n = enumerate(s->u.l.a)->n;
+    Value **sets = NEWN(Value *, *n);
+    for (int i = 0; i < *n; i++) sets[i] = s->u.l.b;
+    return sets;
+}
+
+/* The element of product s whose parts are vals. */
+static Value *product_element(Value *s, Value **vals) {
+    Value *dom = s->lazy == L_FCNSET ? enumerate(s->u.l.a) : NULL;
+    int n = dom ? dom->n : s->n;
+    Value *t = s->lazy == L_TIMES ? mk_tuple(n) : mk_fcn(n);
+    for (int i = 0; i < n; i++) {
+        if (s->lazy != L_TIMES) t->u.fcn.keys[i] = dom ? dom->u.set.elems[i] : s->u.l.names[i];
+        t->u.fcn.vals[i] = vals[i];
+    }
+    if (s->lazy == L_RCDSET) t->made = MADE_RECORD;
+    if (!n && s->lazy == L_FCNSET) t->empty_fcn = 1;
+    return t;
+}
+
+static Value *random_element(Value *s) {
+    if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
+    if (is_product(s) && !(s->lazy == L_FCNSET && set_is_infinite(s->u.l.a))) {
+        int n;
+        Value **sets = product_parts(s, &n), **vals = NEWN(Value *, n);
+        for (int i = 0; i < n; i++) vals[i] = random_element(sets[i]);
+        return product_element(s, vals);
+    }
+    Value *e = enumerate(s);
+    if (!e->n) fail_module("Attempted to compute RandomElement of the empty set.");
+    return e->u.set.elems[(int)(jr_double(draws()) * e->n)];
+}
+
+NATIVE(n_randomelement) { UNUSED; return random_element(a[0]); }
+
+/* k elements of S, as TLC 2.19 draws them: k indices into S apart by a
+   fixed step from a random one. A set of functions or records too large
+   for an int index has 63-bit steps from a random long, and TLC decodes
+   a function's index by powers of doubles. */
 NATIVE(n_randomsubset) {
     UNUSED;
     if (a[0]->kind != V_INT)
         fail_module("The first argument of RandomSubset should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
     if (!is_set(a[1]) || set_is_infinite(a[1]))
         fail_module("The second argument of RandomSubset should be a a finite set, but instead it is:\n%s", pretty(a[1]));
-    Value *s = enumerate(a[1]);
+    Value *s = a[1], **sets = NULL, *e = NULL;
+    int n = 0;
+    __extension__ typedef __int128 Big;
+    const Big huge = (Big)1 << 126;   /* above every index drawn */
+    Big size = 1;
+    if (is_product(s) && s->lazy != L_TIMES) {
+        sets = product_parts(s, &n);
+        Value **parts = NEWN(Value *, n);
+        for (int i = 0; i < n; i++) {
+            parts[i] = enumerate(sets[i]);
+            size = size > huge / (parts[i]->n + 1) ? huge : size * parts[i]->n;
+        }
+        sets = parts;
+    } else {
+        e = enumerate(s);
+        size = e->n;
+    }
+    JRandom *r = draws();
+    int big = size > 2147483647, k = (int)a[0]->u.i;
+    Big x = big ? INT64_MAX - 24 : size < 191 ? 191 : 2147483647, start = 0;
+    if (big) {
+        int64_t l = jr_long(r);
+        start = l < 0 && l != INT64_MIN ? -l : l;
+    } else if (size > 0) start = jr_int(r, (int)size);
+    else k = 0;
     List l = {0};
-    for (int i = 0; i < s->n && i < a[0]->u.i; i++) list_add(&l, s->u.set.elems[i]);
+    Value **vals = NEWN(Value *, n);
+    for (int i = 0; i < k; i++) {
+        Big idx = (x * i + start) % size;
+        if (idx < 0) idx += size;
+        if (e) { list_add(&l, e->u.set.elems[(int64_t)idx]); continue; }
+        Big scale = 1;   /* of the last part, the least significant */
+        for (int j = n - 1, p = 0; j >= 0; j--, p++) {
+            int mod = sets[j]->n;
+            if (big && s->lazy == L_FCNSET) {
+                double d = pow(mod, p);
+                scale = d >= 0x1p63 ? INT64_MAX : (int64_t)d;
+            }
+            vals[j] = sets[j]->u.set.elems[(int64_t)(idx / scale % mod)];
+            if (!big || s->lazy != L_FCNSET) scale = scale > huge / (mod + 1) ? huge : scale * mod;
+        }
+        list_add(&l, product_element(s, vals));
+    }
     return list_set(&l);
 }
 
-/* k subsets of S, each of n elements where it can: as RandomSubset, the
-   first ones, where TLC tosses a coin for each element. */
+/* k subsets of S, as TLC draws them: each element in with probability
+   n / Cardinality(S). */
 NATIVE(n_randomsetofsubsets) {
     UNUSED;
     for (int i = 0; i < 2; i++)
@@ -6007,18 +6136,13 @@ NATIVE(n_randomsetofsubsets) {
     if (n > s->n)
         fail_module("The second argument of RandomSetOfSubsets should be a nonnegative integer in range "
                     "0..Cardinality(S), but instead it is:\n%s", pretty(a[1]));
+    double p = (double)n / s->n;
+    JRandom *r = draws();
     List l = {0};
-    int *idx = NEWN(int, n + 1);
-    for (int i = 0; i < n; i++) idx[i] = i;
     for (int64_t j = 0; j < k; j++) {
-        Value *t = mk_set((int)n);
-        for (int i = 0; i < n; i++) t->u.set.elems[i] = s->u.set.elems[idx[i]];
-        list_add(&l, t);
-        int i = (int)n - 1;
-        while (i >= 0 && idx[i] == s->n - n + i) i--;
-        if (i < 0) break;
-        idx[i]++;
-        for (int m = i + 1; m < n; m++) idx[m] = idx[m - 1] + 1;
+        List sub = {0};
+        for (int i = 0; i < s->n; i++) if (jr_double(r) < p) list_add(&sub, s->u.set.elems[i]);
+        list_add(&l, list_set(&sub));
     }
     return list_set(&l);
 }
@@ -7287,6 +7411,13 @@ static int replay(Value **from, Value **to) {
     replay_match = to;
     gen_target = st;
     gen_emit = replay_emit;
+    /* Model checking draws as the search did; in a simulation TLC's main
+       thread rebuilds a behavior, drawing from its generator. */
+    JRandom *saved_drawing = drawing, saved_model = draw_model;
+    Value **saved_from = draw_from;
+    int saved_due = draw_due;
+    drawing = &draw_model;
+    if (!simulating) draw_restart(from);
     if (!from) {
         gen_init = 1;
         cur_state = st;
@@ -7304,6 +7435,8 @@ static int replay(Value **from, Value **to) {
     }
     cur_state = saved_cur; next_state = saved_next; gen_target = saved_target;
     gen_emit = saved_emit; gen_init = saved_init;
+    drawing = saved_drawing;
+    if (!simulating) draw_model = saved_model, draw_from = saved_from, draw_due = saved_due;
     return action;   /* the action that yields `to`, the last tried if none */
 }
 
@@ -7671,6 +7804,7 @@ static int expand_state(int idx) {
     expanded = idx + 1;
     cur_level = states[idx].depth;
     cur_state = decode_state(idx);
+    draw_restart(cur_state);
     succ_count = 0;
     for (int a = 0; a < nactions; a++) {
         cur_action = a;
@@ -7874,6 +8008,7 @@ static void worker_expand(int idx) {
     } else {
         cur_level = states[idx].depth;
         cur_state = decode_state(idx);
+        draw_restart(cur_state);
         succ_count = 0;
         for (int a = 0; a < nactions && w_clean; a++) {
             cur_action = a;
@@ -8166,6 +8301,7 @@ static int search(void) {
     gen_emit = init_emit;
     if (ntemporal_props) live_init_lits();
     arena = &scratch_arena;
+    draw_restart(NULL);
     gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops, exiting as if no error */
@@ -8215,30 +8351,19 @@ static int search(void) {
 
 /* ---------------------------------------------------------------- simulation */
 
-/* TLC's random generator: java.util.Random, counting its doubles (aril). */
-static uint64_t rng_state;
+/* TLC's random generator of behaviors, counting its doubles (aril). */
+static JRandom rng;
 static int64_t rng_aril;
 
 static void rng_seed(int64_t seed) {
-    rng_state = ((uint64_t)seed ^ 0x5DEECE66DULL) & ((1ULL << 48) - 1);
+    jr_seed(&rng, seed);
     rng_aril = 0;
-}
-
-static int32_t rng_next(int bits) {
-    rng_state = (rng_state * 0x5DEECE66DULL + 0xB) & ((1ULL << 48) - 1);
-    return (int32_t)(uint32_t)(rng_state >> (48 - bits));
-}
-
-static int64_t rng_long(void) {
-    int64_t hi = rng_next(32);
-    return (int64_t)((uint64_t)hi << 32) + rng_next(32);
 }
 
 /* An index below n, as TLC draws one: floor(nextDouble() * n). */
 static int rng_index(int n) {
     rng_aril++;
-    double d = (double)(((int64_t)rng_next(26) << 27) + rng_next(27)) * 0x1.0p-53;
-    return (int)(d * n);   /* d * n >= 0: truncation is floor */
+    return (int)(jr_double(&rng) * n);   /* >= 0: truncation is floor */
 }
 
 /* One of the 1341 primes from 1277011 on, TLC's steps through the actions. */
@@ -8316,9 +8441,16 @@ static int sim_print(States *trace) {
     uint64_t *fps = NEWN(uint64_t, trace->n);
     for (int i = 0; i < trace->n; i++) fps[i] = fingerprint(trace->a[i]);
     /* TLC finds the action of every step, a repeated state's too, and
-       fails as the behavior did if finding it fails. */
+       fails as the behavior did if finding it fails; a step it does not
+       find again, as one drawn at random, ends in its NullPointerException. */
     for (int i = 0, k = 1; i < trace->n; i++) {
         int action = i ? replay(trace->a[i - 1], trace->a[i]) : -1;
+        if (i && !replay_found) {
+            handler = outer;
+            print_exception("java.lang.NullPointerException", ": ");
+            printf("Cannot read field \"state\" because \"currentStateInfo\" is null\n");
+            return 0;
+        }
         if (!i || fps[i] != fps[i - 1]) print_numbered(k++, action, trace->a[i]);
     }
     handler = outer;
@@ -8397,7 +8529,7 @@ static int simulate(const TPPOptions *o) {
     rng_seed(seed);
     for (int64_t i = 0; i < o->aril; i++) rng_index(1);
     int64_t aril = rng_aril;
-    rng_seed(rng_long());
+    rng_seed(jr_long(&rng));
     long depth = o->depth ? o->depth : 100;
     nimplied_inits = 0;   /* TLC's simulator ignores the properties that are state predicates */
     succ = NEWN(Value *, nvars);
@@ -8471,6 +8603,7 @@ static int simulate(const TPPOptions *o) {
     arena = &perm_arena;
     collect_fairnesses();
     arena = &scratch_arena;
+    drawing = &draw_behaviors;   /* TLC's worker thread */
     for (long t = 0; !o->traces || t < o->traces; t++) {
         arena_reset(&scratch_arena);
         trace.n = 0;
@@ -10502,6 +10635,7 @@ int tpp_check(const TPPOptions *o) {
         }
     }
     bind_natives();
+    if (!o->simulate) jr_seed(&draw_model, draw_seed = o->seed);   /* TLC: random without -seed */
     starting = 1;
     read_config(config_text, 0);
     setup_model();

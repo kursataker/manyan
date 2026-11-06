@@ -6,6 +6,13 @@ for it as its notes.
 
 ## 0.3.0
 
+- `RandomElement`, `RandomSubset` and `RandomSetOfSubsets` draw as TLC
+  2.19 does: from one generator for the assumptions, constants and
+  initial states and another for the behaviors of a simulation (both
+  seeded with 0, whatever `-seed` is), and from `-seed` when model
+  checking. A set of functions, records or tuples draws part by part,
+  and a trace is rebuilt drawing again, failing where TLC fails. tpp
+  took the first elements.
 - A specification with two conjuncts `[][A]_v`, or an action not under
   one, is TLC's configuration error; tpp checked the first, or failed in
   the search.
