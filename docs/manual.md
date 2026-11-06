@@ -186,7 +186,5 @@ from `Print` comes in a different order than TLC's, and a temporal
 property is checked on the whole graph of each behavior, where TLC may
 miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
-check them either. `TLCGet` supports `"level"` and the registers
-`TLCSet` sets, not TLC's `"diameter"`, `"distinct"`, `"queue"` and
-`"duration"`; another key is undefined, as in TLC 2.19. `RandomElement(S)` is the first element of `S`,
+check them either. `RandomElement(S)` is the first element of `S`,
 and `RandomSubset(k, S)` its first k, where TLC draws them at random.

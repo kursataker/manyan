@@ -238,6 +238,9 @@ static void fp_enter(Expr *where) {
 }
 static void fp_leave(Expr *where) { fp_depth -= where != NULL; }
 
+/* TLC's exit status for an error evaluating the spec. */
+static int eval_failure_status(void) { return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL; }
+
 static void error_reset(void) {
     error_message.n = 0;
     if (error_message.s) error_message.s[0] = 0;
@@ -5853,6 +5856,7 @@ static Value *decode(const char **p);
 static Buf *registers;
 static int nregisters;
 static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
+static int64_t search_counter(const char *key);
 
 NATIVE(n_tlcget) {
     UNUSED;
@@ -5860,10 +5864,9 @@ NATIVE(n_tlcget) {
     if (a[0]->kind == V_STR) {
         const char *key = S(a[0]->u.i);
         if (!strcmp(key, "level")) return mk_int(cur_level);
-        static const char *const counters[] = {"diameter", "distinct", "queue", "duration"};
-        for (size_t i = 0; i < sizeof counters / sizeof *counters; i++)
-            if (!strcmp(key, counters[i])) fail_module("TLCGet(\"%s\") is not supported.", key);
-        fail_module("TLCGet(%s) was undefined.", key);
+        int64_t n = search_counter(key);
+        if (n < 0) fail_module("TLCGet(%s) was undefined.", key);
+        return mk_int(n);
     }
     if (a[0]->kind != V_INT || a[0]->u.i < 0)
         fail_module("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
@@ -6187,24 +6190,36 @@ static void eval_restore(EvalState s) {
     java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
 }
 
+/* The error being reported, which an evaluation whose own error is
+   forgotten keeps. */
+typedef struct { Buf msg; Expr *expr; int status, module, stackless; } ErrorState;
+
+static ErrorState error_save(void) {
+    ErrorState e = {{0}, error_expr, error_status, error_module, stackless};
+    buf_puts(&e.msg, error_message.s ? error_message.s : "");
+    return e;
+}
+
+static void error_restore(ErrorState *e) {
+    error_reset();
+    buf_puts(&error_message, e->msg.s);
+    free(e->msg.s);
+    error_expr = e->expr, error_status = e->status, error_module = e->module, stackless = e->stackless;
+}
+
 /* A lazy function as TLC prints it: computed in full if it can be, else
    as its definition, the error forgotten (§6.6). A worker gives the state
    back instead, as the error may be one only the search can avoid. */
 static Value *try_realize(Value *f) {
     if (in_worker || set_is_infinite(f->u.l.a)) return realize(f);
     EvalState s = eval_save();
-    Buf msg = {0};
-    buf_puts(&msg, error_message.s ? error_message.s : "");
-    Expr *expr = error_expr;
-    int status = error_status, module = error_module;
+    ErrorState e = error_save();
     Value *volatile r = f;
     sigjmp_buf here;
     handler = &here;
     if (!sigsetjmp(here, 0)) r = realize(f);
     eval_restore(s);
-    error_reset();
-    buf_puts(&error_message, msg.s);
-    error_expr = expr, error_status = status, error_module = module;
+    error_restore(&e);
     return r;
 }
 
@@ -7314,9 +7329,7 @@ static void print_numbered(int number, int action, Value **st) {
     printf("\n");
 }
 
-/* The behavior from an initial state to state s1, then the state s2
-   reached from it by `action` if s2 is not NULL, as TLC prints it. */
-static void print_trace(int s1, Value **s2, int action) {
+static void print_trace_states(int s1, Value **s2, int action) {
     int n = 0;
     for (int i = s1; i >= 0; i = states[i].parent) n++;
     int *path = NEWN(int, n);
@@ -7334,6 +7347,23 @@ static void print_trace(int s1, Value **s2, int action) {
         replay(st[n - 1], s2);
         print_numbered(n + 1, action, s2);
     }
+}
+
+/* The behavior from an initial state to state s1, then the state s2
+   reached from it by `action` if s2 is not NULL, as TLC prints it. As
+   TLC, an error rebuilding a state ends the behavior there, unreported:
+   returns the exit status of that error, 0 if none. */
+static int print_trace(int s1, Value **s2, int action) {
+    EvalState s = eval_save();
+    ErrorState e = error_save();
+    int failed = 0;
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action);
+    else failed = eval_failure_status();
+    eval_restore(s);
+    error_restore(&e);
+    return failed;
 }
 
 static void print_counts(int queued, int with_depth) {
@@ -7585,6 +7615,7 @@ static int next_emit(void) {
     int found = fp_find(fp);
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
     if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
+    violation_fresh = found < 0;
     if (found < 0) {
         int depth = states[expanding].depth + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
@@ -7592,7 +7623,6 @@ static int next_emit(void) {
         if (depth > max_depth) max_depth = depth;
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
-        violation_fresh = 1;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             print_trace(expanding, st, cur_action);
@@ -7600,8 +7630,22 @@ static int next_emit(void) {
             return 1;
         }
     }
-    violation_fresh = found < 0;
-    return action_violated(st);
+    if (action_violated(st)) return 1;
+    violation_fresh = 0;
+    return 0;
+}
+
+static time_t started;   /* when checking began, for TLCGet("duration") */
+
+/* TLCGet's counters of the search, -1 for another key. As TLC, a new
+   successor joins the queue once checked; a simulation counts none but
+   the time. */
+static int64_t search_counter(const char *key) {
+    if (!strcmp(key, "duration")) return time(NULL) - started;
+    int which = !strcmp(key, "distinct") ? 1 : !strcmp(key, "queue") ? 2 : !strcmp(key, "diameter") ? 3 : 0;
+    if (!which || simulating) return -1;
+    if (in_worker) worker_cannot();   /* the counts are the search's, not a worker's */
+    return which == 1 ? nstates : which == 2 ? nstates - expanded - violation_fresh : max_depth;
 }
 
 static void collect_fairnesses(void);
@@ -8049,7 +8093,7 @@ static int search(void) {
     handler = &here;
     if (sigsetjmp(here, 0)) {
         handler = NULL;
-        int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
+        int status = eval_failure_status();
         int over = stackless;
         int nfp = fp_depth < 64 ? fp_depth : 64;
         Expr *fps[64];
@@ -8086,18 +8130,19 @@ static int search(void) {
         if (checking(action_props, naction_props)) {
             printf("Error: Evaluating action property %s failed.\n", S(error_check->name));
             print_error_text();
-            print_trace(expanding, error_state, cur_action);
+            int failed = print_trace(expanding, error_state, cur_action);
             print_unfingerprinted(fps, nfp);
             print_counts(nstates - expanded - violation_fresh, 0);
-            return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
+            return failed ? failed : error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking_invariant()) {
-            /* An invariant of a new state failed to evaluate. */
+            /* An invariant of a new state failed to evaluate: as TLC, an
+               error rebuilding the behavior replaces it. */
             printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
             print_error_text();
-            print_trace(expanding, error_state, cur_action);
-            print_counts(nstates - expanded - 1, 1);
-            return TPP_FAILURE_SAFETY_EVAL;
+            int failed = print_trace(expanding, error_state, cur_action);
+            print_counts(nstates - expanded - 1, !failed);
+            return failed ? failed : TPP_FAILURE_SAFETY_EVAL;
         }
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
@@ -10456,6 +10501,7 @@ int tpp_check(const TPPOptions *o) {
 
     for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);
     starting = 0;
+    started = time(NULL);
     if (!o->simulate && !nowarning && ntemporal_props) {   /* as TLC's checker starts, before the assumptions */
         if (nsymmetry)
             warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "

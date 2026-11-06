@@ -1,0 +1,9 @@
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: TLCGet(diameter) was undefined.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+exit 255

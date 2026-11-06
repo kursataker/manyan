@@ -6,6 +6,14 @@ for it as its notes.
 
 ## 0.3.0
 
+- `TLCGet("distinct")`, `"queue"`, `"diameter"` and `"duration"` count as
+  TLC's search does: a new state is distinct as its invariants are
+  checked, and joins the queue after them, an initial state before. A
+  simulation has only `"duration"`, the others undefined, as in TLC 2.19.
+- An error as TLC rebuilds a trace, such as an `Assert` on a counter that
+  has since grown, ends the behavior there without a report, as TLC
+  does; after an invariant or action property failed to evaluate, that
+  error is the exit status. tpp reported it and exited 255.
 - `-simulate file=FILE` writes each behavior that ends without an error to
   `FILE_0_N`, as TLC does; `TPPOptions.trace_file` in the C API.
 - An error comparing the parts of a set, record or tuple that an expression

@@ -1,0 +1,11 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Evaluating invariant Inv failed.
+Attempted to check if the value:
+1
+is an element of the integer 3
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+exit 14
