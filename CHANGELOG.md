@@ -47,6 +47,12 @@ for it as its notes.
 - A specification whose `Init` the configuration replaces (`Init <-
   MCInit`) reads its initial predicate from the replacement; tpp read the
   replaced definition (tcp/MCtcp from tlaplus/Examples).
+- A recursive function, or another function TLC keeps lazy, applied in
+  an action or the initial predicate is its body there, as TLC treats it:
+  its disjunctions are choices, counted as states generated, and it may
+  assign variables. byzpaxos/VoteProof from tlaplus/Examples generated
+  27727 states where TLC generates 318877. An argument outside its domain
+  there is reported as TLC reports it.
 - Applying a tuple written `<<...>>` outside its domain, in an initial
   state or a step, gives TLC's report that it cannot fingerprint it.
 - Fixed undefined behavior and a read past the end of an array, found by

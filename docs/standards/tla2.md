@@ -575,7 +575,9 @@ assumptions are evaluated (§4.5).
 The initial predicate is evaluated as a generator: a conjunction is
 evaluated left to right; a disjunction, an `\E`, an `IF`, or a `CASE` tries
 each alternative; `P => Q` evaluates `P`, then continues with `Q` if it is
-`TRUE` and without it if it is `FALSE`; a conjunct `v = e` with `v` unassigned assigns `v`, and
+`TRUE` and without it if it is `FALSE`; `f[a]` for a lazy `f` (§6.6),
+here only a recursive function or one over a domain not reducible, is
+its body with its bound names given `a`; a conjunct `v = e` with `v` unassigned assigns `v`, and
 `v \in S` with `v` unassigned assigns each element of `S` in turn; any
 other formula must be `TRUE` for the alternative to continue. A state in
 which some variable is unassigned is an error. Each state produced, once
@@ -590,7 +592,8 @@ quantifiers, and the definitions it refers to; each part that produces a
 state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
 definition's parameter may stand for a primed variable, `Op(v')`, and a
 constant operator for the definition that replaces it (§9.1); both are
-followed. A
+followed. `f[a]`, for any lazy `f` (§6.6), is its body with its bound names
+given `a`, so its disjunctions are alternatives and it may assign. A
 successor in which some variable is unassigned is an error. `\A x \in S :
 A` is the conjunction of `A` for each `x`, the first, then the others from
 the last; as everywhere until every variable is assigned, each true
@@ -812,7 +815,7 @@ or as the first line of an action error:
 | `t[i]` for a tuple `t` | `Attempted to apply tuple` / `t` / `to integer i which is out of domain.` |
 | `r["f"]` for a record `r` | `Attempted to apply the record` / `r` / `to nonexistent record field f.` |
 | `r.f` for a record `r` | `Attempted to select nonexistent field "f" from the record` / `r` / location |
-| `f[a]` for a lazy `f` (§6.6) | `In applying the function` / `f,` / `the first argument is:` / `a` / `which is not in its domain.`; with several bounds, `the argument number k is:`, or `the argument list is:` and `which does not match its formal parameter.` when `a` is not a tuple |
+| `f[a]` for a lazy `f` (§6.6) | `In applying the function` / `f,` / `the first argument is:` / `a` / `which is not in its domain.`; with several bounds, `the argument number k is:`, or `the argument list is:` and `which does not match its formal parameter.` when `a` is not a tuple. Where `f[a]` is part of an action or the initial predicate (§10.2), TLC binds `a` itself and reports a RuntimeException: `which` follows `a` on its line, but on the next for a tuple pattern among several bounds, the location of `f` follows, and an `a` that is no tuple for several bounds is `Attempted to apply a function to an argument not in its domain.` |
 | `CHOOSE` with no witness | `Attempted to compute the value of an expression of form` / `CHOOSE x \in S: P, but no element of S satisfied P.` |
 | `CASE` with no true guard | `Attempted to evaluate a CASE with no conditions true.` |
 | `1 = "a"` | `Attempted to check equality of integer 1 with non-integer:` / `"a"` |

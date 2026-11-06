@@ -2772,6 +2772,7 @@ static Def *parse_definition(int local) {
         return inst;
     }
     d->body = parse_expr();
+    if (d->kind == D_FCN) finish(d->where);   /* TLC's function constructor: the definition */
     return d;
 }
 
@@ -4402,9 +4403,9 @@ static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     return f;
 }
 
-static Value *fcndef_apply(Def *d, Value *a, Ctx c);
+static Expr *fcndef_bind(Def *d, Value *a, Ctx *c, Expr *where);
 static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *argno);
-static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno);
+static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Expr *where);
 
 static Value *lambda_body(Value *f, Value *a);
 
@@ -4421,15 +4422,25 @@ static Value *lambda_apply(Value *f, Value *a) {
     return v;
 }
 
-static Value *lambda_body(Value *f, Value *a) {
-    Ctx c = {f->u.l.env, f->u.l.inst};
-    if (f->u.l.binder) return fcndef_apply(f->u.l.binder, a, c);
+/* The body of lazy function f, its bound names given a in *c; where is
+   the function, when computing states. */
+static Expr *lambda_bind(Value *f, Value *a, Ctx *c, Expr *where) {
+    *c = (Ctx){f->u.l.env, f->u.l.inst};
+    if (f->u.l.binder) return fcndef_bind(f->u.l.binder, a, c, where);
     Expr *e = f->u.l.expr;
-    int argno, why = bind_arg(e->bounds, e->nb, f->u.l.a, a, &c.env, &argno);
-    if (why) lambda_outside(f, a, why, argno);
+    int argno, why = bind_arg(e->bounds, e->nb, f->u.l.a, a, &c->env, &argno);
+    if (why) lambda_outside(f, a, why, argno, where);
+    return e->args[0];
+}
+
+static Value *eval_body(Expr *body, Ctx c);
+
+static Value *lambda_body(Value *f, Value *a) {
+    Ctx c;
+    Expr *body = lambda_bind(f, a, &c, NULL);
     Value *saved = at_value;
     at_value = f->u.l.b;
-    Value *v = eval(e->args[0], c);
+    Value *v = eval_body(body, c);
     at_value = saved;
     return v;
 }
@@ -4702,17 +4713,24 @@ static Value *filter_member_test(Value *s, Value *v) {
     return BOOLV(holds);
 }
 
-/* A recursive function definition f[x \in S] == e: its value at a. */
-static Value *fcndef_apply(Def *d, Value *a, Ctx c) {
+/* A function definition f[x \in S] == e: its body, x given a in *c. */
+static Expr *fcndef_bind(Def *d, Value *a, Ctx *c, Expr *where) {
     Env *env = NULL;
     if (d->local == 2) {
-        Env *b = env_find(c.env, d);
-        env = b ? b->ctx_env : c.env;
+        Env *b = env_find(c->env, d);
+        env = b ? b->ctx_env : c->env;
     }
-    Value *dom = bounds_domain(d->bounds, d->nb, (Ctx){env, c.inst});
+    Value *dom = bounds_domain(d->bounds, d->nb, (Ctx){env, c->inst});
     int argno, why = bind_arg(d->bounds, d->nb, dom, a, &env, &argno);
-    if (why) lambda_outside(mk_lambda(dom, NULL, d, c), a, why, argno);
-    return eval_body(d->body, (Ctx){env, c.inst});
+    if (why) lambda_outside(mk_lambda(dom, NULL, d, *c), a, why, argno, where);
+    c->env = env;
+    return d->body;
+}
+
+/* The value of function definition d at a. */
+static Value *fcndef_apply(Def *d, Value *a, Ctx c) {
+    Expr *body = fcndef_bind(d, a, &c, NULL);
+    return eval_body(body, c);
 }
 
 /* [x \in S |-> e], or the function definition d, computed in full over
@@ -5078,23 +5096,29 @@ static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
     return fcn_in_full(dom, e, NULL, c, e);
 }
 
-static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
+/* The function f[a] applies, evaluated lazily if lazy, and its argument
+   *key; NULL for a function definition, applied without its value. */
+static Value *apply_parts(Expr *e, Ctx c, int lazy, Value **key) {
     Expr *fe = e->args[0];
-    Value *f = NULL, *key;
-    if (!(fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
+    Value *f = NULL;
+    if (!(lazy && fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
         int keep = keep_lazy;
-        keep_lazy = 1;   /* a function to apply stays lazy (§6.6) */
+        keep_lazy = lazy;
         f = eval(fe, c);
         keep_lazy = keep;
     }
-    if (e->n == 2) key = eval(e->args[1], c);
+    if (e->n == 2) *key = eval(e->args[1], c);
     else {
-        key = mk_tuple(e->n - 1);
-        for (int i = 1; i < e->n; i++) key->u.fcn.vals[i - 1] = eval(e->args[i], c);
+        *key = mk_tuple(e->n - 1);
+        for (int i = 1; i < e->n; i++) (*key)->u.fcn.vals[i - 1] = eval(e->args[i], c);
     }
-    if (!f) return fcndef_apply(fe->def, key, c);
-    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
-    return fcn_apply(f, key, e);
+    if (f && !is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
+    return f;
+}
+
+static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
+    Value *key, *f = apply_parts(e, c, 1, &key);   /* a function to apply stays lazy (§6.6) */
+    return f ? fcn_apply(f, key, e) : fcndef_apply(e->args[0]->def, key, c);
 }
 
 static __attribute__((noinline)) Value *ev_dot(Expr *e, Ctx c) {
@@ -5972,7 +5996,7 @@ static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *arg
         for (int j = 0; j < (b->tuple ? 1 : b->n); j++, k++) {
             Value *part = parts[k], *set = total == 1 ? dom : dom->u.l.names[total + k];
             if (total > 1) *argno = k + 1;
-            if (!set_member(part, set)) return 1;
+            if (!set_member(part, set)) return b->tuple && total > 1 ? 3 : 1;
             if (!b->tuple) { *env = mk_binding(b->defs[j], part, *env); continue; }
             if (!is_fcn(part) || !fcn_is_tuple(part) || part->n != b->n) return 2;
             for (int m = 0; m < b->n; m++) *env = mk_binding(b->defs[m], part->u.fcn.vals[m], *env);
@@ -5981,14 +6005,20 @@ static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *arg
     return 0;
 }
 
-static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno) {
+static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Expr *where) {
     char part[48];
     if (argno == 0) snprintf(part, sizeof part, "the first argument");
     else if (argno < 0) snprintf(part, sizeof part, "the argument list");
     else snprintf(part, sizeof part, "the argument number %d", argno);
     if (argno > 0) a = a->u.fcn.vals[argno - 1];
-    fail_module("In applying the function\n%s,\n%s is:\n%s\n%s", pretty(f), part, pretty(a),
-            why == 1 ? "which is not in its domain." : "which does not match its formal parameter.");
+    const char *wrong = why == 2 ? "which does not match its formal parameter." : "which is not in its domain.";
+    if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s", pretty(f), part, pretty(a), wrong);
+    /* Computing states, TLC binds the argument itself (Tool.getFcnContext). */
+    Buf b = {0};
+    loc_text(&b, where);
+    if (argno < 0) fail("Attempted to apply a function to an argument not in its domain.\n%s", b.s);
+    fail("In applying the function\n%s,\n%s is:\n%s%s%s\n%s", pretty(f), argno || why != 2 ? part : "the argument",
+         pretty(a), why == 3 ? "\n" : "", wrong, b.s);
 }
 
 /* The variable an expression assigns: v (initial predicate) or v'
@@ -6245,6 +6275,24 @@ static int gen(Expr *e, Ctx c, Cont *k) {
             return 0;
         }
         break;
+    }
+    case X_APPLY: {
+        /* As TLC: a lazy function applied is its body, part of the
+           action; TLC computes initial states without keeping it lazy. */
+        Value *key, *f = apply_parts(e, c, !gen_init, &key);
+        Ctx at = c;
+        Expr *body = !f ? fcndef_bind(e->args[0]->def, key, &at, e->args[0])
+                   : f->kind == V_LAMBDA && !f->n ? lambda_bind(f, key, &at, e->args[0]) : NULL;
+        if (!body) {
+            Value *v = fcn_apply(f, key, e);
+            if (v->kind != V_BOOL) not_boolean(e, v);
+            return v->u.i ? gen_cont(k) : 0;
+        }
+        Value *saved = at_value;
+        if (f) at_value = f->u.l.b;
+        int found = gen(body, at, k);
+        at_value = saved;
+        return found;
     }
     case K_UNCHANGED:
         return gen_unchanged(e->args[0], c, k);
