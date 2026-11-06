@@ -1,0 +1,7 @@
+<<"<<1, \"a\", {TRUE}>>", "\"q\"", "<<2>>", 3, TRUE, TRUE>>
+"out"  7
+8
+Error: Evaluating assumption line 7, col 8 to line 7, col 34 of module tlc_values failed.
+The first argument of Assert evaluated to FALSE; the second argument was:
+<<"bad", 2>>
+exit 10

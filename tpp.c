@@ -290,7 +290,7 @@ enum {
 enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS, MADE_HELD };
 
 enum LazyKind {
-    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_CUP, L_CAP, L_DIFF
+    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_ANY, L_CUP, L_CAP, L_DIFF
 };
 
 struct Value {
@@ -403,9 +403,9 @@ static const char *kind_name(Value *v) {
 
 static int is_set(Value *v) { return v->kind == V_SET || v->kind == V_INTERVAL || v->kind == V_LAZY; }
 
-/* Nat, Int, STRING and Seq(S): what TLC calls overridden values. */
+/* Nat, Int, STRING, Seq(S) and Any: what TLC calls overridden values. */
 static int user_set(Value *s) {
-    return s->kind == V_LAZY && (s->lazy == L_NAT || s->lazy == L_INT || s->lazy == L_STRING || s->lazy == L_SEQ);
+    return s->kind == V_LAZY && (s->lazy == L_NAT || s->lazy == L_INT || s->lazy == L_STRING || s->lazy == L_SEQ || s->lazy == L_ANY);
 }
 /* How TLC names the kind of a value in error messages. */
 static const char *kind_string(Value *v) {
@@ -507,6 +507,7 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_NAT) { buf_puts(b, "Nat"); return; }
         if (v->lazy == L_INT) { buf_puts(b, "Int"); return; }
         if (v->lazy == L_STRING) { buf_puts(b, "STRING"); return; }
+        if (v->lazy == L_ANY) { buf_puts(b, "ANY"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
         if (v->lazy >= L_CUP) {
             print_value(b, v->u.l.a);
@@ -904,7 +905,7 @@ static Value *list_set(List *l) {
 static int set_is_infinite(Value *s) {
     if (s->kind != V_LAZY) return 0;
     switch (s->lazy) {
-    case L_NAT: case L_INT: case L_STRING: case L_SEQ: return 1;
+    case L_NAT: case L_INT: case L_STRING: case L_SEQ: case L_ANY: return 1;
     case L_SUBSET: case L_FILTER: return set_is_infinite(s->u.l.a);
     case L_FCNSET: case L_CUP: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
     case L_CAP: return set_is_infinite(s->u.l.a) && set_is_infinite(s->u.l.b);
@@ -1125,6 +1126,7 @@ static int set_member(Value *v, Value *s) {
                 fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v),
                             s->lazy == L_NAT ? "Nat" : s->lazy == L_INT ? "Int" : "STRING");
             return s->lazy != L_NAT || v->u.i >= 0;
+        case L_ANY: return 1;
         case L_SUBSET:
             if (!is_set(v)) fail("Attempted to check if the non-enumerable value\n%s\nis element of\n%s", pretty(v), pretty(s));
             return all_members(v, s->u.l.a);
@@ -4581,6 +4583,7 @@ static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
     /* The arguments are evaluated in the caller's context. */
     Value **vals = NEWN(Value *, e->n);
     Def *d = e->def;
+    if (d->replacement) return call_def(d, e->args, e->n, c, e);   /* by the configuration, an operator of the root module */
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
     if (d->native || d->kind == D_FCN || e->n == 0) {
         if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
@@ -5288,8 +5291,18 @@ NATIVE(n_cardinality) {
     return mk_int(n);
 }
 
+/* v, as TLC prints it: it enumerates an infinite S \cup T or S \ T
+   inside, which fails. */
+static Value *printable(Value *v) {
+    if (v->kind == V_LAZY && v->lazy >= L_CUP) enumerate(v);
+    if (v->kind == V_SET) for (int i = 0; i < v->n; i++) printable(v->u.set.elems[i]);
+    if (is_fcn(v)) for (int i = 0; i < v->n; i++) printable(v->u.fcn.vals[i]);
+    return v;
+}
+
 NATIVE(n_print) {
     UNUSED;
+    printable(a[0]), printable(a[1]);
     if (in_worker) worker_cannot();   /* the search prints in order */
     print_normal = 1;
     printf("%s  %s\n", pretty(a[0]), pretty(a[1]));
@@ -5302,7 +5315,7 @@ NATIVE(n_printt) {
     UNUSED;
     if (in_worker) worker_cannot();
     print_normal = 1;
-    printf("%s\n", pretty(a[0]));
+    printf("%s\n", pretty(printable(a[0])));
     print_normal = 0;
     fflush(stdout);
     return TRUEV;
@@ -5319,13 +5332,37 @@ NATIVE(n_assert) {
 
 NATIVE(n_javatime) { UNUSED; return mk_int((int64_t)time(NULL) & 0x7fffffff); }
 
+static void encode(Buf *b, Value *v);
+static Value *decode(const char **p);
+
+/* TLCSet's registers, each its value encoded, as values do not outlive
+   the state being expanded. */
+static Buf *registers;
+static int nregisters;
+
 NATIVE(n_tlcget) {
     UNUSED;
     if (a[0]->kind == V_STR && strcmp(S(a[0]->u.i), "level") == 0) return mk_int(cur_level);
-    fail_module("TLCGet(%s) is not supported.", pretty(a[0]));
+    if (a[0]->kind != V_INT) fail_module("TLCGet(%s) is not supported.", pretty(a[0]));
+    if (a[0]->u.i < 0 || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail_module("TLCGet(%s) was undefined.", pretty(a[0]));
+    const char *p = registers[a[0]->u.i].s;
+    return decode(&p);
 }
 
-NATIVE(n_tlcset) { UNUSED; return TRUEV; }
+NATIVE(n_tlcset) {
+    UNUSED;
+    if (a[0]->kind != V_INT || a[0]->u.i < 0)
+        fail_module("The first argument of TLCSet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
+    int i = (int)a[0]->u.i;
+    if (i >= nregisters) {
+        registers = xrealloc(registers, sizeof(Buf) * (size_t)(i + 1));
+        memset(registers + nregisters, 0, sizeof(Buf) * (size_t)(i + 1 - nregisters));
+        nregisters = i + 1;
+    }
+    registers[i].n = 0;
+    encode(&registers[i], a[1]);
+    return TRUEV;
+}
 
 NATIVE(n_singleton) {
     UNUSED;
@@ -5406,11 +5443,11 @@ NATIVE(n_randomelement) {
     return s->u.set.elems[0];
 }
 
-NATIVE(n_any) { UNUSED; fail_module("Attempted to evaluate Any."); }
+NATIVE(n_any) { UNUSED; return mk_lazy(L_ANY); }
 
 NATIVE(n_tostring) {
     UNUSED;
-    char *s = value_str(a[0]);
+    char *s = value_str(printable(a[0]));
     return mk_str(intern(s));
 }
 
@@ -7390,7 +7427,7 @@ static int simulate(const TPPOptions *o) {
 /* ---------------------------------------------------------------- configuration */
 
 /* A configuration statement (§9). */
-typedef struct { int keyword; int name; int op; Value *value; int target; } CfgItem;
+typedef struct { int keyword; int name; int op; Value *value; int target, module; } CfgItem;   /* module: of name, in <- [M] */
 
 static CfgItem *cfg;
 static int ncfg;
@@ -7554,7 +7591,7 @@ static Value *cfg_value(CfgLexer *L, int kind, int id, int64_t num) {
 
 static void cfg_add(int keyword, int name, int op, Value *v, int target) {
     cfg = xrealloc(cfg, sizeof(CfgItem) * (size_t)(ncfg + 1));
-    cfg[ncfg].keyword = keyword; cfg[ncfg].name = name; cfg[ncfg].op = op; cfg[ncfg].value = v; cfg[ncfg].target = target;
+    cfg[ncfg] = (CfgItem){keyword, name, op, v, target, 0};
     ncfg++;
 }
 
@@ -7586,14 +7623,17 @@ static void parse_config(const char *text) {
                 cfg_add(keyword, name, '=', cfg_value(&L, kind, id, num), 0);
             } else if (kind == 'p' && strcmp(S(id), "<-") == 0) {
                 kind = cfg_token(&L, &id, &num);
-                if (kind == 'p' && strcmp(S(id), "[") == 0) {
-                    cfg_token(&L, &id, &num);
+                int module = 0;
+                if (kind == 'p' && strcmp(S(id), "[") == 0) {   /* name <- [M] target: name of module M */
+                    if (cfg_token(&L, &id, &num) != 'a') config_error("TLC found an error in the configuration file: expected a module name after [.");
+                    module = id;
                     cfg_token(&L, &id, &num);
                     kind = cfg_token(&L, &id, &num);
                 }
                 kind = cfg_operator(&L, kind, &id);
                 if (kind != 'a') config_error("TLC found an error in the configuration file: expected an operator after <-.");
                 cfg_add(keyword, name, '<', NULL, id);
+                cfg[ncfg - 1].module = module;
             } else {
                 config_error("TLC found an error in the configuration file: expected = or <- after %s.", S(name));
             }
@@ -7953,7 +7993,8 @@ static int setup_model(void) {
         CfgItem *it = &cfg[i];
         const char *k = S(it->keyword);
         if (strncmp(k, "CONSTANT", 8) == 0) {
-            Sym *s = root_sym(it->name);
+            Module *m = it->module ? find_module(it->module) : root;
+            Sym *s = m ? module_lookup(m, it->name) : NULL;
             if (!s) continue;
             Def *d = s->def;
             if (it->op == '=') d->value = it->value;
@@ -7990,6 +8031,7 @@ static int setup_model(void) {
         if (d->kind == D_CONST && !d->value && !d->replacement)
             config_error("The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
     }
+    if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
     if (spec) use_specification(spec);
     if (init) init_expr = call_expr(init);
     if (next) next_expr = call_expr(next);

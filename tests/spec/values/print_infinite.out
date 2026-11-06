@@ -1,0 +1,9 @@
+<<{1}, {1}>>
+Error: Evaluating assumption line 5, col 8 to line 5, col 31 of module print_infinite failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLC.PrintT(tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to enumerate S \ T when S:
+Nat
+is not enumerable.
+exit 10

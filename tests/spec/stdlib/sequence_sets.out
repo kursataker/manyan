@@ -1,0 +1,7 @@
+<<TRUE, FALSE, TRUE, TRUE>>
+<<<<2, 4>>, <<>>, <<<<>>>>>>
+Error: Evaluating assumption line 6, col 8 to line 6, col 71 of module sequence_sets failed.
+Attempted to enumerate { x \in S : p(x) } when S:
+Seq({1})
+is not enumerable
+exit 10

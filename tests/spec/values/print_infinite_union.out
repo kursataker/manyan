@@ -1,0 +1,10 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 32 of module print_infinite_union failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLC.Print(tlc2.value.impl.Value,tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to enumerate S \cup T when S:
+{-1}
+and T:
+Nat
+are not both enumerable
+exit 10

@@ -496,7 +496,12 @@ are tuples; and a string is in `Seq(S)` when its characters are in `S`.
 
 `Print(out, val)` writes `out` and `val` and yields `val`; `PrintT(out)`
 writes `out` and yields `TRUE`; `Assert(c, out)` is `TRUE` when `c` is and
-otherwise an error (§11.3).
+otherwise an error (§11.3). Printing a value, and `ToString`, enumerate
+the sets in it, so an infinite `S \cup T` or `S \ T` is an error there.
+`Any` is the set of every value; it prints as `ANY`. `TLCSet(i, v)`, for
+a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
+`TLCGet(i)` yields it, and is an error when nothing was kept;
+`TLCGet("level")` is the depth of the current state.
 
 ## 9 Model configuration
 
@@ -508,9 +513,9 @@ in §3.3. The keywords, each followed by one or more names (or, for
 
 | Statement | Meaning |
 |---|---|
-| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `c = c` binds `c` to the model value `c` |
+| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module; `c = c` binds `c` to the model value `c` |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
-| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness` |
+| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
 | `PROPERTY`, `PROPERTIES` | temporal formulas the specification must imply |
 | `CONSTRAINT`, `CONSTRAINTS` | state predicates bounding the explored states |
