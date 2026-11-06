@@ -80,6 +80,14 @@ for it as its notes.
   reads them.
 - Applying a tuple written `<<...>>` outside its domain, in an initial
   state or a step, gives TLC's report that it cannot fingerprint it.
+- An error evaluating a temporal property is reported when TLC reports
+  it, as it searches: on an initial state, printing that state and going
+  on as TLC does, or as an unexpected exception with the counts of the
+  state being expanded. tpp reported it after the search, as an error
+  of its own.
+- `tests/tla/Workers.tla` models one level of the parallel search: its
+  batches, claims, give-ups and in-order merge end the level as one
+  process does, with the same states, parents and first error.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 

@@ -6839,8 +6839,12 @@ static int cur_action;
 static Value **replay_target;
 static uint64_t replay_fp;
 static int replay_found;
-static int replay_checks;     /* also evaluate the invariants, as TLC does replaying Init */
+static int replay_checks;     /* also evaluate the properties and invariants, as TLC does replaying Init */
 static int check_list(Check *list, int n, Value **st);
+static void live_init_lits(void);
+static void live_init(Value **st);
+static void eval_init_lits(Value **st);
+static int live_init_failed;   /* an error in a property on an initial state */
 
 static int replay_emit(void) {
     if (!replay_found) {
@@ -6848,7 +6852,10 @@ static int replay_emit(void) {
         for (int i = 0; i < nvars && complete; i++) complete = gen_target[i] != NULL;
         replay_found = complete && replay_target && fingerprint(gen_target) == replay_fp;
     }
-    if (replay_checks) check_list(invariants, ninvariants, gen_target);
+    if (replay_checks) {
+        if (ntemporal_props) eval_init_lits(gen_target);
+        check_list(invariants, ninvariants, gen_target);
+    }
     return 0;
 }
 
@@ -7103,6 +7110,7 @@ static int init_emit(void) {
     if (fp_find(fp) >= 0) return 0;
     int idx = add_state(st, fp, -1, -1, 1);
     if (dump_file) dump_node(idx, st);
+    if (ntemporal_props) live_init(st);
     violation = check_initial(st);
     return violation != 0;
 }
@@ -7159,6 +7167,19 @@ static int next_emit(void) {
 
 static void collect_fairnesses(void);
 static int live_violated(void);
+static int live_error(void);
+/* The states generated when each state had been expanded, with temporal
+   properties: TLC reports an error in them with these counts. */
+static long *gen_after;
+static int ngen_after;
+static void note_expanded(int idx) {
+    if (!ntemporal_props) return;
+    if (idx >= ngen_after) {
+        ngen_after = idx + 1 > 2 * ngen_after ? idx + 1 : 2 * ngen_after;
+        gen_after = xrealloc(gen_after, sizeof(long) * (size_t)ngen_after);
+    }
+    gen_after[idx] = generated;
+}
 
 /* Expands state idx: its successors join the search. Returns the exit
    status of a violation it reports, 0 if none. */
@@ -7185,6 +7206,7 @@ static int expand_state(int idx) {
         print_counts(nstates - expanded, 1);
         return TPP_VIOLATION_DEADLOCK;
     }
+    note_expanded(idx);
     arena_reset(&scratch_arena);
     return 0;
 }
@@ -7479,6 +7501,7 @@ static void merge_state(int idx, const Found *f, int nfound) {
         if (f[k].seen == NEW) c->merged = found + 1;
         if (ntemporal_props) add_edge(idx, found, f[k].action);
     }
+    note_expanded(idx);
 }
 
 static int merge_level(int lo, int hi);
@@ -7590,8 +7613,8 @@ static int search(void) {
         memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
         fp_depth = 0;
         if (expanding < 0) {
-            print_error_message();
-            if (error_state && error_module != 1) {
+            if (!live_init_failed) print_error_message();
+            if (error_state && error_module != 1 && !live_init_failed) {
                 printf("While working on the initial state:\n");
                 print_state(error_state);
                 printf("\n");
@@ -7629,9 +7652,15 @@ static int search(void) {
     cur_state = succ;
     gen_init = 1;
     gen_emit = init_emit;
+    if (ntemporal_props) live_init_lits();
     arena = &scratch_arena;
     gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
+    if (live_init_failed) {   /* TLC stops, exiting as if no error */
+        if (violation) printf("\n");
+        print_counts(nstates, 0);
+        return TPP_OK;
+    }
     if (violation) return violation;
     if (generated == nstates)
         printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
@@ -7656,10 +7685,14 @@ static int search(void) {
     if (ntemporal_props) {
         arena = &perm_arena;
         collect_fairnesses();
+        sigjmp_buf live;
+        handler = &live;
+        if (sigsetjmp(live, 0)) return live_error();
         if (live_violated()) {
             print_counts(0, 0);
             return TPP_VIOLATION_LIVENESS;
         }
+        handler = &here;
     }
     handler = NULL;
     printf("Model checking completed. No error has been found.\n");
@@ -9506,6 +9539,113 @@ static TF *tableau_constants(TF *t, int top) {
         return t;
     default: return t;
     }
+}
+
+/* What TLC evaluates of the properties on each initial state, before its
+   invariants: the literals of each initial node of a tableau, up to a
+   false one; without a tableau, each state predicate but ENABLED. */
+static TFList *init_lits;
+static int ninit_lits;
+
+static void add_init_lits(TF **v, int n) {
+    TFList l = {NEWN(TF *, n), 0};
+    for (int i = 0; i < n; i++) if (!v[i]->action) l.v[l.n++] = v[i];
+    init_lits = xrealloc(init_lits, sizeof(TFList) * (size_t)(ninit_lits + 1));
+    init_lits[ninit_lits++] = l;
+}
+
+static void live_init_lits(void) {
+    for (int p = 0; p < ntemporal_props; p++) {
+        natoms = 0;
+        neventualities = 0;
+        ntnodes = 0;
+        TF *neg = tableau_constants(to_tf(temporal_props[p].expr, root_ctx, 1), 1);
+        if (!tf_tableau(neg)) {
+            for (int i = 0; i < natoms; i++)
+                if (atoms[i]->atom->kind != K_ENABLED) add_init_lits(&atoms[i], 1);
+            continue;
+        }
+        List init = {0};
+        TFList todo = {0}, empty = {0};
+        tfl_add(&todo, neg);
+        expand(todo, empty, empty, 0, &init);
+        for (int i = 0; i < init.n; i++) {
+            TNode *n = &tnodes[init.v[i]->u.i];
+            add_init_lits(n->lits, n->nlits);
+        }
+    }
+}
+
+/* A node's literals come last first: TLC takes them in the formula's order. */
+static void eval_init_lits(Value **st) {
+    for (int i = 0; i < ninit_lits; i++)
+        for (int j = init_lits[i].n - 1; j >= 0; j--) {
+            TF *t = init_lits[i].v[j];
+            if (holds_in(t->atom, t->c, st, NULL) == t->neg) break;
+        }
+}
+
+/* TLC reports the first error there and goes on; a second ends the
+   search. */
+static void live_init(Value **st) {
+    if (live_init_failed) { eval_init_lits(st); return; }
+    EvalState saved = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        eval_restore(saved);
+        print_error_message();
+        printf("While working on the initial state:\n");
+        print_state(st);
+        printf("\n");
+        live_init_failed = 1;
+        return;
+    }
+    eval_init_lits(st);
+    eval_restore(saved);
+}
+
+/* An error checking the temporal properties, reported as TLC reports it:
+   TLC evaluates their predicates as it expands each state: ENABLED on
+   the state, other state predicates on each successor, the actions on
+   each step and on stuttering. It reports the first error then, as
+   unexpected, with the counts of that moment. */
+static int live_error(void) {
+    natoms = 0;
+    neventualities = 0;
+    for (int p = 0; p < ntemporal_props; p++) to_tf(temporal_props[p].expr, root_ctx, 1);
+    static int s, seen;   /* static: read after an error jumps back */
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        handler = NULL;
+        sim_exception();
+        printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
+        printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
+        return TPP_ERROR;
+    }
+    seen = 0;
+    for (s = 0; s < nstates; s++) {
+        StateRec *r = &states[s];
+        for (int e = 0; e < r->nedges; e++) if (r->edges[2 * e] > seen) seen = r->edges[2 * e];
+        for (int e = 0; e <= r->nedges; e++) {
+            int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
+            for (int i = 0; i < natoms; i++) {
+                TF *a = atoms[i];
+                int on_s = a->atom->kind == K_ENABLED;
+                if (a->action) holds_in(a->atom, a->c, state_values(s), state_values(t));
+                else if (on_s ? e == r->nedges : e < r->nedges) holds_in(a->atom, a->c, state_values(on_s ? s : t), NULL);
+            }
+            for (int i = 0; i < nfairs; i++) {
+                if (e == r->nedges) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
+                holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
+            }
+        }
+    }
+    /* Not found so: as it came. */
+    handler = NULL;
+    print_error_message();
+    return TPP_FAILURE_EVAL;
 }
 
 static void collect_fairnesses(void) {
