@@ -1461,6 +1461,8 @@ struct Def {
     Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
     int level;            /* 0 constant, 1 state, 2 action, 3 temporal; -1 unknown */
     int level_busy;
+    Def *level_probe;     /* a LET definition's: the parameter probed when its level was found */
+    unsigned level_mask;  /* 1 + twice the bits of the parameters a call's level depends on; 0 unknown */
     int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
     int level_checked;
     Value *cache;         /* a constant definition without parameters, once evaluated */
@@ -3869,7 +3871,7 @@ static void resolve_module(Module *m) {
                 if (s->local || s->def->kind == D_CONST || s->def->kind == D_VAR) continue;
                 Def **path = NEWN(Def *, s->npath + 1);
                 path[0] = d;
-                memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
+                if (s->npath) memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
                 add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
             }
         } else if (u->kind == 2 && !u->def) {   /* a named one is resolved with its name */
@@ -3970,8 +3972,12 @@ static void check_def_levels(Def *d) {
 
 /* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
 
+/* A parameter whose uses are given level 4, to find whether the level of
+   an argument for it reaches the level of a call. */
+static Def *level_probe;
+
 static int def_level(Def *d) {
-    if (d->level >= 0) return d->level;
+    if (d->level >= 0 && (d->local != 2 || d->level_probe == level_probe)) return d->level;
     if (d->level_busy) return 0;
     d->level_busy = 1;
     int l = 0;
@@ -3984,7 +3990,30 @@ static int def_level(Def *d) {
             if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_level(d->subst_expr[i]); if (b > l) l = b; }
     }
     d->level_busy = 0;
-    d->level = l;
+    if (l < 4) {   /* else the probe reached it */
+        d->level = l;
+        d->level_probe = level_probe;   /* a LET definition may use the probe */
+    }
+    return l;
+}
+
+/* The level of a call of d: an argument counts when its parameter is used
+   outside ENABLED, as SANY finds the level parameters of a definition. */
+static int args_level(Def *d, Expr **args, int n) {
+    if (!d->level_mask && d->body) {
+        d->level_mask = ~0u;   /* a recursive call: every argument counts */
+        unsigned m = 0;
+        Def *outer = level_probe;
+        for (int i = 0; i < d->nparams && i < 31; i++) {
+            level_probe = d->params[i];
+            if (expr_level(d->body) == 4) m |= 1u << i;
+        }
+        level_probe = outer;
+        d->level_mask = 1 | m << 1;
+    }
+    int l = 0;
+    for (int i = 0; i < n; i++)
+        if (!d->body || i >= 31 || d->level_mask >> (i + 1) & 1) { int a = expr_level(args[i]); if (a > l) l = a; }
     return l;
 }
 
@@ -3995,7 +4024,8 @@ static int max_level(Expr **args, int n) {
 }
 
 static int expr_level(Expr *e) {
-    int l = max_level(e->args, e->n);
+    if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && level_probe && e->def == level_probe) return 4;
+    int l = e->kind == K_CALL || e->kind == K_INSTCALL ? args_level(e->def, e->args, e->n) : max_level(e->args, e->n);
     for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) { int b = expr_level(e->bounds[i].set); if (b > l) l = b; }
     switch (e->kind) {
     case K_DECL: return e->def->kind == D_VAR ? 1 : 0;
@@ -4020,7 +4050,7 @@ static int expr_level(Expr *e) {
     case X_EXCEPT:
         for (int i = 0; i < e->n - 1; i++) { int k = max_level(e->paths[i].keys, e->paths[i].n); if (k > l) l = k; }
         return l;
-    case X_LAMBDA: return def_level(e->def);
+    case X_LAMBDA: return expr_level(e->def->body);
     case X_OPREF: return def_level(e->def);
     default: return l;
     }
@@ -8164,7 +8194,7 @@ static void order_variables(void) {
     int n = nvars;
     for (int i = 0; i < c.n; i++)
         if (c.a[i].def && c.a[i].def->kind == D_VAR && n > 0) order[--n] = c.a[i].def;
-    if (n == 0) memcpy(vars, order, sizeof(Def *) * (size_t)nvars);
+    if (n == 0 && nvars) memcpy(vars, order, sizeof(Def *) * (size_t)nvars);
     for (int i = 0; i < nvars; i++) vars[i]->var_index = i;
     free(c.a);
 }
@@ -8177,10 +8207,19 @@ static int setup_model(void) {
         }
     order_variables();
     Expr *spec = NULL, *init = NULL, *next = NULL, *e;
+    /* TLC takes the constants, then the invariants, then the rest. */
+    for (int pass = 0; pass < 3; pass++) {
+    if (pass == 1)
+        for (int i = 0; i < root->ndecls; i++) {
+            Def *d = root->decls[i];
+            if (d->kind == D_CONST && !d->value && !d->replacement)
+                config_error("The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
+        }
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
         const char *k = it->keyword;
-        if (strncmp(k, "CONSTANT", 8) == 0) {
+        if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : 2)) continue;
+        if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
             if (!s) continue;
@@ -8196,6 +8235,10 @@ static int setup_model(void) {
         else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
             e = config_call(it->name, "invariant", 'r');
+            if (expr_level(e) >= 2) {
+                printf("Error: The invariant %s is not a state predicate (one with no primes or temporal operators).\n", S(it->name));
+                exit(TPP_FAILURE_SAFETY_EVAL);
+            }
             add_check(&invariants, &ninvariants, e->def, e, e->def->name);
         } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_call(it->name, "property", 's'));
         else if (strncmp(k, "CONSTRAINT", 10) == 0) {
@@ -8231,10 +8274,6 @@ static int setup_model(void) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
         }
     }
-    for (int i = 0; i < root->ndecls; i++) {
-        Def *d = root->decls[i];
-        if (d->kind == D_CONST && !d->value && !d->replacement)
-            config_error("The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
     }
     if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
     if (spec) use_specification(spec);
@@ -8857,10 +8896,11 @@ static int accept_component(int *nodes, int n) {
    nodes accepted by `allowed` (all if NULL): nodes and the actions of the
    edges into them. */
 static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed, List *path, List *acts) {
-    int *prev = xmalloc(sizeof(int) * (size_t)npnodes);
-    int *pact = xmalloc(sizeof(int) * (size_t)npnodes);
-    int *queue = xmalloc(sizeof(int) * (size_t)npnodes);
-    for (int i = 0; i < npnodes; i++) prev[i] = -2;
+    int n = npnodes;   /* expanding a node may add nodes, which the path does not go through */
+    int *prev = xmalloc(sizeof(int) * (size_t)n);
+    int *pact = xmalloc(sizeof(int) * (size_t)n);
+    int *queue = xmalloc(sizeof(int) * (size_t)n);
+    for (int i = 0; i < n; i++) prev[i] = -2;
     int qh = 0, qt = 0;
     for (int i = 0; i < nfrom; i++) if (prev[from[i]] == -2) { prev[from[i]] = -1; pact[from[i]] = -1; queue[qt++] = from[i]; }
     int found = 0;
@@ -8870,7 +8910,7 @@ static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed
         if (!pnodes[v].succ) pnode_successors(v);
         for (int k = 0; k < pnodes[v].nsucc; k++) {
             int w = pnodes[v].succ[k];
-            if (w >= npnodes || prev[w] != -2) continue;
+            if (w >= n || prev[w] != -2) continue;
             if (allowed && !in_set(allowed, nallowed, w)) continue;
             prev[w] = v;
             pact[w] = pnodes[v].act[k];
