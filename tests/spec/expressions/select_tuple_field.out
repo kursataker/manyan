@@ -1,0 +1,3 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 25 of module select_tuple_field failed.
+Attempted to apply function with integer domain to the non-integer argument "f"
+exit 10

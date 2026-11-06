@@ -29,6 +29,18 @@ for it as its notes.
   the module, or used an instance's definition.
 - Checking a temporal property keeps no garbage from what it evaluates:
   pcal/MacroRealQuicksort from TLC's tests took 2.4 GB, and takes 35 MB.
+- Simulation, as TLC: without a next-state action, a behavior deadlocks
+  in its initial state; TLC's own errors, such as a temporal formula in a
+  constraint, are printed without the "unexpected exception" preamble;
+  an error in the constraint of an initial state prints that state; and
+  printing the behavior finds the action of each step, as TLC does, so an
+  error doing so is reported again.
+- TLC's messages for selecting a field of a value that is not a record,
+  and for comparing a boolean, a record or `Nat` with a value of another
+  kind; a record equals only a function TLC makes a record of.
+- An invariant that is not a state predicate, whose level depends on a
+  variable outside its temporal operators, gets TLC's note about the bug
+  in SANY's level checking.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 

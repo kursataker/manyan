@@ -1,0 +1,5 @@
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+exit 11

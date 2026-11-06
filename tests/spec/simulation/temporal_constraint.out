@@ -1,0 +1,6 @@
+Error: TLC encountered a temporal formula (a ~> b) when evaluating a predicate or action.
+line 9, col 26 to line 9, col 43 of module temporal_constraint
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+exit 255

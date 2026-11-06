@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 23 of module select_non_record failed.
+Attempted to select field "f" from a non-record value {1, 2}
+line 4, col 15 to line 4, col 22 of module select_non_record
+exit 10

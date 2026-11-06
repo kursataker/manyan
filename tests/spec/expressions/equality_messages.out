@@ -1,0 +1,6 @@
+TRUE
+FALSE
+Error: Evaluating assumption line 6, col 8 to line 6, col 25 of module equality_messages failed.
+Attempted to compare equality of boolean TRUE with non-boolean:
+"f"
+exit 10

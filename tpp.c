@@ -818,17 +818,28 @@ static inline int vcmp_quick(Value *a, Value *b) {
 
 static _Noreturn void equality_error(Value *a, Value *b) {
     const char *k = kind_name(a);
+    if (a->kind == V_BOOL) fail("Attempted to compare equality of boolean %s with non-boolean:\n%s", pretty(a), pretty(b));
+    if (a->kind == V_FCN && a->made == MADE_RECORD)
+        fail("Attempted to check equality of record:\n%s\nwith non-record\n%s", pretty(a), pretty(b));
+    if (user_set(a)) fail("Attempted to compare overridden value %s with non-overridden value:\n%s", pretty(a), pretty(b));
     if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", a->n ? pretty(a) : "<< >>", pretty(b));
     if (is_set(a)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(a), pretty(b));
     fail("Attempted to check equality of %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
 }
 
+/* Whether TLC makes a record of the function, its domain all strings. */
+static int as_record(Value *f) {
+    if (f->kind == V_TUPLE) return f->n == 0;
+    for (int i = 0; i < f->n; i++) if (f->u.fcn.keys[i]->kind != V_STR) return 0;
+    return 1;
+}
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
     if (a->kind == V_TUPLE && b->kind == V_STR) return veq(a, str_chars(b));   /* TLC's tuple takes a string as its characters */
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
     if (is_fcn(a) && is_fcn(b)) {
+        if (a->made == MADE_RECORD && !as_record(b)) equality_error(a, b);
         if (a->n != b->n) return 0;
         for (int i = 0; i < a->n; i++) {
             if (!(a->kind == V_TUPLE && b->kind == V_TUPLE) && !veq(fcn_key(a, i), fcn_key(b, i))) return 0;
@@ -4165,6 +4176,44 @@ static int max_level(Expr **args, int n) {
     return l;
 }
 
+/* Whether e's level depends on a constant or variable: SANY's
+   levelParams are not empty. A prime or a temporal operator fixes the
+   level of what it applies to; an operator's argument counts if its
+   parameter does. TLC says more about an invariant that is no state
+   predicate when they are not empty. */
+static Def *param_probe;
+static int level_params(Expr *e) {
+    if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && e->def == param_probe) return 1;
+    switch (e->kind) {
+    case K_DECL: return 1;
+    case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_ENABLED:
+    case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case K_WHILE: case X_WF: case X_SF:
+    case X_TFORALL: case X_TEXISTS: case X_LAMBDA: case X_OPREF:
+        return 0;
+    case K_CALL: case K_INSTCALL: {
+        Def *d = e->def;
+        if (!d->body) break;
+        if (d->level_busy) return 0;
+        d->level_busy = 1;
+        int found = level_params(d->body);
+        Def *outer = param_probe;
+        for (int i = 0; i < e->n && i < d->nparams && !found; i++) {
+            param_probe = d->params[i];
+            found = level_params(d->body) && (param_probe = outer, level_params(e->args[i]));
+        }
+        param_probe = outer;
+        d->level_busy = 0;
+        return found;
+    }
+    }
+    for (int i = 0; i < e->n; i++) if (level_params(e->args[i])) return 1;
+    for (int i = 0; i < e->nb; i++) if (e->bounds[i].set && level_params(e->bounds[i].set)) return 1;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (level_params(e->paths[i].keys[k])) return 1;
+    return 0;
+}
+
 static int expr_level(Expr *e) {
     if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && level_probe && e->def == level_probe) return 4;
     int l = e->kind == K_CALL || e->kind == K_INSTCALL ? args_level(e->def, e->args, e->n) : max_level(e->args, e->n);
@@ -5036,12 +5085,16 @@ static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_dot(Expr *e, Ctx c) {
     Value *r = eval(e->args[0], c);
-    if (!is_fcn(r)) fail_at(e, "Attempted to access field %s of the non-record\n%s.", S(e->op), pretty(r));
+    if (!is_fcn(r)) fail_at(e, "Attempted to select field \"%s\" from a non-record value %s", S(e->op), pretty(r));
     Value *field = mk_str(e->op);
-    int i = fcn_index(r, field);
-    if (i >= 0) return r->u.fcn.vals[i];
-    if (r->made == MADE_RECORD)
-        fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
+    if (r->made == MADE_RECORD) {
+        int i = fcn_index(r, field);
+        if (i < 0) fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
+        return r->u.fcn.vals[i];
+    }
+    if (r->kind == V_TUPLE) fail("Attempted to apply function with integer domain to the non-integer argument %s", pretty(field));
+    /* TLC compares each element of the domain with the field, in order. */
+    for (int i = 0; i < r->n; i++) if (veq(r->u.fcn.keys[i], field)) return r->u.fcn.vals[i];
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(r), pretty(field));
 }
@@ -5166,7 +5219,7 @@ EVAL(ev_temporal) {
     const char *what = e->kind == K_ALWAYS ? "[]A" : e->kind == K_EVENTUALLY ? "<>A" : e->kind == K_LEADSTO ? "a ~> b"
                      : e->kind == K_WHILE ? "a -+-> formula" : e->kind == X_WF ? "WF" : e->kind == X_SF ? "SF"
                      : e->kind == X_TFORALL ? "\\AA" : "\\EE";
-    fail_at(e, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
+    fail_runtime(e, TPP_ERROR, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
 }
 EVAL(ev_cdot) { UNUSED_C; (void)e; fail("The current version of TLC does not support action composition."); }
 #undef UNUSED_C
@@ -6831,6 +6884,11 @@ static int violation;         /* the exit status of the first violation, 0 if no
 static Check *error_check;
 static Value **error_state;
 
+/* Whether the check an error stopped is an invariant. */
+static int checking_invariant(void) {
+    return error_check && ninvariants && error_check >= invariants && error_check < invariants + ninvariants;
+}
+
 static int check_list(Check *list, int n, Value **st) {
     Value **saved = cur_state;
     cur_state = st;
@@ -7441,7 +7499,7 @@ static int search(void) {
         fp_depth = 0;
         if (expanding < 0) {
             print_error_message();
-            if (error_state && !error_module) {
+            if (error_state && error_module != 1) {
                 printf("While working on the initial state:\n");
                 print_state(error_state);
                 printf("\n");
@@ -7451,7 +7509,7 @@ static int search(void) {
             print_counts(nstates, 0);
             return status;
         }
-        if (error_check && error_check >= invariants && error_check < invariants + ninvariants) {
+        if (checking_invariant()) {
             /* An invariant of a new state failed to evaluate. */
             printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
             print_error_text();
@@ -7619,11 +7677,13 @@ static int sim_print(States *trace) {
     }
     uint64_t *fps = NEWN(uint64_t, trace->n);
     for (int i = 0; i < trace->n; i++) fps[i] = fingerprint(trace->a[i]);
-    handler = outer;
+    /* TLC finds the action of every step, a repeated state's too, and
+       fails as the behavior did if finding it fails. */
     for (int i = 0, k = 1; i < trace->n; i++) {
-        if (!i) print_numbered(k++, -1, trace->a[i]);
-        else if (fps[i] != fps[i - 1]) print_numbered(k++, replay(trace->a[i - 1], trace->a[i]), trace->a[i]);
+        int action = i ? replay(trace->a[i - 1], trace->a[i]) : -1;
+        if (!i || fps[i] != fps[i - 1]) print_numbered(k++, action, trace->a[i]);
     }
+    handler = outer;
     return 1;
 }
 
@@ -7688,9 +7748,15 @@ static int simulate(const TPPOptions *o) {
     handler = &here;
     static States init, trace;   /* static: read after an error jumps back */
     static Value **checked;      /* the successor being checked */
+    static Value **current;      /* the state the behavior is in, as TLC's */
+    static EvalState fresh;
+    fresh = eval_save();
     if (sigsetjmp(here, 0)) {
+        Arena *in_use = arena;
+        eval_restore(fresh);     /* the error may have left an evaluation, primed */
+        arena = in_use;
         handler = NULL;
-        int invariant = error_check && error_check >= invariants && error_check < invariants + ninvariants;
+        int invariant = checking_invariant();
         if (!trace.n && invariant) {
             printf("Error: ");
             print_error_text();
@@ -7710,6 +7776,7 @@ static int simulate(const TPPOptions *o) {
         }
         sim_exception();
         int status = error_module == 2 ? error_status : TPP_ERROR;
+        if (current && (!trace.n || trace.a[trace.n - 1] != current)) sim_push(&trace, current);
         if (trace.n) {
             error_check = NULL;
             sim_print(&trace);
@@ -7754,7 +7821,7 @@ static int simulate(const TPPOptions *o) {
     for (long t = 0; !o->traces || t < o->traces; t++) {
         arena_reset(&scratch_arena);
         trace.n = 0;
-        Value **st = init.a[rng_index(init.n)];
+        Value **st = current = init.a[rng_index(init.n)];
         int in_model = check_list(constraints, nconstraints, st) < 0;
         for (long d = 0; d < depth; d++) {
             sim_push(&trace, st);
@@ -7793,7 +7860,7 @@ static int simulate(const TPPOptions *o) {
             }
             Value **s1 = sim_found.a[rng_index(sim_found.n)];
             in_model = check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, st, s1) < 0;
-            st = s1;
+            st = current = s1;
         }
         if (ntemporal_props && sim_violates(&trace)) {
             sim_summary(seed, aril);
@@ -8476,6 +8543,10 @@ static int setup_model(void) {
             e = config_call(it->name, "invariant", 'r');
             if (expr_level(e) >= 2) {
                 printf("Error: The invariant %s is not a state predicate (one with no primes or temporal operators).\n", S(it->name));
+                if (level_params(e))
+                    printf("Note that a bug can cause TLC to incorrectly report this error.\n"
+                           "If you believe your TLA+ or PlusCal specification to be correct,\n"
+                           "please check if this bug described in LevelNode.java starting at line 590ff affects you.\n");
                 exit(TPP_FAILURE_SAFETY_EVAL);
             }
             if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, e->def->name);
@@ -9482,7 +9553,7 @@ int tpp_check(const TPPOptions *o) {
         return TPP_OK;
     }
     /* With nothing to check on steps, TLC computes the initial states first. */
-    if (!next_expr && (ninvariants || naction_props || ntemporal_props || o->simulate))
+    if (!next_expr && (ninvariants || naction_props || ntemporal_props))
         config_error("The configuration file did not specify the next state predicate.");
     arena = &perm_arena;
     sigjmp_buf here;

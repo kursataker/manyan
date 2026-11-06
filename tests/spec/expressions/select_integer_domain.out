@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 25 of module select_integer_domain failed.
+Attempted to check equality of integer 1 with non-integer:
+"f"
+exit 10
