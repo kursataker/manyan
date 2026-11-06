@@ -1439,7 +1439,7 @@ struct Def {
     Native native;
     const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
-    Value *value;         /* D_CONST: the configured value */
+    Value *value;         /* the configured value of a constant or definition */
     Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
     int level;            /* 0 constant, 1 state, 2 action, 3 temporal; -1 unknown */
     int level_busy;
@@ -5049,6 +5049,7 @@ static void materialize(Value *v) {
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
+    if (d->value) return d->value;
     if (d->kind == D_FCN) {
         if (d->local != 2 && d->level == 0 && d->cache) return d->cache;
         Value *v = fcndef_value(d, c);

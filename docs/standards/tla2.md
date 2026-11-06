@@ -516,7 +516,7 @@ in §3.3. The keywords, each followed by one or more names (or, for
 
 | Statement | Meaning |
 |---|---|
-| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module; `c = c` binds `c` to the model value `c` |
+| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
 | `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
