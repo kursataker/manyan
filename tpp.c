@@ -7406,7 +7406,10 @@ static int replay_emit(void) {
         int complete = 1;
         for (int i = 0; i < nvars && complete; i++) complete = gen_target[i] != NULL;
         replay_found = complete && replay_target && fingerprint(gen_target) == replay_fp;
-        if (replay_found) replay_match = memcpy(NEWN(Value *, nvars), gen_target, sizeof(Value *) * (size_t)nvars);
+        if (replay_found) {   /* normalized, as a state TLC keeps */
+            replay_match = memcpy(NEWN(Value *, nvars), gen_target, sizeof(Value *) * (size_t)nvars);
+            for (int i = 0; i < nvars; i++) materialize(replay_match[i]);
+        }
     }
     if (replay_checks) {
         if (ntemporal_props) eval_init_lits(gen_target);

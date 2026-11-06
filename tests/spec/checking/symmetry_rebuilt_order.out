@@ -1,0 +1,42 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant TypeOK is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ c = 0
+/\ p = ( <<n1, n1>> :> TRUE @@
+  <<n1, n2>> :> TRUE @@
+  <<n1, n3>> :> TRUE @@
+  <<n2, n1>> :> TRUE @@
+  <<n2, n2>> :> TRUE @@
+  <<n2, n3>> :> TRUE @@
+  <<n3, n1>> :> TRUE @@
+  <<n3, n2>> :> TRUE @@
+  <<n3, n3>> :> TRUE )
+
+State 2: <Next line 9, col 9 to line 9, col 42 of module symmetry_rebuilt_order>
+/\ c = 1
+/\ p = ( <<n1, n1>> :> TRUE @@
+  <<n1, n2>> :> TRUE @@
+  <<n1, n3>> :> TRUE @@
+  <<n2, n1>> :> TRUE @@
+  <<n2, n2>> :> TRUE @@
+  <<n2, n3>> :> TRUE @@
+  <<n3, n1>> :> TRUE @@
+  <<n3, n2>> :> TRUE @@
+  <<n3, n3>> :> TRUE )
+
+State 3: <Next line 9, col 9 to line 9, col 42 of module symmetry_rebuilt_order>
+/\ c = 2
+/\ p = ( <<n1, n1>> :> TRUE @@
+  <<n1, n2>> :> TRUE @@
+  <<n1, n3>> :> TRUE @@
+  <<n2, n1>> :> TRUE @@
+  <<n2, n2>> :> TRUE @@
+  <<n2, n3>> :> TRUE @@
+  <<n3, n1>> :> TRUE @@
+  <<n3, n2>> :> TRUE @@
+  <<n3, n3>> :> TRUE )
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
