@@ -139,7 +139,7 @@ static char *buf_take(Buf *b) {
 
 /* Every identifier and string is interned; strings compare by the order in
    which they were first interned (§7.5). */
-typedef struct { char *s; int len; } Str;
+typedef struct { char *s; int len; Value *value; } Str;   /* value: its V_STR, once made */
 
 static Str *strs;
 static int nstrs, capstrs;
@@ -187,6 +187,7 @@ static int intern_n(const char *s, int len) {
     copy[len] = 0;
     strs[nstrs].s = copy;
     strs[nstrs].len = len;
+    strs[nstrs].value = NULL;
     str_table[j] = nstrs + 1;
     return nstrs++;
 }
@@ -378,10 +379,13 @@ static Value *mk_int(int64_t i) {
     return v;
 }
 
+/* One value for each string, outside the arenas. */
 static Value *mk_str(int id) {
-    Value *v = NEW(Value);
-    v->kind = V_STR;
-    v->u.i = id;
+    Value *v = strs[id].value;
+    if (!v) {
+        v = strs[id].value = xmalloc(sizeof(Value));
+        *v = (Value){.kind = V_STR, .u.i = id};
+    }
     return v;
 }
 
