@@ -185,6 +185,11 @@ for it as its notes.
   An action constraint that is not a boolean is an error, not false.
 - `[A]_e` evaluates `e` only when `A` is false, and `<<A>>_e` only when it
   is true, as TLC does; an `A` that is not a boolean has TLC's message.
+- TLC's warning that the subscript of the specification's next-state
+  relation does not seem to contain a variable, found as TLC finds them:
+  through tuples, definitions, their arguments and instances.
+- A subscript may be a set, record or function expression, as SANY
+  parses it: `[A]_[a |-> x]` was a parse error.
 
 ## 0.2.0
 
