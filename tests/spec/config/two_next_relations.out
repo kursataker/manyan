@@ -1,0 +1,3 @@
+Error: The specification contains more than one conjunct of the form [][Next]_v,
+but TLC can handle only specifications with one next-state relation.
+exit 151

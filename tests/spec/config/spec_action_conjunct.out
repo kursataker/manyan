@@ -1,0 +1,3 @@
+Error: TLC cannot handle this conjunct of the spec:
+line 7, col 18 to line 7, col 27 of module spec_action_conjunct
+exit 151

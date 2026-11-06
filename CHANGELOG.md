@@ -6,6 +6,9 @@ for it as its notes.
 
 ## 0.3.0
 
+- A specification with two conjuncts `[][A]_v`, or an action not under
+  one, is TLC's configuration error; tpp checked the first, or failed in
+  the search.
 - `TLCGet("distinct")`, `"queue"`, `"diameter"` and `"duration"` count as
   TLC's search does: a new state is distinct as its invariants are
   checked, and joins the queue after them, an initial state before. A

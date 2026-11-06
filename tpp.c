@@ -8885,7 +8885,7 @@ static void subscript_vars(Expr *e, Args *a, Def **path, int npath, char *in, in
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
 static void use_specification(Expr *spec) {
     Expr **parts = NULL, **init = NULL;
-    int n = 0, ninit = 0;
+    int n = 0, ninit = 0, nnext = 0;
     conjuncts(spec->def->body, spec->kind == K_INSTCALL ? spec : NULL, &parts, &n, 1);
     for (int i = 0; i < n; i += 2) {
         Expr *e = parts[i], *call = parts[i + 1];
@@ -8893,6 +8893,9 @@ static void use_specification(Expr *spec) {
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
             init[ninit++] = in_instance(call, e);
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
+            if (nnext++)
+                config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
+                             "but TLC can handle only specifications with one next-state relation.");
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
             spec_subscript = in_instance(call, sq->args[1]);
@@ -8908,6 +8911,10 @@ static void use_specification(Expr *spec) {
                     }
                 free(in);
             }
+        } else if (expr_level(e) == 2) {
+            Buf b = {0};
+            loc_text(&b, e);
+            config_error("TLC cannot handle this conjunct of the spec:\n%s", b.s);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
             fairness[nfairness++] = in_instance(call, e);
