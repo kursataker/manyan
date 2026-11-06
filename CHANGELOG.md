@@ -105,6 +105,11 @@ for it as its notes.
   (Open-Markets-Initiative/omi-tlaplus-definitions). Enumerated, elements
   that do not compare fail as in TLC; a record compared with another value
   gets TLC's message.
+- Tuples, sets, records, `CASE` arms, `LET` definitions, arguments and
+  bound names are of any number: a tuple of more than 256 elements was a
+  syntax error (a byte capture from omi-tlaplus-definitions), a `CASE` of
+  more than 127 arms lost the others, and more than 32 bound names
+  overran the parser's stack.
 - Several constants without a value, or substituted by undefined names,
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before

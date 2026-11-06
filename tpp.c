@@ -79,6 +79,16 @@ static void *alloc(size_t n) { return memset(alloc_raw(n), 0, n); }
 #define NEW(T) ((T *)alloc(sizeof(T)))
 #define NEWN(T, n) ((T *)alloc(sizeof(T) * (size_t)(n)))
 
+/* v, of n elements of the size given, with room for one more: it holds 8,
+   then doubles. */
+static void *grow(void *v, int n, size_t size) {
+    if (n && (n < 8 || n & (n - 1))) return v;
+    void *g = alloc_raw(size * (size_t)(n ? 2 * n : 8));
+    if (n) memcpy(g, v, size * (size_t)n);
+    return g;
+}
+#define PUSH(v, n, x) ((v) = grow((v), (n), sizeof *(v)), (v)[(n)++] = (x))
+
 static void arena_reset(Arena *a) {
     Chunk *c = a->head;
     while (c && c->next) { Chunk *next = c->next; free(c); c = next; }
@@ -2034,24 +2044,23 @@ static Expr *parse_lambda(void) {
 /* Arguments of an operator application: expressions, LAMBDAs, or
    operator symbols passed as operators. */
 static Expr **parse_args(int *count) {
-    Expr *args[64];
+    Expr **args = NULL;
     int n = 0;
     int saved = P->limit;
     P->limit = 0;
     expect_op("(");
     for (;;) {
         Tok *t = peek();
-        if (n == 64) syntax_error("too many arguments");
         if (is_kw(t, "LAMBDA")) {
-            args[n++] = parse_lambda();
+            PUSH(args, n, parse_lambda());
         } else if ((t->kind == T_OP || t->kind == T_KW) && (op_info(t, INFIX) || op_info(t, PREFIX) || op_info(t, POSTFIX)) &&
                    (is_op(peek_at(1), ",") || is_op(peek_at(1), ")"))) {
             Expr *r = mk_expr(X_OPREF, t);
             r->op = canonical(t->id);
             next();
-            args[n++] = r;
+            PUSH(args, n, r);
         } else {
-            args[n++] = parse_expr();
+            PUSH(args, n, parse_expr());
         }
         if (is_op(peek(), ",")) { next(); continue; }
         expect_op(")");
@@ -2059,7 +2068,7 @@ static Expr **parse_args(int *count) {
     }
     P->limit = saved;
     *count = n;
-    return args_array(args, n);
+    return args;
 }
 
 /* A name, its arguments, and instance selections: A!B(x)!C. */
@@ -2100,42 +2109,31 @@ static Expr *parse_name(void) {
 
 /* `x, y \in S, <<a, b>> \in T` or, unbounded, `x, y`. */
 static void parse_bounds(Expr *e, int allow_unbounded) {
-    Bound bs[32];
-    int nb = 0;
     for (;;) {
-        Bound *b = &bs[nb++];
-        memset(b, 0, sizeof *b);
-        int names[32];
-        int n = 0;
-        b->tuple = is_op(peek(), "<<");
-        if (b->tuple) next();
-        b->line = peek()->line;
-        b->col = peek()->col;
-        if (b->tuple) {
-            do names[n++] = expect_ident(); while (is_op(peek(), ",") && next());
+        Bound b = {.tuple = is_op(peek(), "<<")};
+        if (b.tuple) next();
+        b.line = peek()->line;
+        b.col = peek()->col;
+        if (b.tuple) {
+            do PUSH(b.names, b.n, expect_ident()); while (is_op(peek(), ",") && next());
             expect_op(">>");
         } else {
-            names[n++] = expect_ident();
+            PUSH(b.names, b.n, expect_ident());
             while (is_op(peek(), ",") && peek_at(1)->kind == T_IDENT) {
                 next();
-                names[n++] = expect_ident();
+                PUSH(b.names, b.n, expect_ident());
             }
         }
-        b->n = n;
-        b->names = NEWN(int, n);
-        memcpy(b->names, names, sizeof(int) * (size_t)n);
         if (is_op(peek(), "\\in")) {
             next();
-            b->set = parse_expr();
+            b.set = parse_expr();
         } else if (!allow_unbounded) {
             syntax_error("expected \\in");
         }
-        if (is_op(peek(), ",") && nb < 32) { next(); continue; }
-        break;
+        PUSH(e->bounds, e->nb, b);
+        if (!is_op(peek(), ",")) break;
+        next();
     }
-    e->bounds = NEWN(Bound, nb);
-    memcpy(e->bounds, bs, sizeof(Bound) * (size_t)nb);
-    e->nb = nb;
 }
 
 /* Whether the tokens ahead are `x \in` or `x, y \in` or `<<x, y>> \in`. */
@@ -2156,21 +2154,17 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...);
 static Expr *parse_junction(Tok *bullet) {
     int col = bullet->col;
     int op = canonical(bullet->id);
-    Expr *items[256];
-    int n = 0;
     int saved = P->limit;
     Expr *list = mk_expr(X_OP, bullet);
-    while (n < 256) {
+    for (;;) {
         Tok *t = &P->t[P->pos];
         if (t->kind != T_OP || canonical(t->id) != op || t->col != col) break;
         next();
         P->limit = col;
-        items[n++] = parse_expr();
+        PUSH(list->args, list->n, parse_expr());
         P->limit = saved;
     }
     list->op = op;
-    list->n = n;
-    list->args = args_array(items, n);
     finish(list);
     return list;
 }
@@ -2247,40 +2241,35 @@ static Expr *parse_primary(void) {
         if (is_kw(t, "CASE")) {
             next();
             e = mk_expr(X_CASE, t);
-            Expr *a[256];
-            int n = 0;
             e->num = 0;
             for (;;) {
                 if (is_kw(peek(), "OTHER")) {
                     next();
                     expect_op("->");
-                    a[n++] = NULL;
-                    a[n++] = parse_expr();
+                    PUSH(e->args, e->n, NULL);
+                    PUSH(e->args, e->n, parse_expr());
                     e->num = 1;
                     break;
                 }
-                a[n++] = parse_expr();
+                PUSH(e->args, e->n, parse_expr());
                 expect_op("->");
-                a[n++] = parse_expr();
-                if (!is_op(peek(), "[]") || n >= 254) break;
+                PUSH(e->args, e->n, parse_expr());
+                if (!is_op(peek(), "[]")) break;
                 next();
             }
-            e->n = n;
-            e->args = args_array(a, n);
             finish(e);
             return e;
         }
         if (is_kw(t, "LET")) {
             next();
             e = mk_expr(X_LET, t);
-            Def *defs[256];
-            int n = 0, recursive[256], nrec = 0;
+            int *recursive = NULL, nrec = 0;
             while (!is_kw(peek(), "IN")) {
                 if (is_kw(peek(), "RECURSIVE")) {
                     next();
                     do {
                         int name = expect_ident();
-                        if (nrec < 256) recursive[nrec++] = name;
+                        PUSH(recursive, nrec, name);
                         if (is_op(peek(), "(")) {
                             next();
                             while (!is_op(peek(), ")")) next();
@@ -2289,15 +2278,11 @@ static Expr *parse_primary(void) {
                     } while (is_op(peek(), ",") && next());
                     continue;
                 }
-                if (n == 256) syntax_error("too many LET definitions");
-                defs[n++] = parse_definition(0);
+                PUSH(e->defs, e->ndefs, parse_definition(0));
             }
             next();
-            for (int i = 0; i < n; i++)
-                for (int k = 0; k < nrec; k++) defs[i]->recursive |= defs[i]->name == recursive[k];
-            e->defs = NEWN(Def *, n);
-            memcpy(e->defs, defs, sizeof(Def *) * (size_t)n);
-            e->ndefs = n;
+            for (int i = 0; i < e->ndefs; i++)
+                for (int k = 0; k < nrec; k++) e->defs[i]->recursive |= e->defs[i]->name == recursive[k];
             e->n = 1;
             e->args = NEWN(Expr *, 1);
             e->args[0] = parse_expr();
@@ -2367,14 +2352,10 @@ static Expr *parse_primary(void) {
             next();
             int saved = P->limit;
             P->limit = 0;
-            Expr *a[256];
+            Expr **a = NULL;
             int n = 0;
-            if (!is_op(peek(), ">>") && !is_op(peek(), ">>_")) {
-                do {
-                    if (n == 256) syntax_error("tuple too long");
-                    a[n++] = parse_expr();
-                } while (is_op(peek(), ",") && next());
-            }
+            if (!is_op(peek(), ">>") && !is_op(peek(), ">>_"))
+                do PUSH(a, n, parse_expr()); while (is_op(peek(), ",") && next());
             P->limit = saved;
             if (is_op(peek(), ">>_")) {
                 next();
@@ -2389,7 +2370,7 @@ static Expr *parse_primary(void) {
             expect_op(">>");
             e = mk_expr(X_TUPLE, t);
             e->n = n;
-            e->args = args_array(a, n);
+            e->args = a;
             finish(e);
             return e;
         }
@@ -2397,7 +2378,7 @@ static Expr *parse_primary(void) {
             next();
             int saved = P->limit;
             P->limit = 0;
-            Expr *a[1024];
+            Expr **a = NULL;
             int n = 0;
             if (is_op(peek(), "}")) {
                 next();
@@ -2441,17 +2422,16 @@ static Expr *parse_primary(void) {
                 finish(e);
                 return e;
             }
-            a[n++] = first;
+            PUSH(a, n, first);
             while (is_op(peek(), ",")) {
                 next();
-                if (n == 1024) syntax_error("set too long");
-                a[n++] = parse_expr();
+                PUSH(a, n, parse_expr());
             }
             expect_op("}");
             P->limit = saved;
             e = mk_expr(X_SETENUM, t);
             e->n = n;
-            e->args = args_array(a, n);
+            e->args = a;
             finish(e);
             return e;
         }
@@ -2462,25 +2442,17 @@ static Expr *parse_primary(void) {
             if (peek()->kind == T_IDENT && (is_op(peek_at(1), "|->") || is_op(peek_at(1), ":"))) {
                 int set = is_op(peek_at(1), ":");
                 e = mk_expr(set ? X_RCDSET : X_RECORD, t);
-                Expr *a[256];
-                int names[256];
-                int n = 0;
                 do {
-                    if (n == 256) syntax_error("record too long");
                     Tok *field = peek();
-                    names[n] = expect_ident();
-                    for (int i = 0; i < n; i++)
-                        if (names[i] == names[n]) semantic_error(mk_expr(X_NAME, field), "Non-unique fields in constructor.");
+                    int name = expect_ident();
+                    for (int i = 0; i < e->nseg; i++)
+                        if (e->segs[i].name == name) semantic_error(mk_expr(X_NAME, field), "Non-unique fields in constructor.");
+                    PUSH(e->segs, e->nseg, ((Seg){.name = name}));
                     expect_op(set ? ":" : "|->");
-                    a[n++] = parse_expr();
+                    PUSH(e->args, e->n, parse_expr());
                 } while (is_op(peek(), ",") && next());
                 expect_op("]");
                 P->limit = saved;
-                e->n = n;
-                e->args = args_array(a, n);
-                e->segs = NEWN(Seg, n);
-                for (int i = 0; i < n; i++) e->segs[i].name = names[i];
-                e->nseg = n;
                 finish(e);
                 return e;
             }
@@ -2511,12 +2483,10 @@ static Expr *parse_primary(void) {
             if (is_kw(peek(), "EXCEPT")) {
                 next();
                 e = mk_expr(X_EXCEPT, t);
-                Expr *vals[256];
-                Path paths[256];
+                PUSH(e->args, e->n, first);
                 int n = 0;
                 do {
-                    paths[n].line = peek()->line;
-                    paths[n].col = peek()->col;
+                    Path path = {.line = peek()->line, .col = peek()->col};
                     expect_op("!");
                     Expr *keys[32];
                     int fields[32];
@@ -2546,22 +2516,15 @@ static Expr *parse_primary(void) {
                     }
                     if (!k) syntax_error("expected ! path");
                     expect_op("=");
-                    if (n == 256) syntax_error("too many EXCEPT clauses");
-                    paths[n].n = k;
-                    paths[n].keys = args_array(keys, k);
-                    paths[n].fields = NEWN(int, k);
-                    memcpy(paths[n].fields, fields, sizeof(int) * (size_t)k);
-                    vals[n++] = parse_expr();
+                    path.n = k;
+                    path.keys = args_array(keys, k);
+                    path.fields = NEWN(int, k);
+                    memcpy(path.fields, fields, sizeof(int) * (size_t)k);
+                    PUSH(e->paths, n, path);
+                    PUSH(e->args, e->n, parse_expr());
                 } while (is_op(peek(), ",") && next());
                 expect_op("]");
                 P->limit = saved;
-                Expr *a[257];
-                a[0] = first;
-                for (int i = 0; i < n; i++) a[i + 1] = vals[i];
-                e->n = n + 1;
-                e->args = args_array(a, n + 1);
-                e->paths = NEWN(Path, n);
-                memcpy(e->paths, paths, sizeof(Path) * (size_t)n);
                 finish(e);
                 return e;
             }
@@ -2602,16 +2565,12 @@ static Expr *parse_postfix(void) {
             next();
             int saved = P->limit;
             P->limit = 0;
-            Expr *a[33];
-            int n = 1;
-            a[0] = e;
-            do a[n++] = parse_expr(); while (is_op(peek(), ",") && next() && n < 33);
+            Expr *app = mk_expr(X_APPLY, start);
+            PUSH(app->args, app->n, e);
+            do PUSH(app->args, app->n, parse_expr()); while (is_op(peek(), ",") && next());
             expect_op("]");
             P->limit = saved;
-            Expr *app = mk_expr(X_APPLY, start);
             span_from(app, e);
-            app->n = n;
-            app->args = args_array(a, n);
             finish(app);
             e = app;
         } else if (is_op(t, ".") && is_field(peek_at(1))) {
@@ -2871,8 +2830,6 @@ static Def *parse_definition(int local) {
 static Def *parse_instance(Tok *start, int name) {
     Def *d = new_def(D_INST, name, start);
     d->target = (Module *)(intptr_t)expect_ident();   /* the module's name until resolved */
-    Def *decls[256];
-    Expr *exprs[256];
     int n = 0;
     if (is_kw(peek(), "WITH")) {
         next();
@@ -2886,24 +2843,19 @@ static Def *parse_instance(Tok *start, int name) {
             expect_op("<-");
             Def *p = NEW(Def);
             p->name = pname;
-            decls[n] = p;
+            PUSH(d->subst_decl, n, p);
             Tok *at = peek();
             if ((at->kind == T_OP || at->kind == T_KW) && (is_op(peek_at(1), ",") || peek_at(1)->line != at->line ||
                                                              peek_at(1)->kind == T_SEP || peek_at(1)->kind == T_END)) {
                 Expr *r = mk_expr(X_OPREF, at);
                 r->op = canonical(at->id);
                 next();
-                exprs[n++] = r;
+                PUSH(d->subst_expr, d->nsubst, r);
             } else {
-                exprs[n++] = is_kw(at, "LAMBDA") ? parse_lambda() : parse_expr();
+                PUSH(d->subst_expr, d->nsubst, is_kw(at, "LAMBDA") ? parse_lambda() : parse_expr());
             }
-        } while (is_op(peek(), ",") && next() && n < 256);
+        } while (is_op(peek(), ",") && next());
     }
-    d->nsubst = n;
-    d->subst_decl = NEWN(Def *, n);
-    d->subst_expr = NEWN(Expr *, n);
-    memcpy(d->subst_decl, decls, sizeof(Def *) * (size_t)n);
-    memcpy(d->subst_expr, exprs, sizeof(Expr *) * (size_t)n);
     finish(d->where);
     return d;
 }
@@ -2966,12 +2918,7 @@ static Module *parse_module(Module *outer) {
     next();
     if (is_kw(peek(), "EXTENDS")) {
         next();
-        int names[64];
-        int n = 0;
-        do { if (n < 64) names[n++] = expect_ident(); } while (is_op(peek(), ",") && next());
-        m->extends = NEWN(int, n);
-        memcpy(m->extends, names, sizeof(int) * (size_t)n);
-        m->nextends = n;
+        do PUSH(m->extends, m->nextends, expect_ident()); while (is_op(peek(), ",") && next());
     }
     for (;;) {
         Tok *t = peek();
