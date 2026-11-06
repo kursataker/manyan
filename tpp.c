@@ -325,7 +325,8 @@ struct Value {
            stored */
         /* hash: the sum of the elements' or pairs' hashes, once known; else 0 */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
-        struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
+        struct { Value *a, *b; union { Value **names; Value *cup; }; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
+        /* cup: an L_CUP's elements, once enumerated */
         /* V_LAMBDA: [x \in a |-> expr] in env, with b for @, then n EXCEPT pairs (key, value);
            made_in: in a simulation, the current and next state it was made in */
         struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
@@ -467,6 +468,8 @@ static int print_normal;   /* printing as TLC does once it normalizes values: Pr
 static Value *normalize_set(Value *v);
 static int set_is_infinite(Value *s);
 static int64_t set_size(Value *s);
+static Value *enumerate(Value *s);
+static int kinds_differ(Value *a, Value *b);
 
 /* A lazy set TLC prints by its elements; others it prints as written. */
 static int expandable(Value *v) {
@@ -526,6 +529,10 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_ANY) { buf_puts(b, "ANY"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
         if (v->lazy == L_UNION) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
+        if (v->lazy == L_CUP && !set_is_infinite(v) && !kinds_differ(enumerate(v->u.l.a), enumerate(v->u.l.b))) {
+            print_value(b, enumerate(v));
+            return;
+        }
         if (v->lazy >= L_CUP) {
             print_value(b, v->u.l.a);
             buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
@@ -740,7 +747,6 @@ typedef Value *(*EvalFn)(Expr *e, Ctx c);
 static inline Value *eval(Expr *e, Ctx c);
 static int eval_bool(Expr *e, Ctx c);
 static Value *filter_member_test(Value *s, Value *v);
-static Value *enumerate(Value *s);
 
 /* ---------------------------------------------------------------- comparison */
 
@@ -751,6 +757,8 @@ static Value *fcn_key(Value *f, int i) { return f->kind == V_TUPLE ? mk_int(i + 
 
 static _Noreturn void compare_error(Value *a, Value *b) {
     const char *k = kind_name(a);
+    if (a->kind == V_FCN && a->made == MADE_RECORD)
+        fail("Attempted to compare record:\n%s\nwith non-record\n%s", pretty(a), pretty(b));
     if (is_fcn(a)) fail("Attempted to compare the function %s with the value:\n%s", pretty(a), pretty(b));
     if (is_set(a)) fail("Attempted to compare the set %s with the value:\n%s", pretty(a), pretty(b));
     fail("Attempted to compare %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
@@ -983,7 +991,8 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng, int as_record
 /* The elements of a finite set, as a normalized V_SET. */
 static _Noreturn void count_infinite(Value *s);
 
-static _Noreturn void cup_error(Value *a, Value *b);
+static Value *cup_merge(Value *a, Value *b);
+static _Noreturn void sort_error(Value *a, Value *b);
 static Value *enumerate(Value *s) {
     if (s->kind == V_SET) return s;
     if (s->kind == V_INTERVAL) {
@@ -1038,6 +1047,7 @@ static Value *enumerate(Value *s) {
                 for (int i = 0; i < n; i++) t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]];
             } else {
                 t = mk_fcn(n);
+                t->made = MADE_RECORD;
                 for (int i = 0; i < n; i++) { t->u.fcn.keys[i] = s->u.l.names[i]; t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]]; }
             }
             list_add(&out, t);
@@ -1062,7 +1072,13 @@ static Value *enumerate(Value *s) {
     case L_CUP: {
         /* TLC makes S \cup T from whichever of them is enumerated. */
         Value *a = s->u.l.a, *b = s->u.l.b;
-        if (!set_is_infinite(a) && !set_is_infinite(b)) cup_error(enumerate(a), enumerate(b));   /* elements that do not compare */
+        if (!set_is_infinite(a) && !set_is_infinite(b)) {
+            if (s->u.l.cup) return s->u.l.cup;
+            if (kinds_differ(enumerate(a), enumerate(b))) sort_error(a, b);
+            Value *set = cup_merge(a, b);
+            if (!s->perm || arena == &perm_arena) s->u.l.cup = set;
+            return set;
+        }
         if (a->kind == V_LAZY && b->kind != V_LAZY) { Value *t = a; a = b; b = t; }
         fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
     }
@@ -1263,6 +1279,32 @@ static _Noreturn void cup_error(Value *a, Value *b) {
     abort();
 }
 
+/* TLC's error enumerating S \cup T it keeps as its definition, of
+   elements that do not compare: it sorts S's and then T's by binary
+   insertion. */
+static _Noreturn void sort_error(Value *a, Value *b) {
+    a = enumerate(a); b = enumerate(b);
+    Value **v = NEWN(Value *, a->n + b->n);
+    memcpy(v, a->u.set.elems, a->n * sizeof *v);
+    memcpy(v + a->n, b->u.set.elems, b->n * sizeof *v);
+    for (int i = 1, n = 1; i < a->n + b->n; i++) {
+        int lo = 0, hi = n, idx = 0, c = 0;
+        while (lo < hi) {
+            idx = lo + (hi - lo) / 2;
+            if (!(c = vcmp(v[i], v[idx]))) break;
+            if (c < 0) hi = idx; else lo = idx + 1;
+        }
+        if (c) {
+            idx = c < 0 ? idx : idx + 1;
+            Value *e = v[i];
+            memmove(v + idx + 1, v + idx, (n - idx) * sizeof *v);
+            v[idx] = e;
+            n++;
+        }
+    }
+    abort();
+}
+
 /* The kind of a set's elements but model values, which compare with any
    value; -1 if it has no other. */
 static int elem_kind(Value *s) {
@@ -1273,20 +1315,18 @@ static int elem_kind(Value *s) {
     return -1;
 }
 
-static Value *set_union(Value *a, Value *b) {
-    if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
-    int hold = !reducible(a) || !reducible(b);
-    Value *a0 = a, *b0 = b;
-    a = enumerate(a); b = enumerate(b);
-    if (!b->n) return hold ? held(a) : a;
-    if (!a->n) return hold ? held(b) : b;
-    /* Elements that do not compare: TLC fails looking for T's in S, unless
-       it keeps the union as its definition, testing only membership. */
+/* Whether two enumerated sets have elements that do not compare. */
+static int kinds_differ(Value *a, Value *b) {
     int ka = elem_kind(a), kb = elem_kind(b);
-    if (ka >= 0 && kb >= 0 && ka != kb) {
-        if (hold) return reducible(a0) || !reducible(b0) ? lazy_op(L_CUP, a0, b0) : lazy_op(L_CUP, b0, a0);   /* the enumerated first */
-        cup_error(a, b);
-    }
+    return ka >= 0 && kb >= 0 && ka != kb;
+}
+
+/* S \cup T of two finite sets, enumerated. */
+static Value *cup_merge(Value *a, Value *b) {
+    a = enumerate(a); b = enumerate(b);
+    if (!b->n) return a;
+    if (!a->n) return b;
+    if (kinds_differ(a, b)) cup_error(a, b);
     /* Both are sorted: merge them. */
     Value *r = mk_set(a->n + b->n);
     Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
@@ -1300,7 +1340,17 @@ static Value *set_union(Value *a, Value *b) {
     while (i < a->n) out[k++] = x[i++];
     while (j < b->n) out[k++] = y[j++];
     r->n = k;
-    return hold ? held(r) : r;
+    return r;
+}
+
+/* TLC enumerates S \cup T only of two sets it holds as their elements; it
+   keeps another as its definition, the enumerated first, unless that is
+   empty. */
+static Value *set_union(Value *a, Value *b) {
+    if (reducible(a) && reducible(b)) return cup_merge(a, b);
+    if (reducible(a) && !a->n) return b;
+    if (reducible(b) && !b->n) return a;
+    return reducible(b) ? lazy_op(L_CUP, b, a) : lazy_op(L_CUP, a, b);
 }
 
 static Value *set_inter(Value *a, Value *b) {

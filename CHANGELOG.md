@@ -98,6 +98,13 @@ for it as its notes.
   a set whose elements do not compare with its own is kept so too, as
   TLC keeps it: `Bad \notin (Data \X {0, 1}) \cup {0, 1}` failed (AB2 from
   Isaac-DeFrain/TLAplusFun). Of two enumerated sets, the error is TLC's.
+- Every `S \cup T` TLC keeps as its definition, where `S` or `T` is not
+  enumerated as written, such as a set of records, is kept so until it is
+  enumerated, as TLC keeps it: a definition never used, such as a union of
+  sets of records too large to enumerate, ran out of memory
+  (Open-Markets-Initiative/omi-tlaplus-definitions). Enumerated, elements
+  that do not compare fail as in TLC; a record compared with another value
+  gets TLC's message.
 - Several constants without a value, or substituted by undefined names,
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before
