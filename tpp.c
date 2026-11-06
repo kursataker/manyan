@@ -986,6 +986,14 @@ static void list_add(List *l, Value *v) {
     l->v[l->n++] = v;
 }
 
+/* The enumerated S of {x \in S : p(x)}, whose elements TLC filters as
+   it takes them. */
+static Value *filter_base(Value *s) {
+    if (!is_set(s->u.l.a) || user_set(s->u.l.a))
+        fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
+    return enumerate(s->u.l.a);
+}
+
 static Value *list_set(List *l) {
     Value *s = mk_set(l->n);
     if (l->n) memcpy(s->u.set.elems, l->v, sizeof(Value *) * (size_t)l->n);
@@ -1102,9 +1110,7 @@ static Value *enumerate(Value *s) {
     }
     case L_FILTER: {
         if (s->u.l.b) return s->u.l.b;
-        if (!is_set(s->u.l.a) || user_set(s->u.l.a))
-            fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
-        Value *base = enumerate(s->u.l.a);
+        Value *base = filter_base(s);
         List out = {0};
         for (int i = 0; i < base->n; i++)
             if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
@@ -6404,6 +6410,12 @@ static int gen(Expr *e, Ctx c, Cont *k) {
             Value *s = eval(e->args[1], c);
             if (!is_set(s)) fail_at(e, "Attempted to check if a value is an element of the non-set:\n%s", pretty(s));
             if (set_is_infinite(s)) fail_at(e->args[1], "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+            if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
+                Value *base = filter_base(s);
+                for (int i = 0; i < base->n; i++)
+                    if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && gen_assign(var, base->u.set.elems[i], k)) return 1;
+                return 0;
+            }
             s = enumerate(s);
             for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
             return 0;

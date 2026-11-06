@@ -169,6 +169,9 @@ for it as its notes.
 - After `TLCSet("exit", TRUE)` the temporal properties are checked on the
   states expanded, as TLC checks them; a state found but not expanded
   stuttered forever, a false counterexample.
+- `x \in {r \in S : P}` in Init or Next takes the elements of `S` one at
+  a time, as TLC does: a state is checked before `P` is evaluated on the
+  next element.
 
 ## 0.2.0
 
