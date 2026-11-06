@@ -4598,7 +4598,7 @@ static Inst *instance_chain(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
     Env *b = env_find(c.env, e->def);
-    if (!b) fail_at(e, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
+    if (!b) fail_runtime(e, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
     return force(b);
 }
 
@@ -6614,6 +6614,14 @@ static void print_counts(int queued, int with_depth) {
     fflush(stdout);
 }
 
+/* TLC's report of a Java exception, up to its message. */
+static void print_exception(const char *cls) {
+    printf("Error: TLC threw an unexpected exception.\n"
+           "This was probably caused by an error in the spec or model.\n"
+           "See the User Output or TLC Console for clues to what happened.\n"
+           "The exception was a %s\n: ", cls);
+}
+
 static void print_error_message(void) {
     printf("Error: %s", error_message.s ? error_message.s : "");
     if (error_expr && error_expr->mod) {
@@ -7267,10 +7275,7 @@ static int search(void) {
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
         if (status == TPP_FAILURE_EVAL && error_module != 1)
-            printf("Error: TLC threw an unexpected exception.\n"
-                   "This was probably caused by an error in the spec or model.\n"
-                   "See the User Output or TLC Console for clues to what happened.\n"
-                   "The exception was a java.lang.RuntimeException\n: ");
+            print_exception("java.lang.RuntimeException");
         else
             printf("Error: ");
         print_error_text();
@@ -7443,10 +7448,7 @@ static void sim_exception(void) {
         print_error_text();
         return;
     }
-    printf("Error: TLC threw an unexpected exception.\n"
-           "This was probably caused by an error in the spec or model.\n"
-           "See the User Output or TLC Console for clues to what happened.\n"
-           "The exception was a %s\n: ", error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException");
+    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException");
     print_error_text();
 }
 
@@ -7585,11 +7587,9 @@ static int simulate(const TPPOptions *o) {
                         /* TLC prints the behavior, then fails to fingerprint the successor. */
                         printf("Error: Successor state is not completely specified by the next-state action.\n\n");
                         if (!sim_print(&trace)) return TPP_ERROR;
-                        printf("\nError: TLC threw an unexpected exception.\n"
-                               "This was probably caused by an error in the spec or model.\n"
-                               "See the User Output or TLC Console for clues to what happened.\n"
-                               "The exception was a java.lang.NullPointerException\n"
-                               ": Cannot invoke \"tlc2.value.IValue.fingerPrint(long)\" because \"minVals[i]\" is null\n");
+                        printf("\n");
+                        print_exception("java.lang.NullPointerException");
+                        printf("Cannot invoke \"tlc2.value.IValue.fingerPrint(long)\" because \"minVals[i]\" is null\n");
                         return TPP_ERROR;
                     }
                 const char *what = "Invariant";
@@ -7641,11 +7641,8 @@ typedef struct { const char *s; int pos, line, tline; } CfgLexer;
 
 /* A configuration TLC cannot read: its ConfigFileException. */
 static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
-    printf("Error: TLC threw an unexpected exception.\n"
-           "This was probably caused by an error in the spec or model.\n"
-           "See the User Output or TLC Console for clues to what happened.\n"
-           "The exception was a tlc2.tool.ConfigFileException\n"
-           ": TLC found an error in the configuration file at line %d\n", L->tline);
+    print_exception("tlc2.tool.ConfigFileException");
+    printf("TLC found an error in the configuration file at line %d\n", L->tline);
     va_list ap;
     va_start(ap, fmt);
     vprintf(fmt, ap);
@@ -7831,11 +7828,16 @@ static Sym *root_sym(int name) { return module_lookup(root, name); }
 
 /* A call of the definition the configuration names, through the instances
    it is reached by. */
-static Expr *config_call(int name, const char *what, const char *role) {
+/* The definition the configuration names as what. TLC rejects one with
+   parameters as a role (args 'r') or by name ('s'), or, for SYMMETRY (0),
+   evaluates it. */
+static Expr *config_call(int name, const char *what, int args) {
     Sym *s = root_sym(name);
     if (!s || (s->def->kind != D_OP && s->def->kind != D_FCN))
         config_error("The %s %s specified in the configuration file\nis not defined in the specification.", what, S(name));
-    if (s->def->nparams) config_error("TLC requires the %s %s to take no arguments.", role, S(name));
+    if (s->def->nparams && args == 'r') config_error("TLC requires %s not to take any argument, but one was given: %s", what, S(name));
+    if (s->def->nparams && args == 's') config_error("TLC requires %s not to take any argument.", S(name));
+    if (s->def->nparams) return s->def->body;   /* its parameters undefined there */
     Def *d = s->def;
     Expr *e = NEW(Expr);
     e->kind = K_CALL;
@@ -8189,22 +8191,40 @@ static int setup_model(void) {
                 if (!t) config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(it->name), S(it->target));
                 d->replacement = t->def;
             }
-        } else if (strcmp(k, "INIT") == 0) init = config_call(it->name, "initial predicate", "initial predicate");
-        else if (strcmp(k, "NEXT") == 0) next = config_call(it->name, "next state action", "next-state action");
-        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "specification", "specification");
+        } else if (strcmp(k, "INIT") == 0) init = config_call(it->name, "initial predicate", 'r');
+        else if (strcmp(k, "NEXT") == 0) next = config_call(it->name, "next state action", 'r');
+        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
-            e = config_call(it->name, "invariant", "invariant");
+            e = config_call(it->name, "invariant", 'r');
             add_check(&invariants, &ninvariants, e->def, e, e->def->name);
-        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_call(it->name, "property", "property"));
+        } else if (strncmp(k, "PROPERT", 7) == 0) use_property(config_call(it->name, "property", 's'));
         else if (strncmp(k, "CONSTRAINT", 10) == 0) {
-            e = config_call(it->name, "constraint", "constraint");
+            e = config_call(it->name, "constraint", 'r');
             add_check(&constraints, &nconstraints, e->def, e, e->def->name);
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
-            e = config_call(it->name, "action constraint", "action constraint");
+            e = config_call(it->name, "action constraint", 'r');
             add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
-        } else if (strcmp(k, "VIEW") == 0) view_expr = config_call(it->name, "view", "view");
+        } else if (strcmp(k, "VIEW") == 0) view_expr = config_call(it->name, "view function", 'r');
         else if (strcmp(k, "SYMMETRY") == 0) {
-            Value *s = permutation_group(enumerate(eval(config_call(it->name, "symmetry", "symmetry"), root_ctx)));
+            /* As TLC: an undefined name is reported, any other error as no set of functions. */
+            sigjmp_buf here;
+            handler = &here;
+            if (sigsetjmp(here, 0)) {
+                handler = NULL;
+                if (error_status == TPP_ERROR_CONFIG) { print_error_message(); exit(TPP_ERROR_CONFIG); }
+                print_exception("java.lang.RuntimeException");
+                printf("The symmetry operator must specify a set of functions.\n");
+                exit(TPP_ERROR);
+            }
+            Value *g = enumerate(eval(config_call(it->name, "symmetry function", 0), root_ctx));
+            handler = NULL;
+            for (int j = 0; j < g->n; j++)
+                if (!is_fcn(realize(g->u.set.elems[j]))) {
+                    print_exception("java.lang.RuntimeException");
+                    printf("The symmetry values must be function records.\n");
+                    exit(TPP_ERROR);
+                }
+            Value *s = permutation_group(g);
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
@@ -9167,7 +9187,7 @@ int tpp_check(const TPPOptions *o) {
         print_error_message();
         return TPP_FAILURE_EVAL;
     }
-    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Next"));
+    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Action"));
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
