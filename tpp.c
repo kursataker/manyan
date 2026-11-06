@@ -319,7 +319,10 @@ struct Value {
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
         struct { Value **elems; uint64_t hash; } set;           /* V_SET, sorted, distinct */
-        struct { Value **keys, **vals; uint64_t hash; } fcn;    /* V_TUPLE has no keys */
+        struct { Value **keys, **vals; uint64_t hash; Expr *source; } fcn;
+        /* V_TUPLE has no keys; source: the <<...>> that made it, which TLC
+           names when applying it fails, until the state holding it is
+           stored */
         /* hash: the sum of the elements' or pairs' hashes, once known; else 0 */
         struct { int64_t lo, hi; } range;            /* V_INTERVAL */
         struct { Value *a, *b; Value **names; Expr *expr; Env *env; Inst *inst; Def *binder; Value ***made_in; } l;
@@ -1319,6 +1322,10 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     int i = fcn_index(f, a);
     if (i >= 0) return f->u.fcn.vals[i];
     if (f->kind == V_TUPLE) {
+        if (f->u.fcn.source) {   /* TLC cannot fingerprint the tuple */
+            if (fp_depth < 64) fp_trace[fp_depth] = f->u.fcn.source;
+            fp_depth++;
+        }
         if (a->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument.");
         fail("Attempted to apply tuple\n%s\nto integer %lld which is out of domain.", pretty(f), (long long)a->u.i);
     }
@@ -1374,6 +1381,7 @@ static Value *fcn_update(Value *f, int i, Value *key, Value *val) {
     g->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)f->n);
     memcpy(g->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
     g->u.fcn.vals[i] = val;
+    g->u.fcn.source = NULL;   /* a tuple TLC makes anew */
     if (f->u.fcn.hash) g->u.fcn.hash = f->u.fcn.hash - pair_hash(f, i, f->u.fcn.vals[i]) + pair_hash(f, i, val);
     return g;
 }
@@ -4549,16 +4557,21 @@ static int enabled(Expr *a, Ctx c);
 
 /* The value of a constant or variable, through the substitutions of the
    instances the context is in (§4.3). */
+/* The expression an instance substitutes for d, if any; c becomes the
+   context it is in. */
+static Expr *substitute(Def *d, Ctx *c) {
+    for (Inst *in = c->inst; in; in = in->parent)
+        for (int i = 0; i < in->def->nsubst; i++)
+            if (in->def->subst_decl[i] == d) { *c = (Ctx){in->env, in->parent}; return in->def->subst_expr[i]; }
+    return NULL;
+}
+
 static Value *decl_value(Def *d, Ctx c, Expr *where) {
-    for (Inst *in = c.inst; in; in = in->parent) {
-        Def *id = in->def;
-        for (int i = 0; i < id->nsubst; i++)
-            if (id->subst_decl[i] == d) {
-                Ctx outer = {in->env, in->parent};
-                Expr *x = id->subst_expr[i];
-                if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
-                return d->arity ? eval_operator_arg(x, outer) : eval(x, outer);
-            }
+    Ctx outer = c;
+    Expr *x = substitute(d, &outer);
+    if (x) {
+        if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
+        return d->arity ? eval_operator_arg(x, outer) : eval(x, outer);
     }
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
@@ -5023,6 +5036,7 @@ static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_tuple(Expr *e, Ctx c) {
     Value *t = mk_tuple(e->n);
     for (int i = 0; i < e->n; i++) t->u.fcn.vals[i] = eval(e->args[i], c);
+    t->u.fcn.source = e;
     return t;
 }
 
@@ -6086,6 +6100,12 @@ static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
         return gen_unchanged(e->def->body, (Ctx){NULL, c.inst}, k);
     if (e->kind == K_DECL) {
+        /* UNCHANGED of a variable an instance substitutes: of what it is. */
+        Ctx outer = c;
+        Expr *sub = substitute(e->def, &outer);
+        int named = 0;   /* ENABLED binds the variable by name */
+        for (Inst *in = c.inst; in != outer.inst && !named; in = in->parent) named = in->def == &enabled_mark;
+        if (sub && sub->kind != X_OPREF && !named) return gen_unchanged(sub, outer, k);
         Expr prime;
         memset(&prime, 0, sizeof prime);
         prime.kind = K_PRIME;

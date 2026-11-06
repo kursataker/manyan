@@ -1,0 +1,8 @@
+Error: Attempted to apply tuple
+<<3, 2>>
+to integer 3 which is out of domain.
+While working on the initial state:
+t = <<3, 2>>
+
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75

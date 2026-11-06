@@ -41,6 +41,11 @@ for it as its notes.
 - An invariant that is not a state predicate, whose level depends on a
   variable outside its temporal operators, gets TLC's note about the bug
   in SANY's level checking.
+- `UNCHANGED v`, where an instance substitutes an expression for its
+  variable `v`, leaves the variables of that expression unchanged; it was
+  an error (locks_auxiliary_vars/LockHS from tlaplus/Examples).
+- Applying a tuple written `<<...>>` outside its domain, in an initial
+  state or a step, gives TLC's report that it cannot fingerprint it.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 

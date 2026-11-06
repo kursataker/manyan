@@ -1,0 +1,17 @@
+Error: Attempted to apply tuple
+<<1, 2>>
+to integer 3 which is out of domain.
+While working on the initial state:
+t = <<1, 2>>
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0) line 6, col 13 to line 6, col 20 of module tuple_source
+
+Reason:
+Attempted to apply tuple
+<<1, 2>>
+to integer 3 which is out of domain.
+1 states generated, 1 distinct states found, 1 states left on queue.
+exit 75
