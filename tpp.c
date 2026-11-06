@@ -3760,9 +3760,13 @@ static void resolve_name(Expr *e, Scope *sc) {
         return;
     }
     Sym *sym = module_lookup(cur_module, s->name);
-    if (!sym) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+    if (!sym || sym->def->kind == D_RECURSIVE) {   /* located, as SANY, at the name */
+        Expr name = *e;
+        name.l2 = name.l1;
+        name.c2 = name.c1 + (int)strlen(S(s->name)) - 1;
+        semantic_error(&name, "Unknown operator: `%s'.", S(s->name));
+    }
     d = sym->def;
-    if (d->kind == D_RECURSIVE) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
     if (!(d->kind == D_OP && s->n == 0 && d->nparams > 0)) check_arity(e, d, s->n);
     e->def = d;
@@ -5819,6 +5823,19 @@ NATIVE(n_randomelement) {
     return s->u.set.elems[0];
 }
 
+/* k elements of S: as RandomElement, the first ones, where TLC draws them. */
+NATIVE(n_randomsubset) {
+    UNUSED;
+    if (a[0]->kind != V_INT)
+        fail_module("The first argument of RandomSubset should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
+    if (!is_set(a[1]) || set_is_infinite(a[1]))
+        fail_module("The second argument of RandomSubset should be a a finite set, but instead it is:\n%s", pretty(a[1]));
+    Value *s = enumerate(a[1]);
+    List l = {0};
+    for (int i = 0; i < s->n && i < a[0]->u.i; i++) list_add(&l, s->u.set.elems[i]);
+    return list_set(&l);
+}
+
 NATIVE(n_any) { UNUSED; return mk_lazy(L_ANY); }
 
 NATIVE(n_tostring) {
@@ -5873,6 +5890,7 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "SortSeq", n_sortseq, J_V, "SortSeq(" J_V "," J_V ")"},
     {"TLC", "RandomElement", n_randomelement, J_V, "RandomElement(" J_V ")"},
     {"TLC", "Any", n_any, J_V, "Any()"},
+    {"Randomization", "RandomSubset", n_randomsubset, J_V, "RandomSubset(" J_V "," J_V ")"},
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};

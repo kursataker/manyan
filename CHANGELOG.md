@@ -102,6 +102,11 @@ for it as its notes.
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before
   wrongly substituted.
+- `RandomSubset(k, S)` of the Randomization module is native, taking k
+  elements of a finite set, the first, as `RandomElement` takes one; it
+  enumerated `SUBSET S` (SmokeEWD998 from lemmy/ewd998).
+- An unknown operator applied to arguments is located at its name, as
+  SANY locates it.
 - Symmetry reduction is 3x faster: a state's fingerprint under every
   permutation is computed in one pass over its values, without building
   the permuted values, and a part no permutation moves is hashed once.

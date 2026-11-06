@@ -189,4 +189,4 @@ miss a counterexample of a property such as `P ~> Q`, or report another. Real nu
 check them either. `TLCGet` supports `"level"` and the registers
 `TLCSet` sets, not TLC's `"diameter"`, `"distinct"`, `"queue"` and
 `"duration"`; another key is undefined, as in TLC 2.19. `RandomElement(S)` is the first element of `S`,
-where TLC draws one at random.
+and `RandomSubset(k, S)` its first k, where TLC draws them at random.

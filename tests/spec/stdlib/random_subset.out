@@ -1,0 +1,6 @@
+{1, 2, 3}
+3
+Error: Evaluating assumption line 7, col 8 to line 7, col 35 of module random_subset failed.
+The second argument of RandomSubset should be a a finite set, but instead it is:
+Nat
+exit 10
