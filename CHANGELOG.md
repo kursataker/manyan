@@ -118,6 +118,12 @@ for it as its notes.
 - After an error in a property on an initial state, the invariant is
   checked as TLC checks it replaying `Init`, and its error reported once
   (CBCCasperSpec from Isaac-DeFrain/TLAplusFun).
+- A constant definition named as `INIT` or `NEXT` is TLC's error that it
+  cannot be a constant, and one that is a conjunct of the specification
+  is TLC's value: `TRUE` is dropped, `FALSE` makes the spec trivial, and
+  another value cannot be a spec. tpp checked a constant `Init`, finding
+  one state with no variables where TLC finds none (IsEven from
+  miguelmota/tla-cookbook).
 - Several constants without a value, or substituted by undefined names,
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before

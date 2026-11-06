@@ -1,0 +1,2 @@
+Error: The next state action Next cannot be a constant.
+exit 151

@@ -8455,19 +8455,43 @@ static Expr *in_instance(Expr *call, Expr *part) {
     return e;
 }
 
+/* The value of a call of a constant definition; NULL if it is no constant
+   or fails. TLC computes those but a literal's before reading the
+   configuration (literal_def). */
+static Value *constant_value(Expr *e) {
+    every_argument = 1;
+    int level = expr_level(e);
+    every_argument = 0;
+    if (level) return NULL;
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); return NULL; }
+    Value *v = eval(e, root_ctx);
+    handler = NULL;
+    return v;
+}
+
 /* The conjuncts of a specification or property, each as the instance it
    is in sees it: a call of an instance's definition is followed into, as
-   TLC does, unless the instance has parameters (IM(y)!Spec). */
-static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n) {
+   TLC does, unless the instance has parameters (IM(y)!Spec). In a
+   specification, a constant definition named is its value: TRUE, which is
+   dropped, or TLC's error. */
+static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
+    Value *v;
+    if (spec && !call && e->kind == K_CALL && e->n == 0 && (v = constant_value(e))) {
+        if (v->kind != V_BOOL) config_error("The operator %s, which equals %s,\ncannot be used as a spec", S(e->def->name), pretty(v));
+        if (!v->u.i) config_error("The spec is trivially false because %s is false.", S(e->def->name));
+        return;
+    }
     e = unfold(e);
     if (e->kind == K_AND) {
-        for (int i = 0; i < e->n; i++) conjuncts(e->args[i], call, out, n);
+        for (int i = 0; i < e->n; i++) conjuncts(e->args[i], call, out, n, spec);
         return;
     }
     if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
         int plain = 1;
         for (int i = 0; i < e->ndefs; i++) plain &= e->defs[i]->nparams == 0;
-        if (plain) { conjuncts(e->def->body, e, out, n); return; }
+        if (plain) { conjuncts(e->def->body, e, out, n, spec); return; }
     }
     *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 2));
     (*out)[(*n)++] = e;
@@ -8489,7 +8513,7 @@ static Expr *conjoin(Expr **parts, int n) {
 static void use_specification(Expr *spec) {
     Expr **parts = NULL, **init = NULL;
     int n = 0, ninit = 0;
-    conjuncts(spec->def->body, spec->kind == K_INSTCALL ? spec : NULL, &parts, &n);
+    conjuncts(spec->def->body, spec->kind == K_INSTCALL ? spec : NULL, &parts, &n, 1);
     for (int i = 0; i < n; i += 2) {
         Expr *e = parts[i], *call = parts[i + 1];
         if (expr_level(e) <= 1) {
@@ -8516,7 +8540,7 @@ static void use_property(Expr *p) {
     Def *d = p->def;
     Expr **parts = NULL;
     int n = 0;
-    conjuncts(d->body, p->kind == K_INSTCALL ? p : NULL, &parts, &n);
+    conjuncts(d->body, p->kind == K_INSTCALL ? p : NULL, &parts, &n, 0);
     for (int i = 0; i < n; i += 2) {
         Expr *e = parts[i], *call = parts[i + 1];
         int name = d->name;
@@ -8820,19 +8844,13 @@ static void warn_symmetry_sets(Expr *body, Value *g) {
    As TLC, a constant definition is evaluated as the configuration is read,
    unless it is a literal or fails: TRUE is dropped, another value is an
    error. */
+static int literal_def(Expr *e) { return e->def->body->kind == X_NUM || e->def->body->kind == X_STR; }
+
 static int config_check(Expr *e, const char *what) {
-    Def *d = e->def;
-    every_argument = 1;
-    int level = expr_level(e);
-    every_argument = 0;
-    if (level || d->body->kind == X_NUM || d->body->kind == X_STR) return 1;
-    sigjmp_buf here;
-    handler = &here;
-    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); return 1; }
-    Value *v = eval(e, root_ctx);
-    handler = NULL;
+    Value *v = literal_def(e) ? NULL : constant_value(e);
+    if (!v) return 1;
     if (v->kind == V_BOOL && v->u.i) return 0;
-    config_error("The %s of %s is equal to %s", what, S(d->name), pretty(v));
+    config_error("The %s of %s is equal to %s", what, S(e->def->name), pretty(v));
 }
 
 /* The root module's constants in the order TLC takes them: SANY keeps the
@@ -8902,9 +8920,12 @@ static int setup_model(void) {
                 if (t) d->replacement = t->def;
                 else d->bad_target = it->target;   /* reported with the constants, as TLC */
             }
-        } else if (strcmp(k, "INIT") == 0) init = config_call(it->name, "initial predicate", 'r');
-        else if (strcmp(k, "NEXT") == 0) next = config_call(it->name, "next state action", 'r');
-        else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
+        } else if (strcmp(k, "INIT") == 0 || strcmp(k, "NEXT") == 0) {
+            const char *what = k[0] == 'I' ? "initial predicate" : "next state action";
+            e = config_call(it->name, what, 'r');
+            if (!literal_def(e) && constant_value(e)) config_error("The %s %s cannot be a constant.", what, S(it->name));
+            *(k[0] == 'I' ? &init : &next) = e;
+        } else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
             e = config_call(it->name, "invariant", 'r');
             if (expr_level(e) >= 2) {

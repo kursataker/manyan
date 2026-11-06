@@ -1,0 +1,3 @@
+Error: The operator Init, which equals "a",
+cannot be used as a spec
+exit 151

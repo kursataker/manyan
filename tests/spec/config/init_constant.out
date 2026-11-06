@@ -1,0 +1,2 @@
+Error: The initial predicate Init cannot be a constant.
+exit 151
