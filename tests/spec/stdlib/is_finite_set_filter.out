@@ -1,0 +1,8 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 40 of module is_finite_set_filter failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.IBoolValue tlc2.module.FiniteSets.IsFiniteSet(tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to check if expression of form {x \in S : p(x)} is a finite set, but cannot check if S:
+Nat
+is finite.
+exit 10

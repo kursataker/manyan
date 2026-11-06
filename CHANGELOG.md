@@ -172,6 +172,9 @@ for it as its notes.
 - `x \in {r \in S : P}` in Init or Next takes the elements of `S` one at
   a time, as TLC does: a state is checked before `P` is evaluated on the
   next element.
+- `IsFiniteSet` answers as TLC's `isFinite`: a function is a finite set, a
+  value that is no set an error, and a filter over a set that is not
+  finite, or an intersection of two such sets, an error.
 
 ## 0.2.0
 

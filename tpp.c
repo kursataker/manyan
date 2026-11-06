@@ -5710,7 +5710,38 @@ NATIVE(n_selectseq) {
     return t;
 }
 
-NATIVE(n_isfinite) { UNUSED; return BOOLV(is_set(a[0]) && !set_is_infinite(a[0])); }
+/* TLC's isFinite, which IsFiniteSet asks: a function is a finite set,
+   another value an error, and some sets cannot tell. */
+static int tlc_finite(Value *s) {
+    static const char *what[] = {[V_BOOL] = "boolean", [V_INT] = "integer", [V_STR] = "string", [V_MODEL] = "model value"};
+    Value *a = s->u.l.a, *b = s->u.l.b;
+    switch (s->kind) {
+    case V_BOOL: case V_INT: case V_STR: case V_MODEL:
+        fail("Attempted to check if the %s %s is a finite set.", what[s->kind], pretty(s));
+    case V_LAMBDA: fail("Attempted to check if the function:\n%s\nis a finite set.", pretty(s));
+    case V_LAZY: break;
+    default: return 1;
+    }
+    switch (s->lazy) {
+    case L_FILTER:
+        if (!tlc_finite(a))
+            fail("Attempted to check if expression of form {x \\in S : p(x)} is a finite set, but cannot check if S:\n%s\nis finite.", pretty(a));
+        return 1;
+    case L_CAP: case L_DIFF:
+        if (s->lazy == L_DIFF ? tlc_finite(a) : tlc_finite(a) || tlc_finite(b)) return 1;
+        if (s->lazy == L_CAP || !tlc_finite(b)) fail("Attempted to check if the set %sis finite.", pretty(s));
+        return 0;
+    case L_CUP: return tlc_finite(a) && tlc_finite(b);
+    case L_SUBSET: return tlc_finite(a);
+    case L_UNION:
+        s->u.l.a = set_normalize(a);
+        for (int i = 0; i < s->u.l.a->n; i++) if (!tlc_finite(s->u.l.a->u.set.elems[i])) return 0;
+        return 1;
+    default: return !set_is_infinite(s);
+    }
+}
+
+NATIVE(n_isfinite) { UNUSED; return BOOLV(tlc_finite(a[0])); }
 
 NATIVE(n_cardinality) {
     UNUSED;
