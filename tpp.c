@@ -5274,7 +5274,7 @@ static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_choose(Expr *e, Ctx c) {
     Bound *b = &e->bounds[0];
-    if (!b->set) fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x : P, which TLC cannot do.");
+    if (!b->set) fail_at(e, "TLC attempted to evaluate an unbounded CHOOSE.\nMake sure that the expression is of form CHOOSE x \\in S: P(x).");
     Value *s = eval(b->set, c);
     if (!is_set(s) || user_set(s))
         fail_at(e, "Attempted to compute the value of an expression of\nform CHOOSE x \\in S: P, but S was not enumerable.");
