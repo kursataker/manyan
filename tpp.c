@@ -3759,7 +3759,7 @@ static void resolve_def(Def *d, Scope *sc) {
             if (!exprs[i]) {
                 Expr *ref = NEW(Expr);
                 if (d->where) *ref = *d->where;
-                ref->kind = X_NAME;
+                ref->kind = decl->arity && !scope_lookup(inner, decl->name) ? X_OPREF : X_NAME;   /* Op(_) <- Op */
                 ref->nseg = 1;
                 ref->segs = NEW(Seg);
                 ref->segs->name = decl->name;
@@ -4310,7 +4310,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
             if (id->subst_decl[i] == d) {
                 Ctx outer = {in->env, in->parent};
                 Expr *x = id->subst_expr[i];
-                if (x->kind == X_OPREF) return mk_oper(x->def, outer);
+                if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
                 return d->arity ? eval_operator_arg(x, outer) : eval(x, outer);
             }
     }
@@ -4342,7 +4342,8 @@ static Def *const_operator(Def *d, Ctx c, Ctx *at) {
             if (id->subst_decl[i] == d) {
                 Expr *x = id->subst_expr[i];
                 *at = (Ctx){in->env, in->parent};
-                return x->kind == X_OPREF ? x->def : NULL;
+                if (x->kind != X_OPREF) return NULL;
+                return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
             }
     }
     return d->replacement;
