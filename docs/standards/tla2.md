@@ -562,7 +562,9 @@ successor in which some variable is unassigned is an error.
 States are explored breadth first from the initial states, in the order
 they are produced. A state is new when no explored state has the same
 fingerprint: its value, or the value of the `VIEW` if one is given, up to
-the `SYMMETRY` permutations. Each new state that satisfies the state
+the group the `SYMMETRY` permutations generate (so `Permutations(A) \cup
+Permutations(B)` relates the states either relates and their
+compositions). Each new state that satisfies the state
 constraints, reached by a transition that satisfies the action constraints,
 is checked against the invariants and queued. A reachable state with no
 successor is a deadlock unless `CHECK_DEADLOCK` is `FALSE`.

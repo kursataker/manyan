@@ -6261,6 +6261,52 @@ static Value *permute(Value *v, Value *perm) {
     }
 }
 
+/* x mapped by q, then by p, as a permutation without its fixed points. */
+static Value *perm_compose(Value *p, Value *q) {
+    List keys = {0}, vals = {0};
+    Value *dom[2] = {q, p};
+    for (int d = 0; d < 2; d++)
+        for (int i = 0; i < dom[d]->n; i++) {
+            Value *x = fcn_key(dom[d], i), *y = permute(permute(x, q), p);
+            int seen = veq(x, y);
+            for (int k = 0; k < keys.n && !seen; k++) seen = veq(keys.v[k], x);
+            if (!seen) { list_add(&keys, x); list_add(&vals, y); }
+        }
+    return mk_fcn_from(&keys, &vals);
+}
+
+/* The group the permutations generate, as TLC takes a SYMMETRY: each
+   composition of them, without fixed points so that equal ones are
+   equal values. */
+static Value *permutation_group(Value *generators) {
+    List g = {0};
+    size_t size = 64;
+    int *table = calloc(size, sizeof(int));   /* indices into g, plus one, by hash */
+    Value *identity = mk_fcn_from(&(List){0}, &(List){0});
+    for (int i = -1; i < g.n; i++) {
+        for (int j = 0; j < generators->n; j++) {
+            Value *c = perm_compose(generators->u.set.elems[j], i < 0 ? identity : g.v[i]);
+            size_t h = (size_t)value_hash(c) & (size - 1);
+            while (table[h] && !veq(g.v[table[h] - 1], c)) h = (h + 1) & (size - 1);
+            if (table[h]) continue;
+            list_add(&g, c);
+            table[h] = g.n;
+            if ((size_t)g.n * 2 > size) {   /* grow, rehashing */
+                free(table);
+                size *= 2;
+                table = calloc(size, sizeof(int));
+                for (int k = 0; k < g.n; k++) {
+                    size_t t = (size_t)value_hash(g.v[k]) & (size - 1);
+                    while (table[t]) t = (t + 1) & (size - 1);
+                    table[t] = k + 1;
+                }
+            }
+        }
+    }
+    free(table);
+    return list_set(&g);
+}
+
 static uint64_t fingerprint(Value **st) {
     if (view_expr) {
         Value **saved = cur_state;
@@ -8019,7 +8065,7 @@ static int setup_model(void) {
         } else if (strcmp(k, "VIEW") == 0) view_expr = call_expr(config_def(it->name, "view", "view"));
         else if (strcmp(k, "SYMMETRY") == 0) {
             Def *d = config_def(it->name, "symmetry", "symmetry");
-            Value *s = enumerate(eval(call_expr(d), root_ctx));
+            Value *s = permutation_group(enumerate(eval(call_expr(d), root_ctx)));
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
