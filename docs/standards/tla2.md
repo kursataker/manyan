@@ -784,10 +784,10 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
 | no next-state action, and no invariant or property | `Finished computing initial states: ...`, then `Error: No next state actions defined to generate successor states from.` | 75 |
 | a property part that is an action not under `[]` | `Error: The property P is not correctly defined.`, the part named as properties are (§10.5) | 151 |
-| every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
+| every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), `FALSE` folded through `/\`, `\/` and `<>` but not `[]`, in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | an invariant with primes or temporal operators, checked before the configuration's other names | `Error: The invariant Inv is not a state predicate (one with no primes or temporal operators).` | 76 |
-| a constant invariant or property, other than a literal, that is not `TRUE` (one that is is dropped) | `Error: The invariant of Inv is equal to v`, `property` for a property | 151 |
+| a constant invariant or property, other than a literal, that is not `TRUE` (one that is is dropped); constant as TLC bounds levels, every argument of a call counting, used or not | `Error: The invariant of Inv is equal to v`, `property` for a property | 151 |
 | a temporal formula evaluated as a predicate or action | `Error: TLC encountered a temporal formula ([]A) when evaluating a predicate or action.`, the operator as `[]A`, `<>A`, `a ~> b`, `a -+-> formula`, `WF`, `SF`, `\EE` or `\AA` | 75 |
 | action composition `A \cdot B` | `The current version of TLC does not support action composition.` | 75 |
 | configuration names an undefined operator | `Error: The initial predicate Op specified in the configuration file` | 151 |

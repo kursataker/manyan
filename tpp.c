@@ -1464,6 +1464,7 @@ struct Def {
     int level_busy;
     Def *level_probe;     /* a LET definition's: the parameter probed when its level was found */
     unsigned level_mask;  /* 1 + twice the bits of the parameters a call's level depends on; 0 unknown */
+    int level_bound;      /* TLC's bound on its level, plus 1; 0 unknown */
     int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
     int level_checked;
     Value *cache;         /* a constant definition without parameters, once evaluated */
@@ -4108,8 +4109,13 @@ static void check_def_levels(Def *d) {
    an argument for it reaches the level of a call. */
 static Def *level_probe;
 
+/* Levels as TLC bounds them to decide what to evaluate once: every
+   argument of a call counts, used or not. */
+static int every_argument;
+
 static int def_level(Def *d) {
-    if (d->level >= 0 && (d->local != 2 || d->level_probe == level_probe)) return d->level;
+    if (every_argument ? d->level_bound > 0 : d->level >= 0 && (d->local != 2 || d->level_probe == level_probe))
+        return every_argument ? d->level_bound - 1 : d->level;
     if (d->level_busy) return 0;
     d->level_busy = 1;
     int l = 0;
@@ -4122,16 +4128,20 @@ static int def_level(Def *d) {
             if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_level(d->subst_expr[i]); if (b > l) l = b; }
     }
     d->level_busy = 0;
-    if (l < 4) {   /* else the probe reached it */
+    if (every_argument) d->level_bound = l + 1;
+    else if (l < 4) {   /* else the probe reached it */
         d->level = l;
         d->level_probe = level_probe;   /* a LET definition may use the probe */
     }
     return l;
 }
 
+static int max_level(Expr **args, int n);
+
 /* The level of a call of d: an argument counts when its parameter is used
    outside ENABLED, as SANY finds the level parameters of a definition. */
 static int args_level(Def *d, Expr **args, int n) {
+    if (every_argument) return max_level(args, n);
     if (!d->level_mask && d->body) {
         d->level_mask = ~0u;   /* a recursive call: every argument counts */
         unsigned m = 0;
@@ -8415,7 +8425,10 @@ static void warn_symmetry_sets(Expr *body, Value *g) {
    error. */
 static int config_check(Expr *e, const char *what) {
     Def *d = e->def;
-    if (expr_level(e) || d->body->kind == X_NUM || d->body->kind == X_STR) return 1;
+    every_argument = 1;
+    int level = expr_level(e);
+    every_argument = 0;
+    if (level || d->body->kind == X_NUM || d->body->kind == X_STR) return 1;
     sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); return 1; }
@@ -9340,7 +9353,7 @@ static int tf_false(TF *t) {
     case TF_FALSE: return 1;
     case TF_AND: return tf_false(t->a) || tf_false(t->b);
     case TF_OR: return tf_false(t->a) && tf_false(t->b);
-    case TF_ALWAYS: case TF_EVENTUALLY: return tf_false(t->a);
+    case TF_EVENTUALLY: return tf_false(t->a);   /* TLC does not fold []FALSE */
     default: return 0;
     }
 }
