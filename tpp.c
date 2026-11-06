@@ -501,9 +501,11 @@ static void print_lambda(Buf *b, Value *f);
 static Value *print_order(Value *f);
 static int print_normal;   /* printing as TLC does once it normalizes values: Print, PrintT */
 static Value *normalize_set(Value *v);
-static int set_is_infinite(Value *s);
+static __attribute__((noinline)) int lazy_is_infinite(Value *s);
+static inline int set_is_infinite(Value *s) { return s->kind == V_LAZY && lazy_is_infinite(s); }
 static int64_t set_size(Value *s);
-static Value *enumerate(Value *s);
+static Value *enumerate_other(Value *s);
+static inline Value *enumerate(Value *s) { return s->kind == V_SET ? s : enumerate_other(s); }
 static int kinds_differ(Value *a, Value *b);
 static int enumerable(Value *s);
 static Value *select_members(Value *s, Value *t, int in);
@@ -884,7 +886,10 @@ static int vcmp(Value *a, Value *b) {
         b = enumerate(b);
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         fp_enter(src);
-        for (int i = 0; i < a->n && !c; i++) c = vcmp(a->u.set.elems[i], b->u.set.elems[i]);
+        for (int i = 0; i < a->n && !c; i++) {
+            Value *x = a->u.set.elems[i], *y = b->u.set.elems[i];
+            c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
+        }
         fp_leave(src);
         return c;
     }
@@ -1030,8 +1035,7 @@ static Value *list_set(List *l) {
     return set_normalize(s);
 }
 
-static int set_is_infinite(Value *s) {
-    if (s->kind != V_LAZY) return 0;
+static int lazy_is_infinite(Value *s) {
     switch (s->lazy) {
     case L_NAT: case L_INT: case L_STRING: case L_SEQ: case L_ANY: return 1;
     case L_SUBSET: case L_FILTER: case L_UNION: return set_is_infinite(s->u.l.a);
@@ -1075,8 +1079,7 @@ static _Noreturn void count_infinite(Value *s);
 
 static Value *cup_merge(Value *a, Value *b);
 static _Noreturn void sort_error(Value *a, Value *b);
-static Value *enumerate(Value *s) {
-    if (s->kind == V_SET) return s;
+static Value *enumerate_other(Value *s) {
     if (s->kind == V_INTERVAL) {
         Value *r = mk_set(interval_size(s));
         for (int i = 0; i < s->n; i++) r->u.set.elems[i] = mk_int(s->u.range.lo + i);
@@ -1088,14 +1091,23 @@ static Value *enumerate(Value *s) {
         if (set_is_infinite(s->u.l.a)) count_infinite(s->u.l.a);
         Value *base = enumerate(s->u.l.a);
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
-        List out = {0};
-        for (uint32_t m = 0; m < (1u << base->n); m++) {
-            Value *sub = mk_set(__builtin_popcount(m));
-            int k = 0;
-            for (int i = 0; i < base->n; i++) if (m & (1u << i)) sub->u.set.elems[k++] = base->u.set.elems[i];
-            list_add(&out, sub);
+        /* In the standard order, so nothing to sort: smaller subsets first,
+           then those of each size in the order of their elements. */
+        int n = base->n, at = 0, c[24];
+        Value *out = mk_set(1 << n);
+        for (int k = 0; k <= n; k++) {
+            for (int i = 0; i < k; i++) c[i] = i;
+            for (;;) {
+                Value *sub = out->u.set.elems[at++] = mk_set(k);
+                for (int i = 0; i < k; i++) sub->u.set.elems[i] = base->u.set.elems[c[i]];
+                int i = k - 1;
+                while (i >= 0 && c[i] == n - k + i) i--;
+                if (i < 0) break;
+                c[i]++;
+                for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
+            }
         }
-        return list_set(&out);
+        return out;
     }
     case L_FCNSET: {
         for (int i = 0; i < 2; i++)
@@ -1445,12 +1457,14 @@ static Value *set_union(Value *a, Value *b) {
 
 static int enumerable(Value *s) { return is_set(s) && !set_is_infinite(s); }
 
-/* The elements of s that are in t, or not. */
+/* The elements of s that are in t, or not: in order, as they are in s. */
 static Value *select_members(Value *s, Value *t, int in) {
     s = enumerate(s);
-    List l = {0};
-    for (int i = 0; i < s->n; i++) if (set_member(s->u.set.elems[i], t) == in) list_add(&l, s->u.set.elems[i]);
-    return list_set(&l);
+    Value *r = mk_set(s->n);
+    int k = 0;
+    for (int i = 0; i < s->n; i++) if (set_member(s->u.set.elems[i], t) == in) r->u.set.elems[k++] = s->u.set.elems[i];
+    r->n = k;
+    return r;
 }
 
 /* As TLC: S \cap T and S \ T of an enumerated set are its elements in T,
