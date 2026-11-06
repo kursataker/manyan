@@ -555,7 +555,11 @@ is, with primed variables `v'` in the place of variables, and unprimed
 variables read from `s`. An action is split at its disjunctions, `\E`
 quantifiers, and the definitions it refers to; each part that produces a
 state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
-successor in which some variable is unassigned is an error.
+successor in which some variable is unassigned is an error. `\A x \in S :
+A` is the conjunction of `A` for each `x`, the first, then the others from
+the last; as everywhere until every variable is assigned, each true
+disjunct in it is a way to the successor, and each way counts as a state
+generated.
 
 ### 10.4 Search
 

@@ -5731,6 +5731,15 @@ static int gen_bound_fn(Ctx c, void *data) {
     return gen(g->body, c, g->k);
 }
 
+typedef struct { Ctx *v; int n; } Ctxs;
+
+static int collect_fn(Ctx c, void *data) {
+    Ctxs *l = data;
+    l->v = xrealloc(l->v, sizeof(Ctx) * (size_t)(l->n + 1));
+    l->v[l->n++] = c;
+    return 0;
+}
+
 /* UNCHANGED e: each variable of e keeps its value. */
 static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     if (e->kind == X_TUPLE) {
@@ -5799,6 +5808,17 @@ static int gen(Expr *e, Ctx c, Cont *k) {
     case X_EXISTS: {
         GenData g = {e->args[0], k};
         return for_bindings(e->bounds, e->nb, c, gen_bound_fn, &g);
+    }
+    case X_FORALL: {
+        /* As TLC: the conjunction of the body for each binding, the
+           first, then the others from the last, each a choice point. */
+        Ctxs l = {0};
+        for_bindings(e->bounds, e->nb, c, collect_fn, &l);
+        if (!l.n) return gen_cont(k);
+        for (int i = 1; i < l.n; i++) k = mk_cont(e->args[0], l.v[i], k);
+        Ctx first = l.v[0];
+        free(l.v);
+        return gen(e->args[0], first, k);
     }
     case X_IF: {
         Value *v = eval(e->args[0], c);
