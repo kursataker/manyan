@@ -8314,7 +8314,12 @@ static Value **state_values(int s) {
     return decoded[s];
 }
 
-static int atom_holds(TF *t, int s, int to) {
+/* t in state s, or on the step from s to the state next. */
+static int atom_holds_on(TF *t, int s, Value **next);
+
+static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_values(to)); }
+
+static int atom_holds_on(TF *t, int s, Value **next) {
     Value **saved_cur = cur_state, **saved_next = next_state;
     int v;
     if (!t->action) {
@@ -8327,12 +8332,49 @@ static int atom_holds(TF *t, int s, int to) {
         v = *slot == 2;
     } else {
         cur_state = state_values(s);
-        next_state = state_values(to);
+        next_state = next;
         v = eval_bool(t->atom, t->c);
     }
     cur_state = saved_cur;
     next_state = saved_next;
     return v != t->neg;
+}
+
+/* Under symmetry a state's successor is kept as the state found first
+   with its fingerprint, which may be a permutation of it, so an action
+   is evaluated, as TLC does, on the successors themselves: a state's
+   successors, regenerated once, with their fingerprints. */
+typedef struct { int n; Value ***v; uint64_t *fp; } Successors;
+static Successors *real_succ;
+static List real_found;
+
+static int real_emit(void) {
+    for (int i = 0; i < nvars; i++) if (!gen_target[i]) return 0;
+    list_add(&real_found, (Value *)memcpy(NEWN(Value *, nvars), gen_target, sizeof(Value *) * (size_t)nvars));
+    return 0;
+}
+
+static Successors *real_successors(int s) {
+    Successors *r = &real_succ[s];
+    if (r->v) return r;
+    Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
+    int (*saved_emit)(void) = gen_emit;
+    Value **st = NEWN(Value *, nvars);
+    real_found.n = 0;
+    gen_emit = real_emit;
+    gen_target = st;
+    cur_state = state_values(s);
+    for (int a = 0; a < nactions; a++) {
+        memset(st, 0, sizeof(Value *) * (size_t)nvars);
+        next_state = st;
+        gen(actions[a].e, actions[a].c, NULL);
+    }
+    cur_state = saved_cur; next_state = saved_next; gen_target = saved_target; gen_emit = saved_emit;
+    r->n = real_found.n;
+    r->v = NEWN(Value **, r->n + 1);
+    r->fp = NEWN(uint64_t, r->n + 1);
+    for (int i = 0; i < r->n; i++) { r->v[i] = (Value **)real_found.v[i]; r->fp[i] = fingerprint(r->v[i]); }
+    return r;
 }
 
 static int tnode_admits(int n, int s) {
@@ -8343,12 +8385,29 @@ static int tnode_admits(int n, int s) {
     return 1;
 }
 
+/* Whether the step from s to `to` can satisfy tableau node n's actions:
+   under symmetry, some step of s to a state with to's fingerprint, or
+   s stuttering, does. */
 static int tnode_step(int n, int s, int to) {
-    for (int i = 0; i < tnodes[n].nlits; i++) {
-        TF *t = tnodes[n].lits[i];
-        if (t->action && !atom_holds(t, s, to)) return 0;
+    if (!nsymmetry) {
+        for (int i = 0; i < tnodes[n].nlits; i++) {
+            TF *t = tnodes[n].lits[i];
+            if (t->action && !atom_holds(t, s, to)) return 0;
+        }
+        return 1;
     }
-    return 1;
+    Successors *r = real_successors(s);
+    for (int k = -1; k < r->n; k++) {
+        if (k < 0 ? to != s : r->fp[k] != states[to].fp) continue;
+        Value **next = k < 0 ? state_values(s) : r->v[k];
+        int ok = 1;
+        for (int i = 0; i < tnodes[n].nlits && ok; i++) {
+            TF *t = tnodes[n].lits[i];
+            ok = !t->action || atom_holds_on(t, s, next);
+        }
+        if (ok) return 1;
+    }
+    return 0;
 }
 
 /* The product graph: nodes are (state, tableau node). */
@@ -8824,6 +8883,8 @@ static void collect_fairnesses(void) {
 static int live_violated(void) {
     free(decoded);
     decoded = calloc((size_t)nstates, sizeof(Value **));
+    free(real_succ);
+    real_succ = calloc((size_t)nstates, sizeof(Successors));
     for (int p = 0; p < ntemporal_props; p++) {
         neventualities = 0;
         natoms = 0;
