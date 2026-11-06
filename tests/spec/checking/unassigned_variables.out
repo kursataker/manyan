@@ -1,0 +1,17 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Successor state is not completely specified by the next-state action. The following variables are not assigned: y, z.
+
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ z = 0
+
+State 2: <Next line 6, col 9 to line 6, col 18 of module unassigned_variables>
+/\ x = 1
+/\ y = null
+/\ z = null
+
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 75

@@ -152,6 +152,10 @@ for it as its notes.
   the permuted values, and a part no permutation moves is hashed once.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
+- A step that leaves several variables unassigned names them all.
+- A standard module's operator, such as `\div` or `Assert`, failing on an
+  initial state is reported without the state, as TLC reports it; a
+  failed `Assert` there exits 75, not 14.
 
 ## 0.2.0
 

@@ -5738,6 +5738,7 @@ NATIVE(n_assert) {
     error_reset();
     buf_printf(&error_message, "The first argument of Assert evaluated to FALSE; the second argument was:\n%s", pretty(a[1]));
     error_status = TPP_VIOLATION_ASSERT;
+    error_module = 1;
     raise_error();
 }
 
@@ -7350,16 +7351,19 @@ static int violation_fresh;
 static int next_emit(void) {
     succ_count++;
     generated++;
-    for (int i = 0; i < nvars; i++)
-        if (!succ[i]) {
-            printf("Error: Successor state is not completely specified by ");
-            if (nactions == 1) printf("the next-state action");
-            else printf("action %s of the next-state relation", S(actions[cur_action].name));
-            printf(". The following variable is not assigned: %s.\n\n", S(vars[i]->name));
-            print_trace(expanding, succ, cur_action);
-            violation = TPP_FAILURE_EVAL;
-            return 1;
-        }
+    int unassigned = 0;
+    for (int i = 0; i < nvars; i++) unassigned += !succ[i];
+    if (unassigned) {
+        printf("Error: Successor state is not completely specified by ");
+        if (nactions == 1) printf("the next-state action");
+        else printf("action %s of the next-state relation", S(actions[cur_action].name));
+        printf(". The following variable%s not assigned: ", unassigned == 1 ? " is" : "s are");
+        for (int i = 0, k = 0; i < nvars; i++) if (!succ[i]) printf("%s%s", k++ ? ", " : "", S(vars[i]->name));
+        printf(".\n\n");
+        print_trace(expanding, succ, cur_action);
+        violation = TPP_FAILURE_EVAL;
+        return 1;
+    }
     Value **st = NEWN(Value *, nvars);
     memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
     if (check_list(constraints, nconstraints, st) >= 0) return 0;
@@ -7852,7 +7856,7 @@ static int search(void) {
             if (!live_init_failed) replay_error(NULL);
             print_unfingerprinted(fps, nfp);
             print_counts(nstates, 0);
-            return status;
+            return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
         if (checking_invariant()) {
             /* An invariant of a new state failed to evaluate. */
@@ -9885,9 +9889,11 @@ static void live_init(Value **st) {
     if (sigsetjmp(here, 0)) {
         eval_restore(saved);
         print_error_message();
-        printf("While working on the initial state:\n");
-        print_state(st);
-        printf("\n");
+        if (error_module != 1) {   /* as for Init: not for a standard module's operator */
+            printf("While working on the initial state:\n");
+            print_state(st);
+            printf("\n");
+        }
         live_init_failed = 1;
         return;
     }
