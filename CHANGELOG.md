@@ -4,6 +4,19 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
+## 0.3.0
+
+- An invariant with primes or temporal operators is TLC's error (exit
+  76), reported before the configuration's other names, as TLC does. A
+  call such as `B(Next)` with `B(d) == ENABLED d` is a state predicate.
+- TLC's warnings for symmetry: a symmetry set that permutes nothing, and
+  symmetry with a temporal property. As in TLC, only the first warning of
+  a run says how to turn them off.
+- A counterexample whose cycle is one state, returned to by an action, ends
+  in stuttering, as TLC prints it.
+- Fixed undefined behavior and a read past the end of an array, found by
+  running the sanitizers over the tlaplus/Examples models.
+
 ## 0.2.0
 
 - `-dump dot FILE` writes the state graph to `FILE.dot` as TLC does;

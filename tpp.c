@@ -4541,23 +4541,31 @@ static Value *fcndef_value(Def *d, Ctx c) {
 
 static int nowarning;   /* TLC's warnings off (-nowarning) */
 
-/* TLC's warning that an EXCEPT names a key outside the domain. Like TLC it
-   prints each message once, and only the first has the -nowarning line. */
+/* Prints one of TLC's warnings; as TLC, the first of a run says how to
+   turn them off. */
+static int warned;
+static void warning(const char *text) {
+    printf("Warning: %s\n", text);
+    if (!warned++) printf("(Use the -nowarning option to disable this warning.)\n");
+    fflush(stdout);
+}
+
+/* TLC's warning that an EXCEPT names a key outside the domain, each
+   message once: the first, with the -nowarning line, is another. */
 static void warn_except(Expr *e) {
     static char **seen;
     static int nseen;
     if (nowarning) return;
     if (in_worker) worker_cannot();   /* the search prints in order */
     Buf b = {0};
-    buf_puts(&b, "Warning: The EXCEPT was applied to non-existing fields of the value at\n");
+    buf_puts(&b, warned ? "+" : "-");
+    buf_puts(&b, "The EXCEPT was applied to non-existing fields of the value at\n");
     loc_text(&b, e);
-    if (!nseen) buf_puts(&b, "\n(Use the -nowarning option to disable this warning.)");
     for (int i = 0; i < nseen; i++)
         if (!strcmp(seen[i], b.s)) { free(b.s); return; }
     seen = xrealloc(seen, sizeof(char *) * (size_t)(nseen + 1));
     seen[nseen++] = b.s;
-    printf("%s\n", b.s);
-    fflush(stdout);
+    warning(b.s + 1);
 }
 
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
@@ -8199,6 +8207,69 @@ static void order_variables(void) {
     free(c.a);
 }
 
+/* The text of e as SANY's human-readable image: its tokens, without the
+   spaces between them. */
+static void expr_image(Buf *b, Expr *e) {
+    for (int i = 0; i < e->mod->ntoks; i++) {
+        Tok *t = &e->mod->toks[i];
+        if (t->line < e->l1 || (t->line == e->l1 && t->col < e->c1)) continue;
+        if (t->line > e->l2 || (t->line == e->l2 && t->col > e->c2)) break;
+        if (t->kind == T_STR) buf_printf(b, "\"%.*s\"", t->len, t->text);
+        else buf_puts(b, S(t->id));
+    }
+}
+
+/* Whether a permutation of g moves the model value m. */
+static int symmetry_moves(Value *g, Value *m) {
+    for (int i = 0; i < g->n; i++) {
+        Value *f = realize(g->u.set.elems[i]);
+        for (int j = 0; j < f->n; j++)
+            if (veq(f->u.fcn.keys[j], m)) { if (!veq(f->u.fcn.vals[j], m)) return 1; break; }
+    }
+    return 0;
+}
+
+/* TLC's warning for the sets of SYMMETRY body, with value g, that permute
+   nothing, found as TLC's Tool.getSymmetryPerms finds them: among the
+   arguments of the body, all of them when there are as many as functions
+   in g, else each Permutations(C) none of whose model values g moves. */
+static void warn_symmetry_sets(Expr *body, Value *g) {
+    Buf names = {0};
+    int n = 0;
+    for (int i = 0; i < body->n; i++) {
+        Expr *a = body->args[i];
+        if (body->n < g->n) {
+            if (a->kind != K_CALL || a->n != 1 || a->def->name != intern("Permutations")) continue;
+            Expr *c = a->args[0];
+            if (!(c->kind == K_DECL && c->def->kind == D_CONST) && !(c->kind == K_CALL && !c->n && !def_level(c->def))) continue;
+            Value *set = eval(c, root_ctx);
+            if (set->kind != V_SET) continue;
+            int moves = 0;
+            for (int j = 0; j < set->n && !moves; j++)
+                moves = set->u.set.elems[j]->kind == V_MODEL && symmetry_moves(g, set->u.set.elems[j]);
+            if (moves) continue;
+        }
+        Buf image = {0};
+        expr_image(&image, a);
+        char *name = image.s ? image.s : "";
+        size_t len = strlen(name);
+        if (strncmp(name, "Permutations", 12) == 0 && len > 13) { name[len - 1] = 0; name += 13; }
+        int id = intern(name);
+        for (int j = 0; j < ncfg; j++)
+            if (strncmp(cfg[j].keyword, "CONSTANT", 8) == 0 && cfg[j].op != '=' && !cfg[j].module && cfg[j].target == id) { name = (char *)S(cfg[j].name); break; }
+        buf_printf(&names, "%s%s", n++ ? ", and " : "", name);
+        free(image.s);
+    }
+    if (n) {
+        Buf b = {0};
+        buf_printf(&b, "The set%s %s %s been defined to be a symmetry set but contain%s less than two elements.",
+                   n > 1 ? "s" : "", names.s, n > 1 ? "have" : "has", n > 1 ? "" : "s");
+        warning(b.s);
+        free(b.s);
+    }
+    free(names.s);
+}
+
 static int setup_model(void) {
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
@@ -8267,6 +8338,7 @@ static int setup_model(void) {
                     printf("The symmetry values must be function records.\n");
                     exit(TPP_ERROR);
                 }
+            if (!nowarning) warn_symmetry_sets(root_sym(it->name)->def->body, g);
             Value *s = permutation_group(g);
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
@@ -9008,10 +9080,9 @@ static void print_counterexample(int *inits, int ninits) {
     /* Back to the entry. */
     int stutter_only = 0;
     if (cur == entry && cyc.n == 0) {
-        int self = -1;
-        for (int k = 0; k < pnodes[entry].nsucc; k++) if (pnodes[entry].succ[k] == entry) self = k;
-        if (self >= 0 && pnodes[entry].act[self] == STUTTER) stutter_only = 1;
-        else {
+        /* a step that returns to the state, by any action, is TLC's stuttering */
+        for (int k = 0; k < pnodes[entry].nsucc; k++) if (pnodes[entry].succ[k] == entry) stutter_only = 1;
+        if (!stutter_only) {
             /* leave the entry along any edge inside the component */
             for (int k = 0; k < pnodes[entry].nsucc; k++)
                 if (in_set(accepted, naccepted, pnodes[entry].succ[k])) {
@@ -9262,12 +9333,16 @@ int tpp_check(const TPPOptions *o) {
     }
     nworkers = o->workers > 1 && !o->simulate ? o->workers : 1;   /* a simulation is TLC's with one worker */
     status = check_temporal_forms(o->simulate);
-    if (!status && !o->simulate && !nowarning && ntemporal_props && (nconstraints || naction_constraints))
-        printf("Warning: Declaring state or action constraints during liveness checking is dangerous: "
-               "Please read section 14.3.5 on page 247 of Specifying Systems "
-               "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
-               "https://discuss.tlapl.us/msg00994.html for more details.\n"
-               "(Use the -nowarning option to disable this warning.)\n");
+    if (!status && !o->simulate && !nowarning && ntemporal_props) {
+        if (nsymmetry)
+            warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
+                    "violations of the stated liveness properties. Please check liveness without symmetry defined.");
+        if (nconstraints || naction_constraints)
+            warning("Declaring state or action constraints during liveness checking is dangerous: "
+                    "Please read section 14.3.5 on page 247 of Specifying Systems "
+                    "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
+                    "https://discuss.tlapl.us/msg00994.html for more details.");
+    }
     if (!status) status = o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();

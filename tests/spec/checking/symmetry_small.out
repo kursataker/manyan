@@ -1,0 +1,7 @@
+Warning: The sets P, and Q\cup{} have been defined to be a symmetry set but contain less than two elements.
+(Use the -nowarning option to disable this warning.)
+Finished computing initial states: 2 distinct states generated.
+Model checking completed. No error has been found.
+6 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0
