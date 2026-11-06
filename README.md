@@ -125,6 +125,7 @@ docs/standards/        the language standard tpp conforms to
 docs/manual.md         how to use tpp
 docs/benchmark.md      tpp against TLC
 docs/optimizations.md  what made tpp fast, and what did not
+docs/roadmap.md        where tpp is going
 tests/spec/            conformance tests, by chapter of the standard
 tests/tla/             TLA⁺ models of tpp's algorithms
 bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
