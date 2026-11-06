@@ -7031,24 +7031,31 @@ static uint64_t value_hash(Value *v) {
    prints. */
 static void put32(Buf *b, int64_t v) { int32_t x = (int32_t)v; buf_add(b, (char *)&x, 4); }
 
+/* A tag and its word. */
+static void put_tagged(Buf *b, char tag, int64_t v) {
+    char w[5] = {tag};
+    int32_t x = (int32_t)v;
+    memcpy(w + 1, &x, 4);
+    buf_add(b, w, 5);
+}
+
 static void encode(Buf *b, Value *v) {
     if (v->kind == V_LAMBDA) v = realize(v);
-    char tag;
     switch (v->kind) {
-    case V_BOOL: tag = 'b'; buf_add(b, &tag, 1); tag = (char)v->u.i; buf_add(b, &tag, 1); return;
-    case V_INT: tag = 'i'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
-    case V_STR: tag = 's'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
-    case V_MODEL: tag = 'm'; buf_add(b, &tag, 1); put32(b, v->u.i); return;
-    case V_INTERVAL: tag = 'I'; buf_add(b, &tag, 1); put32(b, v->u.range.lo); put32(b, v->u.range.hi); return;
+    case V_BOOL: buf_add(b, v->u.i ? "b\1" : "b\0", 2); return;
+    case V_INT: put_tagged(b, 'i', v->u.i); return;
+    case V_STR: put_tagged(b, 's', v->u.i); return;
+    case V_MODEL: put_tagged(b, 'm', v->u.i); return;
+    case V_INTERVAL: put_tagged(b, 'I', v->u.range.lo); put32(b, v->u.range.hi); return;
     case V_SET: case V_LAZY: {
         Value *set = enumerate(v);
-        tag = 'S'; buf_add(b, &tag, 1); put32(b, set->n);
+        put_tagged(b, 'S', set->n);
         for (int i = 0; i < set->n; i++) encode(b, set->u.set.elems[i]);
         return;
     }
     case V_TUPLE: case V_FCN: {
-        if (v->kind == V_FCN && v->n == 0) { tag = v->empty_fcn ? 'E' : 'T'; buf_add(b, &tag, 1); put32(b, 0); return; }
-        tag = v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : 'F'; buf_add(b, &tag, 1); put32(b, v->n);
+        if (v->kind == V_FCN && v->n == 0) { put_tagged(b, v->empty_fcn ? 'E' : 'T', 0); return; }
+        put_tagged(b, v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : 'F', v->n);
         for (int i = 0; i < v->n; i++) {
             if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
             encode(b, v->u.fcn.vals[i]);
