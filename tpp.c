@@ -611,15 +611,25 @@ static char *value_str(Value *v) {
 /* TLC's pretty printer (tlc2.pprint.Format) breaks a value longer than
    the line width, element by element (§7.6). */
 
+/* Whether TLC's parser fails on a name it prints bare, a model value or
+   a record's field: it takes only letters and digits. */
+static int pp_odd_name(int name) {
+    for (const char *p = S(name); *p; p++) if (!isalnum((unsigned char)*p)) return 1;
+    return 0;
+}
+
 static int pp_plain(Value *v) {
     if (v->kind == V_LAMBDA) return try_realize(v)->kind == V_LAMBDA;   /* TLC cannot parse <expression ...> */
+    if (v->kind == V_MODEL) return pp_odd_name((int)v->u.i);
     if (v->kind == V_INTERVAL || (v->kind == V_LAZY && !expandable(v))) return 1;
     if (v->kind == V_LAZY) return pp_plain(normalize_set(v));
     if (v->kind == V_SET)
         for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
-    if (is_fcn(v))
+    if (is_fcn(v)) {
+        int record = v->kind == V_FCN && fcn_is_record(v);
         for (int i = 0; i < v->n; i++)
-            if (pp_plain(v->u.fcn.vals[i]) || (v->kind == V_FCN && pp_plain(v->u.fcn.keys[i]))) return 1;
+            if (pp_plain(v->u.fcn.vals[i]) || (v->kind == V_FCN && (record ? pp_odd_name((int)v->u.fcn.keys[i]->u.i) : pp_plain(v->u.fcn.keys[i])))) return 1;
+    }
     return 0;
 }
 

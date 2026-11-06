@@ -1,0 +1,7 @@
+Error: Invariant Inv is violated by the initial state:
+/\ blocks = <<gen_block, "2222222222222222222222222", "3333333333333333333333333333333333">>
+/\ ts = (c1 :> [start_ts |-> 0, commit_ts |-> 0] @@ c2 :> [start_ts |-> 0, commit_ts |-> 0])
+/\ names = << "gen_block",
+   "2222222222222222222222222",
+   "3333333333333333333333333333333333" >>
+exit 12

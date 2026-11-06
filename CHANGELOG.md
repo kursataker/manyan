@@ -107,6 +107,9 @@ for it as its notes.
   enumerated `SUBSET S` (SmokeEWD998 from lemmy/ewd998).
 - An unknown operator applied to arguments is located at its name, as
   SANY locates it.
+- A value with a model value or record field whose name has other than
+  letters and digits, such as `start_ts`, is printed on one line, as
+  TLC's pretty printer, which cannot parse it, prints it (pingcap/tla-plus).
 - Symmetry reduction is 3x faster: a state's fingerprint under every
   permutation is computed in one pass over its values, without building
   the permuted values, and a part no permutation moves is hashed once.
