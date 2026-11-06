@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 37 of module union_mixed_kinds failed.
+Attempted to check equality of the function <<1, 2>> with the value:
+0
+exit 10

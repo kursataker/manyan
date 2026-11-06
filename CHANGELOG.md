@@ -88,6 +88,23 @@ for it as its notes.
 - `tests/tla/Workers.tla` models one level of the parallel search: its
   batches, claims, give-ups and in-order merge end the level as one
   process does, with the same states, parents and first error.
+- `UNCHANGED p`, for an operator's parameter `p`, leaves the variable
+  its argument names unchanged; tpp failed, saying the variable was
+  undefined (BlockingQueueSplit from lemmy/BlockingQueue).
+- With both a `VIEW` and a `SYMMETRY`, a state's view is of the least of
+  its permutations, as TLC takes it; tpp ignored the symmetry, finding
+  six times the states of Raft from Vanlightly/raft-tlaplus.
+- `S \cup T` of a set TLC keeps as its definition, such as a product, and
+  a set whose elements do not compare with its own is kept so too, as
+  TLC keeps it: `Bad \notin (Data \X {0, 1}) \cup {0, 1}` failed (AB2 from
+  Isaac-DeFrain/TLAplusFun). Of two enumerated sets, the error is TLC's.
+- Several constants without a value, or substituted by undefined names,
+  are reported in the order TLC takes them, that of SANY's hash table of
+  the module's symbols; constants before definitions, unassigned before
+  wrongly substituted.
+- Symmetry reduction is 3x faster: a state's fingerprint under every
+  permutation is computed in one pass over its values, without building
+  the permuted values, and a part no permutation moves is hashed once.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 

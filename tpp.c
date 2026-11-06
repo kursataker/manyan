@@ -973,6 +973,7 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng, int as_record
 /* The elements of a finite set, as a normalized V_SET. */
 static _Noreturn void count_infinite(Value *s);
 
+static _Noreturn void cup_error(Value *a, Value *b);
 static Value *enumerate(Value *s) {
     if (s->kind == V_SET) return s;
     if (s->kind == V_INTERVAL) {
@@ -1051,6 +1052,7 @@ static Value *enumerate(Value *s) {
     case L_CUP: {
         /* TLC makes S \cup T from whichever of them is enumerated. */
         Value *a = s->u.l.a, *b = s->u.l.b;
+        if (!set_is_infinite(a) && !set_is_infinite(b)) cup_error(enumerate(a), enumerate(b));   /* elements that do not compare */
         if (a->kind == V_LAZY && b->kind != V_LAZY) { Value *t = a; a = b; b = t; }
         fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
     }
@@ -1243,12 +1245,38 @@ static Value *held(Value *s) {
     return t;
 }
 
+/* TLC's error making S \cup T of elements that do not compare: it looks
+   for each of T's in S, comparing for equality. */
+static _Noreturn void cup_error(Value *a, Value *b) {
+    for (int j = 0; j < b->n; j++)
+        for (int i = 0; i < a->n; i++) veq(a->u.set.elems[i], b->u.set.elems[j]);
+    abort();
+}
+
+/* The kind of a set's elements but model values, which compare with any
+   value; -1 if it has no other. */
+static int elem_kind(Value *s) {
+    for (int i = 0; i < s->n; i++) {
+        Value *e = s->u.set.elems[i];
+        if (e->kind != V_MODEL) return is_fcn(e) ? V_FCN : is_set(e) ? V_SET : e->kind;
+    }
+    return -1;
+}
+
 static Value *set_union(Value *a, Value *b) {
     if (set_is_infinite(a) || set_is_infinite(b)) return lazy_op(L_CUP, a, b);
     int hold = !reducible(a) || !reducible(b);
+    Value *a0 = a, *b0 = b;
     a = enumerate(a); b = enumerate(b);
     if (!b->n) return hold ? held(a) : a;
     if (!a->n) return hold ? held(b) : b;
+    /* Elements that do not compare: TLC fails looking for T's in S, unless
+       it keeps the union as its definition, testing only membership. */
+    int ka = elem_kind(a), kb = elem_kind(b);
+    if (ka >= 0 && kb >= 0 && ka != kb) {
+        if (hold) return reducible(a0) || !reducible(b0) ? lazy_op(L_CUP, a0, b0) : lazy_op(L_CUP, b0, a0);   /* the enumerated first */
+        cup_error(a, b);
+    }
     /* Both are sorted: merge them. */
     Value *r = mk_set(a->n + b->n);
     Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
@@ -1479,6 +1507,7 @@ struct Def {
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
     Value *value;         /* the configured value of a constant or definition */
     Def *replacement;     /* D_CONST or D_OP replaced by an operator of the configuration */
+    int bad_target;       /* the undefined name the configuration replaces it by */
     int level;            /* 0 constant, 1 state, 2 action, 3 temporal; -1 unknown */
     int level_busy;
     Def *level_probe;     /* a LET definition's: the parameter probed when its level was found */
@@ -5043,7 +5072,7 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
         if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
         s->u.l.names[e->n + i] = a;
     }
-    return expandable(s) ? enumerate(s) : s;
+    return expandable(s) ? held(enumerate(s)) : s;
 }
 
 static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
@@ -6140,6 +6169,10 @@ static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     }
     if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
         return gen_unchanged(e->def->body, (Ctx){NULL, c.inst}, k);
+    if (e->kind == K_BOUND) {   /* a parameter: of its argument */
+        Env *b = env_find(c.env, e->def);
+        if (b && b->e) return gen_unchanged(b->e, (Ctx){b->ctx_env, b->ctx_inst}, k);
+    }
     if (e->kind == K_DECL) {
         /* UNCHANGED of a variable an instance substitutes: of what it is. */
         Ctx outer = c;
@@ -6682,28 +6715,41 @@ static void add_check(Check **list, int *n, Def *d, Expr *e, int name) {
     (*n)++;
 }
 
-/* Applies a permutation of model values to a value. */
+/* The model value a permutation maps v to; any other value is itself. */
 static Value *permute(Value *v, Value *perm) {
+    if (v->kind == V_MODEL)
+        for (int i = 0; i < perm->n; i++) {
+            Value *k = perm->u.fcn.keys[i];
+            if (k->kind == V_MODEL && k->u.i == v->u.i) return perm->u.fcn.vals[i];
+        }
+    return v;
+}
+
+/* v with each model value mapped by perm. */
+static Value *permute_value(Value *v, Value *perm) {
     switch (v->kind) {
-    case V_MODEL:
-        for (int i = 0; i < perm->n; i++) if (veq(fcn_key(perm, i), v)) return perm->u.fcn.vals[i];
-        return v;
-    case V_SET: case V_INTERVAL: case V_LAZY: {
+    case V_MODEL: return permute(v, perm);
+    case V_SET: case V_LAZY: {
+        if (v->kind == V_LAZY && set_is_infinite(v)) return v;
         Value *s = enumerate(v);
         List l = {0};
-        for (int i = 0; i < s->n; i++) list_add(&l, permute(s->u.set.elems[i], perm));
+        for (int i = 0; i < s->n; i++) list_add(&l, permute_value(s->u.set.elems[i], perm));
         return list_set(&l);
     }
     case V_TUPLE: {
         Value *t = mk_tuple(v->n);
-        for (int i = 0; i < v->n; i++) t->u.fcn.vals[i] = permute(v->u.fcn.vals[i], perm);
+        for (int i = 0; i < v->n; i++) t->u.fcn.vals[i] = permute_value(v->u.fcn.vals[i], perm);
         return t;
     }
     case V_FCN: {
         List keys = {0}, vals = {0};
-        for (int i = 0; i < v->n; i++) { list_add(&keys, permute(v->u.fcn.keys[i], perm)); list_add(&vals, permute(v->u.fcn.vals[i], perm)); }
+        for (int i = 0; i < v->n; i++) {
+            list_add(&keys, permute_value(v->u.fcn.keys[i], perm));
+            list_add(&vals, permute_value(v->u.fcn.vals[i], perm));
+        }
         Value *f = mk_fcn_from(&keys, &vals);
         f->empty_fcn = v->empty_fcn;
+        f->made = v->made;
         return f;
     }
     default:
@@ -6757,22 +6803,134 @@ static Value *permutation_group(Value *generators) {
     return list_set(&g);
 }
 
+/* The model values the symmetry moves, and the hashes of their images
+   under each permutation p: as elements at [p * m + j], as words of a
+   function's values after them. */
+static Value **sym_models;
+static int nsym_models;
+static uint64_t *sym_elem, *sym_word;
+
+static void symmetry_tables(void) {
+    List m = {0};
+    for (int p = 0; p < nsymmetry; p++)
+        for (int i = 0; i < symmetry[p]->n; i++) {
+            Value *k = symmetry[p]->u.fcn.keys[i];
+            int seen = 0;
+            for (int j = 0; j < m.n && !seen; j++) seen = veq(m.v[j], k);
+            if (!seen) list_add(&m, k);
+        }
+    sym_models = m.v;
+    nsym_models = m.n;
+    sym_elem = xmalloc(sizeof(uint64_t) * 2 * (size_t)nsymmetry * (size_t)(m.n + 1));
+    sym_word = sym_elem + (size_t)nsymmetry * (size_t)m.n;
+    for (int p = 0; p < nsymmetry; p++)
+        for (int j = 0; j < m.n; j++) {
+            Value *w = permute(m.v[j], symmetry[p]);
+            sym_elem[p * m.n + j] = elem_hash(w);
+            sym_word[p * m.n + j] = atom_word(w->kind, w->u.i);
+        }
+}
+
+/* Space for permuted_hashes at each depth: three hashes per permutation. */
+static uint64_t **sym_bufs;
+static int nsym_bufs;
+
+static uint64_t *sym_buf(int depth) {
+    if (depth == nsym_bufs) {
+        sym_bufs = xrealloc(sym_bufs, sizeof(uint64_t *) * (size_t)++nsym_bufs);
+        sym_bufs[depth] = xmalloc(sizeof(uint64_t) * 3 * (size_t)nsymmetry);
+    }
+    return sym_bufs[depth];
+}
+
+/* Whether a permutation of the symmetry moves a model value in v; if so,
+   h[p] is value_hash(permute(v, symmetry[p])) for each p, computed without
+   building it: a permutation is one to one, and a set's or function's
+   hash is the sum of its parts'. With atom, an atom's h[p] is its word,
+   as a function's value is hashed. */
+static int permuted_hashes(Value *v, uint64_t *h, int atom, int depth) {
+    int n = nsymmetry, moved = 0;
+    if (v->kind <= V_MODEL) {
+        int j = 0, m = nsym_models;
+        if (v->kind == V_MODEL) while (j < m && sym_models[j]->u.i != v->u.i) j++;
+        if (v->kind != V_MODEL || j == m) return 0;
+        uint64_t *t = atom ? sym_word : sym_elem;
+        for (int p = 0; p < n; p++) h[p] = t[p * m + j];
+        return 1;
+    }
+    uint64_t *sums = sym_buf(depth), *k = sums + n, *x = k + n, fixed = 0, tag;
+    if (v->kind == V_SET || (v->kind == V_LAZY && !set_is_infinite(v))) {
+        Value *set = enumerate(v);
+        for (int i = 0; i < set->n; i++) {
+            Value *e = set->u.set.elems[i];
+            if (!permuted_hashes(e, k, 0, depth + 1)) { fixed += elem_hash(e); continue; }
+            if (!moved) memset(sums, 0, sizeof(uint64_t) * (size_t)n);
+            moved = 1;
+            for (int p = 0; p < n; p++) sums[p] += k[p];
+        }
+        tag = 0x05 | (uint64_t)set->n << 8;
+    } else if (v->kind == V_TUPLE || v->kind == V_FCN) {
+        for (int i = 0; i < v->n; i++) {
+            Value *val = v->u.fcn.vals[i];
+            int km = v->kind == V_FCN && permuted_hashes(v->u.fcn.keys[i], k, 0, depth + 1);
+            int vm = permuted_hashes(val, x, 1, depth + 1);
+            if (!km && !vm) { fixed += pair_hash(v, i, val); continue; }
+            uint64_t k0 = km ? 0 : v->kind == V_FCN ? elem_hash(v->u.fcn.keys[i]) : i < 64 ? index_hash[i] : fmix(atom_word(V_INT, i + 1));
+            uint64_t x0 = vm ? 0 : val->kind <= V_MODEL ? atom_word(val->kind, val->u.i) : value_hash(val);
+            if (!moved) memset(sums, 0, sizeof(uint64_t) * (size_t)n);
+            moved = 1;
+            for (int p = 0; p < n; p++)
+                sums[p] += wymix((km ? k[p] : k0) ^ 0x8ebc6af09c88c6e3ULL, (vm ? x[p] : x0) ^ 0x589965cc75374cc3ULL);
+        }
+        tag = 0x06 | (uint64_t)v->n << 8;
+    } else {
+        return 0;   /* an interval, or a value hashed as it is */
+    }
+    if (moved) for (int p = 0; p < n; p++) h[p] = fmix((sums[p] + fixed) ^ tag);
+    return moved;
+}
+
+/* As TLC takes a state under symmetry: the least of its permutations,
+   comparing the variables' values in turn. */
+static Value **least_permutation(Value **st) {
+    Value **best = st;
+    for (int p = 0; p < nsymmetry; p++) {
+        Value **t = NEWN(Value *, nvars);
+        int c = 0;
+        for (int i = 0; i < nvars; i++) {
+            t[i] = permute_value(st[i], symmetry[p]);
+            if (!c) c = vcmp(t[i], best[i]);
+        }
+        if (c < 0) best = t;
+    }
+    return best;
+}
+
 static uint64_t fingerprint(Value **st) {
     if (view_expr) {
         Value **saved = cur_state;
-        cur_state = st;
+        cur_state = nsymmetry ? least_permutation(st) : st;
         Value *v = eval(view_expr, root_ctx);
         cur_state = saved;
         return value_hash(v);
     }
-    uint64_t best = 0;
-    for (int p = 0; p <= nsymmetry; p++) {
-        if (p == 0 && nsymmetry) continue;
-        uint64_t h = 0;
-        for (int i = 0; i < nvars; i++) h = fmix(h + elem_hash(nsymmetry ? permute(st[i], symmetry[p - 1]) : st[i]));
-        uint64_t fp = h;
-        if (p <= 1 || fp < best) best = fp;
+    uint64_t h = 0;
+    if (!nsymmetry) {
+        for (int i = 0; i < nvars; i++) h = fmix(h + elem_hash(st[i]));
+        return h;
     }
+    /* The least fingerprint of the state's permutations. */
+    static uint64_t *fps, *vh;
+    static int nfps;
+    if (nfps < nsymmetry) { fps = xrealloc(fps, sizeof(uint64_t) * (size_t)nsymmetry); vh = xrealloc(vh, sizeof(uint64_t) * (size_t)nsymmetry); nfps = nsymmetry; }
+    memset(fps, 0, sizeof(uint64_t) * (size_t)nsymmetry);
+    for (int i = 0; i < nvars; i++) {
+        int moved = permuted_hashes(st[i], vh, 0, 0);
+        uint64_t same = moved ? 0 : elem_hash(st[i]);
+        for (int p = 0; p < nsymmetry; p++) fps[p] = fmix(fps[p] + (moved ? vh[p] : same));
+    }
+    uint64_t best = fps[0];
+    for (int p = 1; p < nsymmetry; p++) if (fps[p] < best) best = fps[p];
     return best;
 }
 
@@ -8634,6 +8792,31 @@ static int config_check(Expr *e, const char *what) {
     config_error("The %s of %s is equal to %s", what, S(d->name), pretty(v));
 }
 
+/* The root module's constants in the order TLC takes them: SANY keeps the
+   module's symbols, with its 72 built-in operators, in a Java Hashtable,
+   and TLC reverses its enumeration, so a constant comes in the order of
+   its name's bucket. */
+static int java_bucket(int name, int cap) {
+    uint32_t h = 0;
+    for (const char *p = S(name); *p; p++) h = 31 * h + (unsigned char)*p;
+    return (int)((h & 0x7fffffff) % (uint32_t)cap);
+}
+
+static Def **tlc_constants(int *n) {
+    int cap = 11, count = 72 + root->nsyms;
+    for (int k = 0; k < count; k++) if (k >= (int)(cap * 0.75)) cap = cap * 2 + 1;
+    Def **c = NEWN(Def *, root->ndecls);
+    *n = 0;
+    for (int i = 0; i < root->ndecls; i++) {
+        Def *d = root->decls[i];
+        if (d->kind != D_CONST) continue;
+        int j = (*n)++;
+        while (j > 0 && java_bucket(c[j - 1]->name, cap) > java_bucket(d->name, cap)) { c[j] = c[j - 1]; j--; }
+        c[j] = d;
+    }
+    return c;
+}
+
 static int setup_model(void) {
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
@@ -8645,12 +8828,21 @@ static int setup_model(void) {
     /* TLC takes the constants, then the invariants, then the rest but the
        constraints, then the constraints, then the action constraints. */
     for (int pass = 0; pass < 5; pass++) {
-    if (pass == 1)
-        for (int i = 0; i < root->ndecls; i++) {
-            Def *d = root->decls[i];
-            if (d->kind == D_CONST && !d->value && !d->replacement)
-                config_error("The constant parameter %s is not assigned a value by the configuration file.", S(d->name));
+    if (pass == 1) {
+        int n;
+        Def **c = tlc_constants(&n);
+        for (int i = 0; i < n; i++)
+            if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target)
+                config_error("The constant parameter %s is not assigned a value by the configuration file.", S(c[i]->name));
+        for (int i = 0; i < n; i++)
+            if (c[i]->bad_target)
+                config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(c[i]->name), S(c[i]->bad_target));
+        for (int i = 0; i < root->nsyms; i++) {
+            Def *d = root->syms[i].def;
+            if (d->bad_target)
+                config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(d->name), S(d->bad_target));
         }
+    }
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
         const char *k = it->keyword;
@@ -8664,8 +8856,8 @@ static int setup_model(void) {
             if (it->op == '=') d->value = it->value;
             else {
                 Sym *t = root_sym(it->target);
-                if (!t) config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(it->name), S(it->target));
-                d->replacement = t->def;
+                if (t) d->replacement = t->def;
+                else d->bad_target = it->target;   /* reported with the constants, as TLC */
             }
         } else if (strcmp(k, "INIT") == 0) init = config_call(it->name, "initial predicate", 'r');
         else if (strcmp(k, "NEXT") == 0) next = config_call(it->name, "next state action", 'r');
@@ -8714,6 +8906,7 @@ static int setup_model(void) {
             Value *s = permutation_group(g);
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
+            symmetry_tables();
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
         }
