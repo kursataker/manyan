@@ -152,6 +152,7 @@ static uint64_t hash_bytes(const void *p, size_t n, uint64_t h) {
 }
 
 static int in_worker;   /* this process expands states for the search: it changes no shared data */
+static int exit_requested;   /* TLCSet("exit", TRUE) */
 static _Noreturn void worker_cannot(void);
 
 static int intern_n(const char *s, int len) {
@@ -522,6 +523,22 @@ static int fcn_is_record(Value *f) {
     return 1;
 }
 
+/* TLC prints a function as a record if each key is a name: letters,
+   digits and _, a letter among them, and no WF_ or SF_ of more. */
+static int printed_as_record(Value *f) {
+    if (!fcn_is_record(f)) return 0;
+    for (int i = 0; i < f->n; i++) {
+        const char *k = S(f->u.fcn.keys[i]->u.i);
+        int letter = 0;
+        for (const char *p = k; *p; p++) {
+            if (*p != '_' && !isalnum((unsigned char)*p)) return 0;
+            letter |= isalpha((unsigned char)*p) != 0;
+        }
+        if (!letter || (strlen(k) >= 4 && (!strncmp(k, "WF_", 3) || !strncmp(k, "SF_", 3)))) return 0;
+    }
+    return 1;
+}
+
 static void print_string(Buf *b, int id) {
     buf_puts(b, "\"");
     for (const char *s = S(id); *s; s++) {
@@ -611,7 +628,7 @@ static void print_value(Buf *b, Value *v) {
                 print_value(b, v->u.fcn.vals[i]);
             }
             buf_puts(b, ">>");
-        } else if (fcn_is_record(v)) {
+        } else if (printed_as_record(v)) {
             buf_puts(b, "[");
             for (int i = 0; i < v->n; i++) {
                 if (i) buf_puts(b, ", ");
@@ -658,7 +675,7 @@ static int pp_plain(Value *v) {
     if (v->kind == V_SET)
         for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
     if (is_fcn(v)) {
-        int record = v->kind == V_FCN && fcn_is_record(v);
+        int record = v->kind == V_FCN && printed_as_record(v);
         for (int i = 0; i < v->n; i++)
             if (pp_plain(v->u.fcn.vals[i]) || (v->kind == V_FCN && (record ? pp_odd_name((int)v->u.fcn.keys[i]->u.i) : pp_plain(v->u.fcn.keys[i])))) return 1;
     }
@@ -726,7 +743,7 @@ static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad)
         pp_values(b, v->u.fcn.vals, v->n, width - 3, trailer + 3, pad_more(pad, 3));
         buf_puts(b, " >>");
     } else if (is_fcn(v)) {
-        int record = fcn_is_record(v);
+        int record = printed_as_record(v);
         buf_puts(b, record ? "[ " : "( ");
         pp_pairs(b, v, record, width - 2, trailer + 2, pad_more(pad, 2));
         buf_puts(b, record ? " ]" : " )");
@@ -5755,6 +5772,13 @@ NATIVE(n_tlcget) {
 
 NATIVE(n_tlcset) {
     UNUSED;
+    if (a[0]->kind == V_STR && !strcmp(S(a[0]->u.i), "exit")) {   /* the search stops after this state */
+        if (a[1]->kind == V_BOOL && a[1]->u.i) {
+            if (in_worker) worker_cannot();
+            exit_requested = 1;
+        }
+        return TRUEV;
+    }
     if (a[0]->kind != V_INT || a[0]->u.i < 0)
         fail_module("The first argument of TLCSet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
     int i = (int)a[0]->u.i;
@@ -6336,9 +6360,14 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         }
         return gen(d->body, (Ctx){env, at.inst}, k);
     }
-    case K_INSTCALL:
+    case K_INSTCALL: {
         if (e->def->kind != D_OP || e->def->native) break;
+        /* As a definition of the module, one TLC computes as a constant. */
+        int plain = e->n == 0;
+        for (int i = 0; i < e->ndefs && plain; i++) plain = e->defs[i]->nparams == 0;
+        if (plain && expr_level(e) == 0) break;
         return gen(e->def->body, instance_ctx(e, c), k);
+    }
     case K_BOUND: {
         /* A parameter stands for its argument, which may be an action. */
         Env *b = env_find(c.env, e->def);
@@ -7763,7 +7792,7 @@ static int merge_level(int lo, int hi) {
                 if (header[0] && mergeable(f, header[1])) { merge_state(idx, f, header[1]); continue; }
             }
             int status = expand_state(idx);
-            if (status) return status;
+            if (status || exit_requested) return status;
         }
     }
     return 0;
@@ -7877,8 +7906,9 @@ static int search(void) {
     for (int lo = 0; lo < nstates;) {
         int hi = nstates, status = 0;
         if (nworkers > 1 && hi - lo >= PARALLEL_LEVEL) status = expand_level(lo, hi);
-        else for (int idx = lo; idx < hi && !status; idx++) status = expand_state(idx);
+        else for (int idx = lo; idx < hi && !status && !exit_requested; idx++) status = expand_state(idx);
         if (status) return status;
+        if (exit_requested) break;
         growth = (double)(nstates - hi) / (hi - lo);
         lo = hi;
     }
@@ -7897,7 +7927,7 @@ static int search(void) {
     }
     handler = NULL;
     printf("Model checking completed. No error has been found.\n");
-    print_counts(0, 1);
+    print_counts(exit_requested ? nstates - expanded : 0, 1);
     return TPP_OK;
 }
 
@@ -8886,6 +8916,7 @@ static int setup_model(void) {
         }
     order_variables();
     Expr *spec = NULL, *init = NULL, *next = NULL, *e;
+    int stray = 0;   /* a name substituted for that the spec does not have */
     /* TLC takes the constants, then the invariants, then the rest but the
        constraints, then the constraints, then the action constraints. */
     for (int pass = 0; pass < 5; pass++) {
@@ -8903,6 +8934,7 @@ static int setup_model(void) {
             if (d->bad_target)
                 config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(d->name), S(d->bad_target));
         }
+        if (stray) config_error("In the configuration file, the identifier %s does not appear in the specification.", S(stray));
     }
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
@@ -8912,6 +8944,7 @@ static int setup_model(void) {
         if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
+            if (!s && it->op != '=' && !stray) stray = it->name;
             if (!s) continue;
             Def *d = s->def;
             if (it->op == '=') d->value = it->value;

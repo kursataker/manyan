@@ -124,6 +124,17 @@ for it as its notes.
   another value cannot be a spec. tpp checked a constant `Init`, finding
   one state with no variables where TLC finds none (IsEven from
   miguelmota/tla-cookbook).
+- `TLCSet("exit", TRUE)` stops the search once the state whose expansion
+  asked for it is expanded, as TLC stops: the states found are left on
+  the queue, and the properties checked on the graph of those expanded.
+  It was an error (tlaplus-x/tlx).
+- A definition of an instance without parameters that is a constant is
+  computed as one, as TLC computes it: in an action it made choices,
+  generating more states than TLC.
+- A function of strings is printed as a record only if each string is a
+  name, as TLC prints it: `("a b" :> 1)`, `("WF_x" :> 1)`.
+- A substitution in the configuration for a name the spec does not have
+  is TLC's error; tpp ignored it.
 - Several constants without a value, or substituted by undefined names,
   are reported in the order TLC takes them, that of SANY's hash table of
   the module's symbols; constants before definitions, unassigned before
