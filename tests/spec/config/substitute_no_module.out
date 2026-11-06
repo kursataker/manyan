@@ -1,0 +1,2 @@
+Error: In the configuration file, the module name NoSuchModule is not a module in the specification.
+exit 151

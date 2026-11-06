@@ -1,0 +1,4 @@
+Error: In the configuration file, the identifier B appears
+on the right-hand side of a <- after already appearing on the
+left-hand side of one.
+exit 151

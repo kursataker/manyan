@@ -156,6 +156,10 @@ for it as its notes.
 - A standard module's operator, such as `\div` or `Assert`, failing on an
   initial state is reported without the state, as TLC reports it; a
   failed `Assert` there exits 75, not 14.
+- TLC's checks of a configuration's substitutions: a right-hand side
+  that is itself substituted for, sides with different numbers of
+  arguments (tpp crashed applying one), a module the specification does
+  not have, and an undefined name or missing operator in `<- [M]`.
 
 ## 0.2.0
 

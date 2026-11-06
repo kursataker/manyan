@@ -8912,6 +8912,25 @@ static Def **tlc_constants(int *n) {
     return c;
 }
 
+/* Whether the configuration substitutes for name, in module (0: the root). */
+static int substituted(int name, int module) {
+    for (int i = 0; i < ncfg; i++)
+        if (cfg[i].op != '=' && cfg[i].name == name && cfg[i].module == module) return 1;
+    return 0;
+}
+
+/* TLC's checks of a substitution for d, configured for module (0: the root). */
+static void check_substitution(Def *d, int module) {
+    if (!d->replacement && !d->bad_target) return;
+    int target = d->bad_target ? d->bad_target : d->replacement->name;
+    if (substituted(target, module))
+        config_error("In the configuration file, the identifier %s appears\non the right-hand side of a <- after already appearing on the\nleft-hand side of one.", S(target));
+    if (d->bad_target)
+        config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(d->name), S(d->bad_target));
+    if (d->kind != D_CONST && d->replacement->kind != D_CONST && d->nparams != d->replacement->nparams)
+        config_error("The configuration file substitutes for %s with %s of different number of arguments.", S(d->name), S(target));
+}
+
 static int setup_model(void) {
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
@@ -8920,7 +8939,7 @@ static int setup_model(void) {
         }
     order_variables();
     Expr *spec = NULL, *init = NULL, *next = NULL, *e;
-    int stray = 0;   /* a name substituted for that the spec does not have */
+    int stray = 0, module_stray = 0, no_module = 0;   /* a name substituted for, or a module, the spec does not have */
     /* TLC takes the constants, then the invariants, then the rest but the
        constraints, then the constraints, then the action constraints. */
     for (int pass = 0; pass < 5; pass++) {
@@ -8930,15 +8949,16 @@ static int setup_model(void) {
         for (int i = 0; i < n; i++)
             if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target)
                 config_error("The constant parameter %s is not assigned a value by the configuration file.", S(c[i]->name));
-        for (int i = 0; i < n; i++)
-            if (c[i]->bad_target)
-                config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(c[i]->name), S(c[i]->bad_target));
-        for (int i = 0; i < root->nsyms; i++) {
-            Def *d = root->syms[i].def;
-            if (d->bad_target)
-                config_error("The configuration file substitutes for %s with the undefined identifier %s.", S(d->name), S(d->bad_target));
-        }
+        for (int i = 0; i < n; i++) check_substitution(c[i], 0);
+        for (int i = 0; i < root->nsyms; i++) check_substitution(root->syms[i].def, 0);
         if (stray) config_error("In the configuration file, the identifier %s does not appear in the specification.", S(stray));
+        for (int i = 0; i < ncfg; i++) {
+            Module *m = cfg[i].module ? find_module(cfg[i].module) : NULL;
+            Sym *s = m ? module_lookup(m, cfg[i].name) : NULL;
+            if (s) check_substitution(s->def, cfg[i].module);
+        }
+        if (module_stray) config_error("In the configuration file, the identifier %s does not appear in the specification.", S(module_stray));
+        if (no_module) config_error("In the configuration file, the module name %s is not a module in the specification.", S(no_module));
     }
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
@@ -8948,7 +8968,8 @@ static int setup_model(void) {
         if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
-            if (!s && it->op != '=' && !stray) stray = it->name;
+            int *missing = !m ? &no_module : it->module ? &module_stray : &stray;
+            if (!s && it->op != '=' && !*missing) *missing = m ? it->name : it->module;
             if (!s) continue;
             Def *d = s->def;
             if (it->op == '=') d->value = it->value;
