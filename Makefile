@@ -1,6 +1,11 @@
 CC = cc
 CFLAGS = -O2 -std=c11 -Wall -Wextra -Wpedantic
 LDLIBS = -lm
+# Cygwin's main thread has the stack its executable reserves, less than the
+# 8 MB elsewhere: evaluation nests 5000 deep before TLC's StackOverflowError.
+ifneq ($(findstring CYGWIN,$(shell uname)),)
+LDLIBS += -Wl,--stack,67108864
+endif
 # AddressSanitizer hangs at startup on recent macOS; there, Guard Malloc
 # catches overruns and use-after-free instead.
 ifeq ($(shell uname),Darwin)
