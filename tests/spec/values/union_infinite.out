@@ -1,0 +1,9 @@
+FALSE
+Error: Evaluating assumption line 5, col 8 to line 5, col 49 of module union_infinite failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.IntValue tlc2.module.FiniteSets.Cardinality(tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to enumerate a set of the form [D -> R],but the range R:
+Nat
+cannot be enumerated.
+exit 10

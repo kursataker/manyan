@@ -301,7 +301,9 @@ enum {
 enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS, MADE_HELD };
 
 enum LazyKind {
-    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_ANY, L_CUP, L_CAP, L_DIFF
+    L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_ANY,
+    L_UNION,    /* UNION S, an element of S infinite: S in a */
+    L_CUP, L_CAP, L_DIFF
 };
 
 struct Value {
@@ -520,6 +522,7 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_STRING) { buf_puts(b, "STRING"); return; }
         if (v->lazy == L_ANY) { buf_puts(b, "ANY"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
+        if (v->lazy == L_UNION) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
         if (v->lazy >= L_CUP) {
             print_value(b, v->u.l.a);
             buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
@@ -917,7 +920,7 @@ static int set_is_infinite(Value *s) {
     if (s->kind != V_LAZY) return 0;
     switch (s->lazy) {
     case L_NAT: case L_INT: case L_STRING: case L_SEQ: case L_ANY: return 1;
-    case L_SUBSET: case L_FILTER: return set_is_infinite(s->u.l.a);
+    case L_SUBSET: case L_FILTER: case L_UNION: return set_is_infinite(s->u.l.a);
     case L_FCNSET: case L_CUP: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
     case L_CAP: return set_is_infinite(s->u.l.a) && set_is_infinite(s->u.l.b);
     case L_DIFF: return set_is_infinite(s->u.l.a);
@@ -1037,6 +1040,17 @@ static Value *enumerate(Value *s) {
         if (a->kind == V_LAZY && b->kind != V_LAZY) { Value *t = a; a = b; b = t; }
         fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
     }
+    case L_UNION:
+        /* As TLC: each element enumerated, unless it is a set it defines. */
+        s->u.l.a = set_normalize(s->u.l.a);
+        List l = {0};
+        for (int i = 0; i < s->u.l.a->n; i++) {
+            Value *t = s->u.l.a->u.set.elems[i];
+            if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
+            t = enumerate(t);
+            for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
+        }
+        return list_set(&l);
     case L_CAP:
         fail("Attempted to enumerate S \\cap T when neither S:\n%s\nnor T:\n%s\nis enumerable", pretty(s->u.l.a), pretty(s->u.l.b));
     case L_DIFF:
@@ -1178,6 +1192,10 @@ static int set_member(Value *v, Value *s) {
         case L_FILTER:
             if (s->u.l.b) return set_member(v, s->u.l.b);
             return set_member(v, s->u.l.a) && filter_member_test(s, v) == TRUEV;
+        case L_UNION:
+            s->u.l.a = set_normalize(s->u.l.a);
+            for (int i = 0; i < s->u.l.a->n; i++) if (set_member(v, s->u.l.a->u.set.elems[i])) return 1;
+            return 0;
         case L_CUP: return set_member(v, s->u.l.a) || set_member(v, s->u.l.b);
         case L_CAP: return set_member(v, s->u.l.a) && set_member(v, s->u.l.b);
         case L_DIFF: return set_member(v, s->u.l.a) && !set_member(v, s->u.l.b);
@@ -4283,6 +4301,7 @@ static const char *java_class(Value *v) {
     case L_RCDSET: return "SetOfRcdsValue";
     case L_FILTER: return "SetPredValue";
     case L_TIMES: return "SetOfTuplesValue";
+    case L_UNION: return "UnionValue";
     case L_CUP: return "SetCupValue";
     case L_CAP: return "SetCapValue";
     case L_DIFF: return "SetDiffValue";
@@ -4695,14 +4714,29 @@ static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
 }
 
 static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
-    Value *s = eval(e->args[0], c);
-    int hold = s->kind != V_SET || s->made == MADE_HELD;   /* TLC combines only sets of their elements */
-    s = enumerate(s);
+    Expr *x = e->args[0];
+    Value *s;
+    int hold = 0;   /* TLC combines only sets of their elements */
+    if (x->kind == X_SETENUM) {
+        /* TLC sorts a set's elements only once it must, as Nat and {-1}
+           cannot be: UNION {{-1}, Nat} is a set. */
+        s = mk_set(x->n);
+        for (int i = 0; i < x->n; i++) s->u.set.elems[i] = eval(x->args[i], c);
+    } else {
+        s = eval(x, c);
+        hold = s->kind != V_SET || s->made == MADE_HELD;
+        s = enumerate(s);
+    }
+    for (int i = 0; i < s->n; i++)
+        if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i])) {
+            Value *u = mk_lazy(L_UNION);
+            u->u.l.a = s;
+            return u;
+        }
+    if (x->kind == X_SETENUM) s = set_normalize(s);
     List l = {0};
     for (int i = 0; i < s->n; i++) {
         Value *t = s->u.set.elems[i];
-        if (is_set(t) && set_is_infinite(t))
-            fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
         hold |= t->kind != V_SET || t->made == MADE_HELD;
         t = enumerate(t);
         for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
@@ -5312,7 +5346,7 @@ NATIVE(n_cardinality) {
 /* v, as TLC prints it: it enumerates an infinite S \cup T or S \ T
    inside, which fails. */
 static Value *printable(Value *v) {
-    if (v->kind == V_LAZY && v->lazy >= L_CUP) enumerate(v);
+    if (v->kind == V_LAZY && v->lazy >= L_UNION) enumerate(v);
     if (v->kind == V_SET) for (int i = 0; i < v->n; i++) printable(v->u.set.elems[i]);
     if (is_fcn(v)) for (int i = 0; i < v->n; i++) printable(v->u.fcn.vals[i]);
     return v;
