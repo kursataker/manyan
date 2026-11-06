@@ -8766,26 +8766,33 @@ static Value **state_values(int s) {
 /* t in state s, or on the step from s to the state next. */
 static int atom_holds_on(TF *t, int s, Value **next);
 
+/* Whether e holds on the step from cur to next; what it evaluates is
+   dropped after, unless the caller's arena is the scratch one. */
+static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
+    Value **saved_cur = cur_state, **saved_next = next_state;
+    Arena *saved_arena = arena;
+    cur_state = cur;
+    next_state = next;
+    arena = &scratch_arena;
+    int v = eval_bool(e, c);
+    cur_state = saved_cur;
+    next_state = saved_next;
+    arena = saved_arena;
+    if (arena != &scratch_arena) arena_reset(&scratch_arena);
+    return v;
+}
+
 static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_values(to)); }
 
 static int atom_holds_on(TF *t, int s, Value **next) {
-    Value **saved_cur = cur_state, **saved_next = next_state;
     int v;
     if (!t->action) {
         signed char *slot = &state_atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index];
-        if (!*slot) {
-            cur_state = state_values(s);
-            next_state = NULL;
-            *slot = (signed char)(eval_bool(t->atom, t->c) ? 2 : 1);
-        }
+        if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), NULL) ? 2 : 1);
         v = *slot == 2;
     } else {
-        cur_state = state_values(s);
-        next_state = next;
-        v = eval_bool(t->atom, t->c);
+        v = holds_in(t->atom, t->c, state_values(s), next);
     }
-    cur_state = saved_cur;
-    next_state = saved_next;
     return v != t->neg;
 }
 
@@ -8907,7 +8914,7 @@ static int pnode_find(int s, int t, int create) {
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
     int s = pnodes[p].state, t = pnodes[p].tnode;
     tnode_expand(t);
-    List to = {0}, act = {0};
+    int *to = NULL, *act = NULL, m = 0, cap = 0;
     for (int e = 0; e < n + stutter; e++) {
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, target)) continue;
@@ -8915,15 +8922,18 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
             int q = pnode_find(target, u, 1);
-            list_add(&to, mk_int(q));
-            list_add(&act, mk_int(action));
+            if (m == cap) {
+                cap = cap ? 2 * cap : 8;
+                to = xrealloc(to, sizeof(int) * (size_t)cap);
+                act = xrealloc(act, sizeof(int) * (size_t)cap);
+            }
+            to[m] = q; act[m++] = action;
         }
     }
     PNode *pn = &pnodes[p];
-    pn->succ = xmalloc(sizeof(int) * (size_t)(to.n + 1));
-    pn->act = xmalloc(sizeof(int) * (size_t)(to.n + 1));
-    for (int i = 0; i < to.n; i++) { pn->succ[i] = (int)to.v[i]->u.i; pn->act[i] = (int)act.v[i]->u.i; }
-    pn->nsucc = to.n;
+    pn->succ = to ? to : xmalloc(sizeof(int));
+    pn->act = act ? act : xmalloc(sizeof(int));
+    pn->nsucc = m;
 }
 
 /* Each edge of the state graph, and the stuttering step unless an edge is
@@ -8957,23 +8967,11 @@ typedef struct { int strong; Expr *enabled, *step; Ctx c; } Fair;
 static Fair *fairs;
 static int nfairs;
 
-static int fair_enabled(Fair *f, int s) {
-    Value **saved = cur_state;
-    cur_state = state_values(s);
-    int v = eval_bool(f->enabled, f->c);
-    cur_state = saved;
-    return v;
-}
+static int fair_enabled(Fair *f, int s) { return holds_in(f->enabled, f->c, state_values(s), next_state); }
 
 static int fair_step(Fair *f, int s, int to) {
     if (to == STUTTER) return 0;
-    Value **saved_cur = cur_state, **saved_next = next_state;
-    cur_state = state_values(s);
-    next_state = state_values(to);
-    int v = eval_bool(f->step, f->c);
-    cur_state = saved_cur;
-    next_state = saved_next;
-    return v;
+    return holds_in(f->step, f->c, state_values(s), state_values(to));
 }
 
 static void collect_fairness(Expr *e, Ctx c);

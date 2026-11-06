@@ -27,6 +27,8 @@ for it as its notes.
 - When extended modules or an instance give a name two definitions, the
   first is used and SANY's warning printed, as SANY does; tpp rejected
   the module, or used an instance's definition.
+- Checking a temporal property keeps no garbage from what it evaluates:
+  pcal/MacroRealQuicksort from TLC's tests took 2.4 GB, and takes 35 MB.
 - Fixed undefined behavior and a read past the end of an array, found by
   running the sanitizers over the tlaplus/Examples models.
 
