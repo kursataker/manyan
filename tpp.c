@@ -9997,31 +9997,17 @@ typedef struct { int state, tnode; int *succ, *act; int nsucc; int index, low, o
 
 static PNode *pnodes;
 static int npnodes, cappnodes;
-static int *pnode_table;
-static int pnode_size;
+/* Each state's product nodes, as (tableau node, product node) pairs: a
+   state has few, and the successors of a step share its target's. */
+typedef struct { int tnode, node; } PRef;
+typedef struct { PRef *v; int n; } PRefs;
+static PRefs *pnodes_of;
 
 static int pnode_find(int s, int t, int create) {
-    if (!pnode_size || (npnodes + 1) * 2 > pnode_size) {
-        int size = pnode_size ? pnode_size * 2 : 1024;
-        int *table = calloc((size_t)size, sizeof(int));
-        for (int i = 0; i < npnodes; i++) {
-            uint64_t h = ((uint64_t)pnodes[i].state * 1000003u + (uint64_t)pnodes[i].tnode) * 0x9e3779b97f4a7c15ULL;
-            int j = (int)(h >> 40) & (size - 1);
-            while (table[j]) j = (j + 1) & (size - 1);
-            table[j] = i + 1;
-        }
-        free(pnode_table);
-        pnode_table = table;
-        pnode_size = size;
-    }
-    uint64_t h = ((uint64_t)s * 1000003u + (uint64_t)t) * 0x9e3779b97f4a7c15ULL;
-    int j = (int)(h >> 40) & (pnode_size - 1);
-    while (pnode_table[j]) {
-        PNode *p = &pnodes[pnode_table[j] - 1];
-        if (p->state == s && p->tnode == t) return pnode_table[j] - 1;
-        j = (j + 1) & (pnode_size - 1);
-    }
+    PRefs *l = &pnodes_of[s];
+    for (int i = 0; i < l->n; i++) if (l->v[i].tnode == t) return l->v[i].node;
     if (!create) return -1;
+    PUSH(l->v, l->n, ((PRef){t, npnodes}));
     if (npnodes == cappnodes) {
         cappnodes = cappnodes ? cappnodes * 2 : 1024;
         pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)cappnodes);
@@ -10029,7 +10015,6 @@ static int pnode_find(int s, int t, int create) {
     PNode *p = &pnodes[npnodes];
     memset(p, 0, sizeof *p);
     p->state = s; p->tnode = t; p->index = -1;
-    pnode_table[j] = npnodes + 1;
     return npnodes++;
 }
 
@@ -10038,27 +10023,25 @@ static int pnode_find(int s, int t, int create) {
    (target, action) pairs, then the stuttering step if stutter is set, with
    each successor of the tableau node. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
-    int s = pnodes[p].state, t = pnodes[p].tnode;
+    static int *found, cap;   /* (successor, action) pairs */
+    int s = pnodes[p].state, t = pnodes[p].tnode, m = 0;
     tnode_expand(t);
-    int *to = NULL, *act = NULL, m = 0, cap = 0;
     for (int e = 0; e < n + stutter; e++) {
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, target)) continue;
         for (int k = 0; k < tnodes[t].nsucc; k++) {
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
-            int q = pnode_find(target, u, 1);
-            if (m == cap) {
-                cap = cap ? 2 * cap : 8;
-                to = xrealloc(to, sizeof(int) * (size_t)cap);
-                act = xrealloc(act, sizeof(int) * (size_t)cap);
-            }
-            to[m] = q; act[m++] = action;
+            if (2 * m + 2 > cap) found = xrealloc(found, sizeof(int) * (size_t)(cap = 2 * cap + 16));
+            found[2 * m] = pnode_find(target, u, 1);
+            found[2 * m + 1] = action;
+            m++;
         }
     }
     PNode *pn = &pnodes[p];
-    pn->succ = to ? to : xmalloc(sizeof(int));
-    pn->act = act ? act : xmalloc(sizeof(int));
+    pn->succ = alloc_raw(sizeof(int) * (size_t)(2 * m));
+    pn->act = pn->succ + m;
+    for (int i = 0; i < m; i++) { pn->succ[i] = found[2 * i]; pn->act[i] = found[2 * i + 1]; }
     pn->nsucc = m;
 }
 
@@ -10085,7 +10068,7 @@ static void sim_product(void) {
             if (pnodes[p].state == s && !pnodes[p].succ) pnode_steps(p, step, next, 1);
     }
     for (int p = 0; p < npnodes; p++)
-        if (!pnodes[p].succ) { pnodes[p].succ = xmalloc(sizeof(int)); pnodes[p].act = xmalloc(sizeof(int)); pnodes[p].nsucc = 0; }
+        if (!pnodes[p].succ) pnode_steps(p, NULL, 0, 0);
 }
 
 /* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
@@ -10583,9 +10566,8 @@ static int live_violated(void) {
         natoms = 0;
         ntnodes = 0;
         npnodes = 0;
-        free(pnode_table);
-        pnode_table = NULL;
-        pnode_size = 0;
+        free(pnodes_of);
+        pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
         TF *neg = tableau_constants(to_tf(temporal_props[p].expr, root_ctx, 1), 1);
         free(state_atom_cache);
         state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
