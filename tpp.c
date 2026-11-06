@@ -1456,6 +1456,17 @@ static int set_member(Value *v, Value *s) {
             for (int i = 0; i < s->n; i++) if (veq(v, s->u.set.elems[i])) return 1;
             return 0;
         }
+        if (s->u.set.product && v->kind == V_TUPLE) {   /* the search below, as a product of intervals */
+            Value *p = s->u.set.product;
+            int in = v->n == p->n;
+            for (int i = 0; i < v->n; i++) {
+                Value *x = v->u.fcn.vals[i], *part = in ? p->u.l.names[p->n + i] : NULL;
+                if (x->kind != V_INT || (part && part->kind != V_INTERVAL)) goto search;
+                in = in && x->u.i >= part->u.range.lo && x->u.i <= part->u.range.hi;
+            }
+            return in;
+        }
+    search:
         /* TLC's search: its probes decide which element an error names. */
         while (lo < hi) {
             int mid = (lo + hi) >> 1;
