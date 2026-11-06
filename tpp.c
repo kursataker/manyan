@@ -8603,14 +8603,15 @@ static int pnode_find(int s, int t, int create) {
 }
 
 
-/* The successors of a product node by the steps of its state to targets,
-   with each successor of the tableau node. */
-static void pnode_steps(int p, const int *targets, const int *actions, int n) {
+/* The successors of a product node by the n steps of its state in edges,
+   (target, action) pairs, then the stuttering step if stutter is set, with
+   each successor of the tableau node. */
+static void pnode_steps(int p, const int *edges, int n, int stutter) {
     int s = pnodes[p].state, t = pnodes[p].tnode;
     tnode_expand(t);
     List to = {0}, act = {0};
-    for (int e = 0; e < n; e++) {
-        int target = targets[e], action = actions[e];
+    for (int e = 0; e < n + stutter; e++) {
+        int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, target)) continue;
         for (int k = 0; k < tnodes[t].nsucc; k++) {
             int u = tnodes[t].succ[k];
@@ -8627,33 +8628,25 @@ static void pnode_steps(int p, const int *targets, const int *actions, int n) {
     pn->nsucc = to.n;
 }
 
-/* Each edge of the state graph and the stuttering step. */
+/* Each edge of the state graph, and the stuttering step unless an edge is
+   one. */
 static void pnode_successors(int p) {
     StateRec *r = &states[pnodes[p].state];
-    int *targets = xmalloc(sizeof(int) * (size_t)(r->nedges + 1)), *actions = xmalloc(sizeof(int) * (size_t)(r->nedges + 1));
-    int n = 0, self = 0;
-    for (int e = 0; e < r->nedges; e++) {
-        targets[n] = r->edges[2 * e];
-        actions[n++] = r->edges[2 * e + 1];
-        self |= r->edges[2 * e] == pnodes[p].state;
-    }
-    if (!self) targets[n] = pnodes[p].state, actions[n++] = STUTTER;
-    pnode_steps(p, targets, actions, n);
-    free(targets);
-    free(actions);
+    int self = 0;
+    for (int e = 0; e < r->nedges; e++) self |= r->edges[2 * e] == pnodes[p].state;
+    pnode_steps(p, r->edges, r->nedges, !self);
 }
 
 /* The product as TLC builds it from a behavior, as its states arrive: a
    node's successors are those of the first position that expands it, its
-   state stuttering or taking the behavior's next step; the last state
+   state taking the behavior's next step or stuttering; the last state
    only stutters. A node never expanded has none. */
 static void sim_product(void) {
     for (int i = 0; i < sim_n; i++) {
-        int s = sim_order[i], last = i + 1 == sim_n;
-        int targets[2] = {s, last ? s : sim_order[i + 1]}, actions[2] = {STUTTER, last ? STUTTER : sim_acts[i + 1]};
-        int n = targets[1] == s ? 1 : 2;
+        int s = sim_order[i], next = i + 1 < sim_n && sim_order[i + 1] != s;
+        int step[2] = {next ? sim_order[i + 1] : s, next ? sim_acts[i + 1] : STUTTER};
         for (int p = 0; p < npnodes; p++)
-            if (pnodes[p].state == s && !pnodes[p].succ) pnode_steps(p, targets, actions, n);
+            if (pnodes[p].state == s && !pnodes[p].succ) pnode_steps(p, step, next, 1);
     }
     for (int p = 0; p < npnodes; p++)
         if (!pnodes[p].succ) { pnodes[p].succ = xmalloc(sizeof(int)); pnodes[p].act = xmalloc(sizeof(int)); pnodes[p].nsucc = 0; }
