@@ -4,7 +4,9 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
-## 0.3.0
+## 0.4.0
+
+0.3.0 was never tagged; its changes are released here, with 0.4.0's.
 
 - TLC's `-fp`, `-fpmem`, `-fpbits`, `-gzip` and `-cleanup` are accepted
   and ignored, as `-metadir` is.
