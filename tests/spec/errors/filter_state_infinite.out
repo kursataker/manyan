@@ -1,0 +1,17 @@
+Error: Attempted to enumerate a set of the form s1 \X s2 ... \X sn,
+but can't enumerate s0:
+Nat
+While working on the initial state:
+x = {a, b \in (Nat \X Nat) : <expression line 6, col 40 to line 6, col 44 of module filter_state_infinite> }
+
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0) line 6, col 27 to line 6, col 36 of module filter_state_infinite
+
+Reason:
+Attempted to enumerate a set of the form s1 \X s2 ... \X sn,
+but can't enumerate s0:
+Nat
+1 states generated, 0 distinct states found, 0 states left on queue.
+exit 75

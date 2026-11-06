@@ -100,6 +100,55 @@ static void arena_reset(Arena *a) {
     a->head = c;
 }
 
+static void arena_free(Arena *a) {
+    arena_reset(a);
+    free(a->head);
+    a->head = NULL;
+}
+
+static size_t arena_bytes(Arena *a) {
+    size_t n = 0;
+    for (Chunk *c = a->head; c; c = c->next) n += c->used;
+    return n;
+}
+
+/* What one iteration of a loop computing a constant made, from where its
+   arena stood: dropped after it, unless a value made before it was given
+   one it made. Neither arena of the search has them: the permanent one
+   keeps what is computed once, and the scratch one is dropped by state. */
+typedef struct { Arena *a; Chunk *c; size_t used; int kept; } Region;
+static Region regions[64];
+static int nregions;
+
+static int in_region(Region *r, void *p) {
+    for (Chunk *c = r->a->head; c; c = c->next) {
+        char *from = c->data + (c == r->c ? r->used : 0);
+        if ((char *)p >= from && (char *)p < c->data + c->used) return 1;
+        if (c == r->c) return 0;
+    }
+    return 0;
+}
+
+/* holder, a value or a binding, is given a value it keeps. */
+static void held_by(void *holder) {
+    for (int i = nregions - 1; i >= 0 && !in_region(&regions[i], holder); i--) regions[i].kept = 1;
+}
+
+static Region *region_open(void) {
+    if (arena == &perm_arena || arena == &scratch_arena || nregions == 64) return NULL;
+    Region *r = &regions[nregions++];
+    *r = (Region){arena, arena->head, arena->head ? arena->head->used : 0, 0};
+    return r;
+}
+
+static void region_close(Region *r) {
+    if (!r) return;
+    nregions--;
+    if (r->kept) return;
+    while (r->a->head != r->c) { Chunk *next = r->a->head->next; free(r->a->head); r->a->head = next; }
+    if (r->c) r->c->used = r->used;
+}
+
 /* A growable byte buffer. */
 typedef struct { char *s; size_t n, cap; } Buf;
 
@@ -142,7 +191,7 @@ static char *buf_take(Buf *b) {
 
 /* Every identifier and string is interned; strings compare by the order in
    which they were first interned (§7.5). */
-typedef struct { char *s; int len; Value *value; } Str;   /* value: its V_STR, once made */
+typedef struct { char *s; int len; Value *value, *model; } Str;   /* its V_STR and V_MODEL, once made */
 
 static Str *strs;
 static int nstrs, capstrs;
@@ -190,7 +239,7 @@ static int intern_n(const char *s, int len) {
     copy[len] = 0;
     strs[nstrs].s = copy;
     strs[nstrs].len = len;
-    strs[nstrs].value = NULL;
+    strs[nstrs].value = strs[nstrs].model = NULL;
     str_table[j] = nstrs + 1;
     return nstrs++;
 }
@@ -242,6 +291,10 @@ static void fp_enter(Expr *where) {
     fp_depth++;
 }
 static void fp_leave(Expr *where) { fp_depth -= where != NULL; }
+
+/* The source of a value made at e: none before the search, as TLC
+   computes the definitions of constants without one. */
+static Expr *source(Expr *e) { return arena == &scratch_arena ? e : NULL; }
 
 /* TLC's exit status for an error evaluating the spec. */
 static int eval_failure_status(void) { return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL; }
@@ -382,22 +435,17 @@ static Value *mk_int(int64_t i) {
     return v;
 }
 
-/* One value for each string, outside the arenas. */
-static Value *mk_str(int id) {
-    Value *v = strs[id].value;
-    if (!v) {
-        v = strs[id].value = xmalloc(sizeof(Value));
-        *v = (Value){.kind = V_STR, .u.i = id};
+/* One value for each string, and each model value, outside the arenas. */
+static Value *atom_of(Value **at, int kind, int id) {
+    if (!*at) {
+        *at = xmalloc(sizeof(Value));
+        **at = (Value){.kind = (unsigned char)kind, .u.i = id};
     }
-    return v;
+    return *at;
 }
 
-static Value *mk_model(int id) {
-    Value *v = NEW(Value);
-    v->kind = V_MODEL;
-    v->u.i = id;
-    return v;
-}
+static Value *mk_str(int id) { return atom_of(&strs[id].value, V_STR, id); }
+static Value *mk_model(int id) { return atom_of(&strs[id].model, V_MODEL, id); }
 
 static Value *mk_tuple(int n) {
     Value *v = NEW(Value);
@@ -449,6 +497,21 @@ static Value *mk_lazy(int kind) {
     v->lazy = (unsigned char)kind;
     v->perm = arena == &perm_arena;
     return v;
+}
+
+/* A value or binding made in the permanent arena computes what it keeps
+   there, as TLC keeps it, but in the search: the arena to go back to. */
+static Arena *keeping(int perm) {
+    Arena *saved = arena;
+    if (perm && arena != &scratch_arena) arena = &perm_arena;
+    return saved;
+}
+
+/* Whether lazy s may keep a value made now: not one that dies before it. */
+static int may_keep(Value *s) {
+    if (s->perm && arena != &perm_arena) return 0;
+    held_by(s);
+    return 1;
 }
 
 static const char *kind_name(Value *v) {
@@ -507,6 +570,7 @@ static void realize_both(Value **a, Value **b);
 static inline Value *realize(Value *v) { return v->kind == V_LAMBDA ? realize_lambda(v) : v; }
 static Value *try_realize(Value *f);
 static void print_lambda(Buf *b, Value *f);
+static void print_filter(Buf *b, Value *s);
 static Value *print_order(Value *f);
 static int print_normal;   /* printing as TLC does once it normalizes values: Print, PrintT */
 static Value *normalize_set(Value *v);
@@ -641,6 +705,7 @@ static void print_value(Buf *b, Value *v) {
             buf_puts(b, ")");
             return;
         }
+        if (v->lazy == L_FILTER && set_is_infinite(v->u.l.a)) { print_filter(b, v); return; }
         print_value(b, normalize_set(v));
         return;
     case V_SET:
@@ -1080,10 +1145,16 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng) {
         if (total > 100000000) fail("Attempted to enumerate a set of functions with too many elements.");
     }
     Value *out = mk_set((int)total);
+    Value **keys = alloc_raw(sizeof(Value *) * (size_t)nd);   /* the functions share them */
+    if (nd) memcpy(keys, dom, sizeof(Value *) * (size_t)nd);
     int *idx = calloc((size_t)nd + 1, sizeof(int));
     for (int64_t k = 0; k < total; k++) {
-        Value *f = out->u.set.elems[k] = mk_fcn(nd);
-        for (int i = 0; i < nd; i++) { f->u.fcn.keys[i] = dom[i]; f->u.fcn.vals[i] = rng->u.set.elems[idx[i]]; }
+        Value *f = out->u.set.elems[k] = NEW(Value);
+        f->kind = V_FCN;
+        f->n = nd;
+        f->u.fcn.keys = keys;
+        f->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)nd);
+        for (int i = 0; i < nd; i++) f->u.fcn.vals[i] = rng->u.set.elems[idx[i]];
         if (nd == 0) f->empty_fcn = 1;
         for (int i = nd - 1; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
     }
@@ -1096,6 +1167,9 @@ static _Noreturn void count_infinite(Value *s);
 
 static Value *cup_merge(Value *a, Value *b);
 static _Noreturn void sort_error(Value *a, Value *b);
+static Value **elements_slot(Value *s);
+static Value *enumerate_lazy(Value *s);
+
 static Value *enumerate_other(Value *s) {
     if (s->kind == V_INTERVAL) {
         Value *r = mk_set(interval_size(s));
@@ -1103,8 +1177,33 @@ static Value *enumerate_other(Value *s) {
         return r;
     }
     if (s->kind != V_LAZY) fail("Attempted to enumerate %s, which is not a set.", pretty(s));
+    Value **slot = elements_slot(s);
+    if (!slot) return enumerate_lazy(s);
+    if (!*slot) {
+        Arena *saved = arena;
+        arena = &perm_arena;
+        *slot = enumerate_lazy(s);
+        arena = saved;
+    }
+    return *slot;
+}
+
+/* Where a lazy set made in the permanent arena keeps its elements, if it
+   holds no context: they never change. */
+static Value **elements_slot(Value *s) {
+    if (!s->perm) return NULL;
     switch (s->lazy) {
+    case L_SUBSET: case L_TIMES: case L_RCDSET: return &s->u.l.b;
+    case L_FCNSET: return &s->u.l.set;
+    default: return NULL;
+    }
+}
+
+static Value *enumerate_lazy(Value *s) {
+    switch (s->lazy) {
+    /* A set TLC made with a source names it if enumerating it fails. */
     case L_SUBSET: {
+        fp_enter(s->u.l.expr);
         if (set_is_infinite(s->u.l.a)) count_infinite(s->u.l.a);
         Value *base = enumerate(s->u.l.a);
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
@@ -1124,17 +1223,22 @@ static Value *enumerate_other(Value *s) {
                 for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
             }
         }
+        fp_leave(s->u.l.expr);
         return out;
     }
     case L_FCNSET: {
+        fp_enter(s->u.l.expr);
         for (int i = 0; i < 2; i++)
             if (set_is_infinite(i ? s->u.l.b : s->u.l.a))
                 fail("Attempted to enumerate a set of the form [D -> R],but the %s:\n%s\ncannot be enumerated.",
                      i ? "range R" : "domain D", pretty(i ? s->u.l.b : s->u.l.a));
         Value *dom = enumerate(s->u.l.a);
-        return enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b);
+        Value *out = enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b);
+        fp_leave(s->u.l.expr);
+        return out;
     }
     case L_RCDSET: case L_TIMES: {
+        fp_enter(s->u.l.expr);
         int n = s->n;
         Value **sets = NEWN(Value *, n);
         int64_t total = 1;
@@ -1167,24 +1271,29 @@ static Value *enumerate_other(Value *s) {
             for (int i = n - 1; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
         }
         free(idx);
+        fp_leave(s->u.l.expr);
         return out;
     }
     case L_FILTER: {
         if (s->u.l.b) return s->u.l.b;
+        Arena *saved = keeping(s->perm);
         Value *base = filter_base(s);
         List out = {0};
         for (int i = 0; i < base->n; i++)
             if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
         Value *set = list_set(&out);
         /* Keep the elements unless they would outlive the filter's arena. */
-        if (!s->perm || arena == &perm_arena) s->u.l.b = set;
+        if (may_keep(s)) s->u.l.b = set;
+        arena = saved;
         return set;
     }
     case L_UNION: {
         /* As TLC: each element enumerated, unless it is a set it defines. */
         if (s->u.l.b) return s->u.l.b;
+        Arena *saved = keeping(s->perm);
         union_sets(s);
         List l = {0};
+        fp_enter(s->u.l.expr);
         for (int i = 0; i < s->u.l.a->n; i++) {
             Value *t = s->u.l.a->u.set.elems[i];
             if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
@@ -1192,12 +1301,15 @@ static Value *enumerate_other(Value *s) {
             for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
         }
         Value *set = list_set(&l);
-        if (!s->perm || arena == &perm_arena) s->u.l.b = set;
+        fp_leave(s->u.l.expr);
+        if (may_keep(s)) s->u.l.b = set;
+        arena = saved;
         return set;
     }
     case L_CUP: case L_CAP: case L_DIFF: {
         /* As TLC: S \cup T of both, S \cap T of an enumerable one, S \ T of S. */
         if (s->u.l.set) return s->u.l.set;
+        Arena *saved = keeping(s->perm);
         Value *a = s->u.l.a, *b = s->u.l.b, *set;
         fp_enter(s->u.l.expr);
         if (s->lazy == L_CUP) {
@@ -1214,7 +1326,8 @@ static Value *enumerate_other(Value *s) {
             set = select_members(a, b, 0);
         }
         fp_leave(s->u.l.expr);
-        if (!s->perm || arena == &perm_arena) s->u.l.set = set;
+        if (may_keep(s)) s->u.l.set = set;
+        arena = saved;
         return set;
     }
     default:
@@ -1224,9 +1337,22 @@ static Value *enumerate_other(Value *s) {
 
 static Value *normalize_set(Value *v) { return enumerate(v); }
 
-/* The sets of a UNION TLC keeps, sorted once it must. */
+/* The sets of a UNION TLC keeps, sorted once it must: comparing them, an
+   error names the UNION and the set of them. */
 static Value *union_sets(Value *s) {
-    if (s->n) { s->u.l.a = set_normalize(s->u.l.a); s->n = 0; }
+    if (s->n) {   /* in place: in its own arena */
+        Arena *saved = arena;
+        if (s->perm) arena = &perm_arena;
+        Expr *sets = s->u.l.a->u.set.source;
+        fp_enter(s->u.l.expr);
+        fp_enter(sets);
+        held_by(s);
+        s->u.l.a = set_normalize(s->u.l.a);
+        fp_leave(sets);
+        fp_leave(s->u.l.expr);
+        s->n = 0;
+        arena = saved;
+    }
     return s->u.l.a;
 }
 
@@ -1234,8 +1360,10 @@ static Value *union_sets(Value *s) {
    it keeps its elements, which its quantifiers then take in order. */
 static Value *union_cache(Value *s) {
     if (s->kind == V_LAZY && s->lazy == L_UNION && !s->u.l.set) {
+        Arena *saved = keeping(s->perm);
         Value *e = enumerate(s);
-        if (!s->perm || arena == &perm_arena) s->u.l.set = e;
+        if (may_keep(s)) s->u.l.set = e;
+        arena = saved;
     }
     return s;
 }
@@ -1248,12 +1376,14 @@ static Value *elements(Value *s) {
     if (s->u.l.set) return s->u.l.set;
     union_sets(s);
     List l = {0};
+    fp_enter(s->u.l.expr);
     for (int i = 0; i < s->u.l.a->n; i++) {
         Value *t = s->u.l.a->u.set.elems[i];
         if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
         t = elements(t);
         for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
     }
+    fp_leave(s->u.l.expr);
     Value *r = mk_set(l.n);
     if (l.n) memcpy(r->u.set.elems, l.v, sizeof(Value *) * (size_t)l.n);
     return r;
@@ -1693,6 +1823,7 @@ typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an 
 
 struct Expr {
     short kind;
+    unsigned char fixed;  /* fixed_expr: 0 not yet known, 1 yes, 2 no */
     int op;               /* operator or name; field of X_DOT */
     int n;
     Expr **args;
@@ -1711,7 +1842,7 @@ struct Expr {
     Module *mod;
     int l1, c1, l2, c2;
     int pl1, pc1, pl2, pc2;   /* with the parentheses around it, if any */
-    Value *value;         /* X_SETENUM of literals of one kind: its value, once computed */
+    Value *value;         /* X_SETENUM of literals of one kind, or a fixed product: its value, once computed */
 };
 
 enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM };   /* D_THM: a theorem's or assumption's name */
@@ -4659,6 +4790,7 @@ static Value *lambda_body(Value *f, Value *a) {
    allow; one over an infinite domain stays as it is. */
 static __attribute__((cold)) Value *realize_lambda(Value *f) {
     if (set_is_infinite(f->u.l.a)) return f;
+    Arena *saved = keeping(f->perm);
     Value *dom = enumerate(f->u.l.a);
     Value *g = mk_fcn(dom->n);
     memcpy(g->u.fcn.keys, dom->u.set.elems, sizeof(Value *) * (size_t)dom->n);
@@ -4674,7 +4806,8 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
     keep_lazy = keep;
     if (!dom->n) g->empty_fcn = 1;
     g->made = params ? MADE_PARAMS : MADE_LAMBDA;
-    if (!f->perm || arena == &perm_arena) { *f = *g; return f; }
+    if (may_keep(f)) { *f = *g; g = f; }
+    arena = saved;
     return g;
 }
 
@@ -4707,11 +4840,14 @@ static Value *force(Env *b) {
     if (b->v && !(primed && b->stateful)) return b->v;
     long reads = state_reads, moving = moving_reads;
     Ctx c = {b->ctx_env, b->ctx_inst};
+    Arena *saved = keeping(b->perm);
     Value *v = eval(b->e, c);
     if (b->perm == (arena == &perm_arena)) {
+        held_by(b);
         if (reads == state_reads) { b->v = v; b->stateful = 0; }
         else if (!b->perm && moving == moving_reads && !primed) { b->v = v; b->stateful = 1; }
     }
+    arena = saved;
     return v;
 }
 
@@ -4891,15 +5027,23 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
 
 typedef struct { Expr *body; int value; Expr *where; } QuantData;
 
+/* e in c, dropping what computing it made where that is allowed. */
+static int eval_bool_dropping(Expr *e, Ctx c) {
+    Region *r = region_open();
+    int holds = eval_bool(e, c);
+    region_close(r);
+    return holds;
+}
+
 static int forall_fn(Ctx c, void *data) {
     QuantData *q = data;
-    if (!eval_bool(q->body, c)) { q->value = 0; return 1; }
+    if (!eval_bool_dropping(q->body, c)) { q->value = 0; return 1; }
     return 0;
 }
 
 static int exists_fn(Ctx c, void *data) {
     QuantData *q = data;
-    if (eval_bool(q->body, c)) { q->value = 1; return 1; }
+    if (eval_bool_dropping(q->body, c)) { q->value = 1; return 1; }
     return 0;
 }
 
@@ -5184,12 +5328,13 @@ static __attribute__((noinline)) Value *ev_cup(Expr *e, Ctx c) {
         return BOOLV(all_members(a, b));
     }
     Value *r = e->kind == K_CUP ? set_union(a, b) : e->kind == K_CAP ? set_inter(a, b) : set_minus(a, b);
-    if (r != a && r != b && r->kind == V_LAZY && r->lazy >= L_CUP) r->u.l.expr = e;   /* its source */
+    if (r != a && r != b && r->kind == V_LAZY && r->lazy >= L_CUP) r->u.l.expr = source(e);
     return r;
 }
 
-static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
+static Value *subset_of(Expr *e, Ctx c) {
     Value *s = mk_lazy(L_SUBSET);
+    s->u.l.expr = source(e);
     s->u.l.a = eval(e->args[0], c);
     if (!is_set(s->u.l.a)) fail_at(e, "Attempted to compute SUBSET of the non-set:\n%s", pretty(s->u.l.a));
     return s;
@@ -5204,6 +5349,7 @@ static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
            cannot be: UNION {{-1}, Nat} is a set. */
         s = mk_set(x->n);
         for (int i = 0; i < x->n; i++) s->u.set.elems[i] = eval(x->args[i], c);
+        s->u.set.source = source(x);
     } else {
         s = eval(x, c);
         hold = s->kind != V_SET || s->made == MADE_HELD;
@@ -5213,6 +5359,7 @@ static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
     if (hold) {
         Value *u = mk_lazy(L_UNION);
         u->u.l.a = s;
+        u->u.l.expr = source(e);
         u->n = x->kind == X_SETENUM;   /* its sets, to be sorted */
         return u;
     }
@@ -5249,8 +5396,61 @@ static int kept(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_unchanged(Expr *e, Ctx c) { return BOOLV(kept(e->args[0], c)); }
 
-static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
+/* Whether e has one value wherever it is evaluated outside an instance:
+   it is made of literals, constants, constant definitions and the
+   operators of the arithmetic, sequence and set modules. */
+static int fixed_expr(Expr *e) {
+    if (e->fixed) return e->fixed == 1;
+    Def *d = e->def && e->def->replacement ? e->def->replacement : e->def;
+    int f = 0;
+    switch (e->kind) {
+    case X_NUM: case X_STR: case X_BOOL: f = 1; break;
+    case K_DECL: f = d->kind == D_CONST; break;
+    case X_SETENUM: case X_TUPLE: case K_TIMES: case K_SUBSET: case X_FCNSET: case X_RCDSET: f = 1; break;
+    case K_CALL:
+        if (d->native) {
+            const char *m = S(d->mod->name);
+            f = !strcmp(m, "Naturals") || !strcmp(m, "Integers") || !strcmp(m, "Sequences") || !strcmp(m, "FiniteSets");
+        } else {
+            f = d->kind == D_OP && !d->nparams && d->local != 2 && d->cache;
+        }
+        break;
+    }
+    for (int i = 0; i < e->n && f; i++) f = fixed_expr(e->args[i]);
+    e->fixed = f ? 1 : 2;
+    return f;
+}
+
+/* The set make makes of e: in the search, where e is fixed, once, in the
+   permanent arena, naming e as its source as a set made anew would. */
+static Value *ev_fixed(Expr *e, Ctx c, Value *(*make)(Expr *, Ctx)) {
+    if (c.inst || arena != &scratch_arena) return make(e, c);
+    if (e->value) return e->value;
+    if (!fixed_expr(e)) return make(e, c);
+    Arena *saved = arena;
+    sigjmp_buf *outer = handler, here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; raise_error(); }
+    arena = &perm_arena;
+    Value *t = make(e, c);
+    (t->kind == V_LAZY ? t : t->u.set.product)->u.l.expr = e;
+    handler = outer;
+    arena = saved;
+    return e->value = t;
+}
+
+static Value *product(Expr *e, Ctx c);
+static Value *rcdset_of(Expr *e, Ctx c);
+static Value *fcnset_of(Expr *e, Ctx c);
+
+static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) { return ev_fixed(e, c, product); }
+static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) { return ev_fixed(e, c, subset_of); }
+static __attribute__((noinline)) Value *ev_rcdset(Expr *e, Ctx c) { return ev_fixed(e, c, rcdset_of); }
+static __attribute__((noinline)) Value *ev_fcnset(Expr *e, Ctx c) { return ev_fixed(e, c, fcnset_of); }
+
+static Value *product(Expr *e, Ctx c) {
     Value *s = mk_lazy(L_TIMES);
+    s->u.l.expr = source(e);
     s->n = e->n;
     s->u.l.names = NEWN(Value *, 2 * e->n);
     for (int i = 0; i < e->n; i++) {
@@ -5258,7 +5458,10 @@ static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
         if (!is_set(a)) fail_at(e, "Attempted to compute the cartesian product with the non-set:\n%s", pretty(a));
         s->u.l.names[e->n + i] = a;
     }
-    if (!expandable(s)) return s;
+    fp_enter(s->u.l.expr);   /* sizing its parts, as TLC enumerating it */
+    int expand = expandable(s);
+    fp_leave(s->u.l.expr);
+    if (!expand) return s;
     Value *t = held(enumerate(s));
     t->u.set.product = s;   /* as TLC, RandomElement draws each part */
     return t;
@@ -5284,14 +5487,14 @@ static __attribute__((noinline)) Value *ev_setenum(Expr *e, Ctx c) {
     fp_enter(e);   /* comparing its elements */
     Value *s = list_set(&l);
     fp_leave(e);
-    s->u.set.source = e;
+    s->u.set.source = source(e);
     return s;
 }
 
 static __attribute__((noinline)) Value *ev_tuple(Expr *e, Ctx c) {
     Value *t = mk_tuple(e->n);
     for (int i = 0; i < e->n; i++) t->u.fcn.vals[i] = eval(e->args[i], c);
-    t->u.fcn.source = e;
+    t->u.fcn.source = source(e);
     return t;
 }
 
@@ -5300,11 +5503,11 @@ static __attribute__((noinline)) Value *ev_record(Expr *e, Ctx c) {
     for (int i = 0; i < e->n; i++) { list_add(&keys, mk_str(e->segs[i].name)); list_add(&vals, eval(e->args[i], c)); }
     Value *r = mk_fcn_from(&keys, &vals);
     r->made = MADE_RECORD;
-    r->u.fcn.source = e;
+    r->u.fcn.source = source(e);
     return r;
 }
 
-static __attribute__((noinline)) Value *ev_rcdset(Expr *e, Ctx c) {
+static Value *rcdset_of(Expr *e, Ctx c) {
     List keys = {0}, vals = {0};
     for (int i = 0; i < e->n; i++) {
         Value *s = eval(e->args[i], c);
@@ -5314,14 +5517,16 @@ static __attribute__((noinline)) Value *ev_rcdset(Expr *e, Ctx c) {
     }
     Value *r = mk_fcn_from(&keys, &vals);
     Value *s = mk_lazy(L_RCDSET);
+    s->u.l.expr = source(e);
     s->n = e->n;
     s->u.l.names = NEWN(Value *, 2 * e->n);
     for (int i = 0; i < e->n; i++) { s->u.l.names[i] = r->u.fcn.keys[i]; s->u.l.names[e->n + i] = r->u.fcn.vals[i]; }
     return s;
 }
 
-static __attribute__((noinline)) Value *ev_fcnset(Expr *e, Ctx c) {
+static Value *fcnset_of(Expr *e, Ctx c) {
     Value *s = mk_lazy(L_FCNSET);
+    s->u.l.expr = source(e);
     s->u.l.a = eval(e->args[0], c);
     s->u.l.b = eval(e->args[1], c);
     if (!is_set(s->u.l.a) || !is_set(s->u.l.b)) fail_at(e, "Attempted to construct a set of functions with a non-set.");
@@ -5622,15 +5827,65 @@ static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
 
 /* TLC normalizes the value of a constant definition, as a state's. */
 static void materialize(Value *v) {
+    if (v->kind == V_LAZY) switch (v->lazy) {   /* a set TLC keeps: its parts */
+    case L_UNION: v = union_sets(v); break;
+    case L_CUP: case L_CAP: case L_DIFF: case L_FCNSET: materialize(v->u.l.b); /* fall through */
+    case L_SUBSET: materialize(v->u.l.a); return;
+    case L_TIMES: case L_RCDSET: for (int i = 0; i < v->n; i++) materialize(v->u.l.names[v->n + i]); return;
+    }
     if (v->kind == V_SET) for (int i = 0; i < v->n; i++) materialize(v->u.set.elems[i]);
     if (!is_fcn(v)) return;
     if (v->made >= MADE_LAMBDA) v->made = MADE_PLAIN;
     for (int i = 0; i < v->n; i++) materialize(v->u.fcn.vals[i]);
 }
 
+/* v, made in another arena, as a value of this one; NULL past *budget
+   values, or if it holds what keeps its context: an operator, a lazy
+   function or a filter. A set keeps its sets, not what it cached. */
+static Value **copy_values(Value **vs, int n, long *budget);
+
+static Value *copy_value(Value *v, long *budget) {
+    if (v->kind == V_BOOL || v->kind == V_STR) return v;
+    if (--*budget < 0) return NULL;
+    Value *c = NEW(Value);
+    *c = *v;
+    switch (v->kind) {
+    case V_INT: case V_MODEL: case V_INTERVAL: return c;
+    case V_SET:
+        if (!(c->u.set.elems = copy_values(v->u.set.elems, v->n, budget))) return NULL;
+        if (v->u.set.product && !(c->u.set.product = copy_value(v->u.set.product, budget))) return NULL;
+        return c;
+    case V_TUPLE: case V_FCN:
+        if (v->kind == V_FCN && !(c->u.fcn.keys = copy_values(v->u.fcn.keys, v->n, budget))) return NULL;
+        return (c->u.fcn.vals = copy_values(v->u.fcn.vals, v->n, budget)) ? c : NULL;
+    case V_LAZY:
+        c->perm = 1;
+        c->u.l.b = c->u.l.set = NULL;   /* what it kept */
+        switch (v->lazy) {
+        case L_NAT: case L_INT: case L_STRING: case L_ANY: return c;
+        case L_TIMES: case L_RCDSET: return (c->u.l.names = copy_values(v->u.l.names, 2 * v->n, budget)) ? c : NULL;
+        case L_CUP: case L_CAP: case L_DIFF: case L_FCNSET: if (!(c->u.l.b = copy_value(v->u.l.b, budget))) return NULL; break;
+        case L_UNION: case L_SEQ: case L_SUBSET: break;
+        default: return NULL;
+        }
+        return (c->u.l.a = copy_value(v->u.l.a, budget)) ? c : NULL;
+    default: return NULL;
+    }
+}
+
+/* An array of values, any of them NULL, copied. */
+static Value **copy_values(Value **vs, int n, long *budget) {
+    Value **c = alloc_raw(sizeof(Value *) * (size_t)n);
+    for (int i = 0; i < n; i++)
+        if (!(c[i] = vs[i] ? copy_value(vs[i], budget) : NULL) && vs[i]) return NULL;
+    return c;
+}
+
 /* ENABLED marks the instance chain where it is evaluated. As in TLC, a
    variable reached from there is not substituted (§6.9). */
 static Def enabled_mark;
+
+static Value *def_value(Def *d);
 
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
@@ -5669,20 +5924,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     while (in && in->def == &enabled_mark) in = in->parent;
     if (n == 0 && !in) {   /* a definition of the spec, computed once if constant */
         if (d->cache) return d->cache;
-        if (def_level(d) == 0 && !keep_lazy && !d->uncached) {
-            Arena *saved = arena;
-            arena = &perm_arena;
-            sigjmp_buf *outer = handler, here;
-            handler = &here;
-            if (sigsetjmp(here, 0)) { handler = outer; arena = saved; raise_error(); }
-            Ctx bare = {NULL, NULL};
-            Value *v = eval(d->body, bare);
-            handler = outer;
-            arena = saved;
-            materialize(v);
-            d->cache = v;
-            return v;
-        }
+        if (def_level(d) == 0 && !keep_lazy && !d->uncached) return d->cache = def_value(d);
     }
     Env *env = NULL;
     for (int i = 0; i < n; i++) {
@@ -5915,6 +6157,7 @@ static Value *printable(Value *v) {
 }
 
 static FILE *user_file;   /* where Print writes, -userFile; NULL for standard output */
+static int reprinting;    /* a constant computed again, which has printed */
 
 NATIVE(n_print) {
     UNUSED;
@@ -5922,7 +6165,7 @@ NATIVE(n_print) {
     if (in_worker) worker_cannot();   /* the search prints in order */
     FILE *out = user_file ? user_file : stdout;
     print_normal = 1;
-    fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1]));
+    if (!reprinting) fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1]));
     print_normal = 0;
     fflush(out);
     return a[1];
@@ -5933,7 +6176,7 @@ NATIVE(n_printt) {
     if (in_worker) worker_cannot();
     FILE *out = user_file ? user_file : stdout;
     print_normal = 1;
-    fprintf(out, "%s\n", pretty(printable(a[0])));
+    if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0])));
     print_normal = 0;
     fflush(out);
     return TRUEV;
@@ -6395,12 +6638,12 @@ typedef struct {
     Arena *arena;
     Value **cur_state, **next_state, **gen_target, *at_value;
     int (*gen_emit)(void);
-    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth;
+    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions;
 } EvalState;
 
 static EvalState eval_save(void) {
     return (EvalState){handler, arena, cur_state, next_state, gen_target, at_value, gen_emit,
-                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth};
+                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions};
 }
 
 static void eval_restore(EvalState s) {
@@ -6409,6 +6652,7 @@ static void eval_restore(EvalState s) {
     gen_emit = s.gen_emit;
     primed = s.primed; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
     java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
+    nregions = s.nregions;
 }
 
 /* The error being reported, which an evaluation whose own error is
@@ -6465,6 +6709,19 @@ static void print_lambda(Buf *b, Value *f) {
     buf_puts(b, " |-> <expression ");
     node_text(b, f->u.l.binder ? f->u.l.binder->body : f->u.l.expr->args[0]);
     buf_puts(b, ">]");
+}
+
+/* A filter of a set TLC cannot enumerate, as it prints one: a tuple of
+   names without its brackets. */
+static void print_filter(Buf *b, Value *s) {
+    Bound *bound = &s->u.l.expr->bounds[0];
+    buf_puts(b, "{");
+    for (int j = 0; j < bound->n; j++) buf_printf(b, "%s%s", j ? ", " : "", S(bound->names[j]));
+    buf_puts(b, " \\in ");
+    print_value(b, s->u.l.a);
+    buf_puts(b, " : <expression ");
+    node_text(b, s->u.l.expr->args[0]);
+    buf_puts(b, "> }");
 }
 
 /* Binds the bounds bs over dom (as bounds_domain makes it) to the
@@ -6766,7 +7023,8 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         if (var >= 0 && !gen_target[var]) {
             Value *s = eval(e->args[1], c);
             if (!is_set(s)) fail_at(e, "Attempted to check if a value is an element of the non-set:\n%s", pretty(s));
-            if (set_is_infinite(s)) fail_at(e->args[1], "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+            /* TLC enumerates any set it can, failing there for an infinite one. */
+            if (user_set(s)) fail_at(e, "In computing %s states, the right side of \\IN is not enumerable.", gen_init ? "initial" : "next");
             if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
                 Value *base = filter_base(s);
                 for (int i = 0; i < base->n; i++)
@@ -7001,7 +7259,7 @@ static uint64_t value_hash(Value *v) {
         return fmix(sum ^ (0x05 | n << 8));
     }
     case V_SET: case V_LAZY: {
-        if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
+        if (user_set(v)) fail("TLC has found a state in which the value of a variable contains %s", pretty(v));
         Value *set = enumerate(union_cache(v));
         if (!(sum = set->u.set.hash)) {
             fp_enter(set->u.set.source);
@@ -8120,7 +8378,8 @@ static Claim *claim(uint64_t fp, int make, int *made) {
 
 /* Checks the invariants of the successor a worker claimed and keeps its encoding. */
 static void settle(Claim *c) {
-    sigjmp_buf here, *saved = handler;
+    EvalState s = eval_save();
+    sigjmp_buf here;
     handler = &here;
     int ok = 0;
     if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0) {
@@ -8128,7 +8387,7 @@ static void settle(Claim *c) {
         for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
         ok = w_encoded + w_bytes.n <= encodings_size;   /* else the search keeps it */
     }
-    handler = saved;
+    eval_restore(s);
     if (ok) {
         memcpy(encodings[w_id] + w_encoded, w_bytes.s, w_bytes.n);
         c->loc = (uint64_t)w_id << 40 | w_encoded;
@@ -9289,6 +9548,39 @@ static void use_property(Expr *p) {
     free(parts);
 }
 
+/* The value of a constant definition, normalized, which TLC computes once.
+   What computing it made is dropped once the value is copied out; a value
+   holding its context, as a lazy function does, is computed again where it
+   is kept, with the same draws, printing nothing again. After an error it
+   is kept: it may be named. */
+static Value *def_body(Def *d) { return d->kind == D_FCN ? fcndef_value(d, (Ctx){NULL, NULL}) : eval(d->body, (Ctx){NULL, NULL}); }
+
+static Value *def_value(Def *d) {
+    Arena *saved = arena, made = {0};
+    JRandom draw = *drawing;
+    int due = draw_due, loops = nregions, quiet = reprinting;
+    sigjmp_buf *outer = handler, here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; nregions = loops; reprinting = quiet; raise_error(); }
+    arena = &made;
+    Value *v = def_body(d);
+    materialize(v);
+    arena = &perm_arena;
+    long budget = (long)(arena_bytes(&made) / sizeof(Value));
+    Value *c = copy_value(v, &budget);
+    arena_free(&made);
+    if (!c) {
+        *drawing = draw;
+        draw_due = due;
+        reprinting = 1;
+        materialize(c = def_body(d));
+        reprinting = quiet;
+    }
+    handler = outer;
+    arena = saved;
+    return c;
+}
+
 /* TLC evaluates the constant definitions of each module at startup, in
    the order SANY finishes the modules (a module after those it uses): a
    constant replaced by a definition must evaluate as a constant, and every
@@ -9322,10 +9614,7 @@ static void evaluate_constants(Module *m) {
         sigjmp_buf here;
         handler = &here;
         if (d->kind == D_FCN && !d->self && d->local != 2 && d->level == 0 && !sigsetjmp(here, 0)) {
-            /* TLC keeps a function definition computed in full, if it can be */
-            Value *v = fcndef_value(d, (Ctx){NULL, NULL});
-            materialize(v);
-            d->cache = v;
+            d->cache = def_value(d);   /* TLC keeps a function definition computed in full, if it can be */
         }
         if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0) {
             if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
@@ -9341,10 +9630,12 @@ static void check_assumptions(Module *m, int *done_status) {
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         if (u->kind != 2) continue;
+        Arena *saved = arena, made = {0};   /* dropped after, as the value is a Boolean's */
         sigjmp_buf here;
         handler = &here;
         if (sigsetjmp(here, 0)) {
             handler = NULL;
+            arena = saved;
             Buf b = {0};
             loc_text(&b, u->expr);
             printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
@@ -9357,9 +9648,13 @@ static void check_assumptions(Module *m, int *done_status) {
             *done_status = TPP_VIOLATION_ASSUMPTION;
             return;
         }
+        arena = &made;
         Value *v = eval(u->expr, root_ctx);
+        arena = saved;
         handler = NULL;
-        if (v->kind != V_BOOL || !v->u.i) {
+        int holds = v->kind == V_BOOL && v->u.i;
+        arena_free(&made);
+        if (!holds) {
             Buf b = {0};
             loc_text(&b, u->expr);
             printf("Error: Assumption %s is false.\n", b.s);

@@ -25,12 +25,28 @@ for it as its notes.
 - Under symmetry, a successor's fingerprint reuses the permuted hashes of
   the values it shares with the state before it (symmetry bench and
   MultiPaxos_MC_small 5% faster).
+- A product, `SUBSET`, set of functions or set of records written with
+  constants and literals alone is computed once in the search, and keeps
+  its elements once enumerated (GameOfLife 6.1 → 3.1 s).
+- Computing a constant definition or an assumption keeps only its value:
+  what each iteration of a quantifier made is dropped after it, unless a
+  value made before took a part of it (MCReachabilityTestAllGraphs: 5 GB
+  → 3 MB, 1.29 → 1.0 s). The functions of an enumerated `[D -> R]` share
+  their domain.
 - Fixed: `ENABLED` computed the spec's constant definitions again instead
   of using their value, so one drawn with `RandomElement` could differ
   inside it (SpanTreeRandom reported a false violation of `Safety`).
 - Comparing a set with a set that cannot be enumerated, as sorting
   `UNION {Nat, {-1}}` does, reports TLC's "Attempted to compare the set"
   error.
+- Errors name the sets TLC names in its fingerprint stack trace. A value
+  computed from a constant definition before the search names none, while
+  a definition TLC cannot normalize then is computed again where it is
+  used, and named. An infinite set on the right of `\in` in an action
+  gives TLC's "not enumerable" report.
+- A state holding an infinite set gives TLC's error: the one enumerating
+  the set fails with, or that the state contains `Nat`, `STRING` or
+  `Seq(S)`, and a filter of it prints as TLC prints it.
 
 ## 0.4.0
 

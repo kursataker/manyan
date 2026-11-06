@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: util.Assert$TLCRuntimeException: TLC has found a state in which the value of a variable contains Nat
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0) line 6, col 14 to line 6, col 18 of module state_holds_nat
+
+Reason:
+TLC has found a state in which the value of a variable contains Nat
+2 states generated, 1 distinct states found, 0 states left on queue.
+exit 75

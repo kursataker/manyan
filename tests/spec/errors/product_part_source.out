@@ -1,0 +1,14 @@
+Error: Attempted to compare overridden value Nat with non-overridden value:
+{1}
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+2) line 6, col 28 to line 6, col 37 of module product_part_source
+1) line 6, col 22 to line 6, col 37 of module product_part_source
+0) line 6, col 15 to line 6, col 37 of module product_part_source
+
+Reason:
+Attempted to compare overridden value Nat with non-overridden value:
+{1}
+0 states generated, 0 distinct states found, 0 states left on queue.
+exit 75
