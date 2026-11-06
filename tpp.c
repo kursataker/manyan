@@ -5820,24 +5820,28 @@ static Value *printable(Value *v) {
     return v;
 }
 
+static FILE *user_file;   /* where Print writes, -userFile; NULL for standard output */
+
 NATIVE(n_print) {
     UNUSED;
     printable(a[0]), printable(a[1]);
     if (in_worker) worker_cannot();   /* the search prints in order */
+    FILE *out = user_file ? user_file : stdout;
     print_normal = 1;
-    printf("%s  %s\n", pretty(a[0]), pretty(a[1]));
+    fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1]));
     print_normal = 0;
-    fflush(stdout);
+    fflush(out);
     return a[1];
 }
 
 NATIVE(n_printt) {
     UNUSED;
     if (in_worker) worker_cannot();
+    FILE *out = user_file ? user_file : stdout;
     print_normal = 1;
-    printf("%s\n", pretty(printable(a[0])));
+    fprintf(out, "%s\n", pretty(printable(a[0])));
     print_normal = 0;
-    fflush(stdout);
+    fflush(out);
     return TRUEV;
 }
 
@@ -7358,6 +7362,19 @@ static void fprint_state(FILE *f, Value **st) {
 
 static void print_state(Value **st) { fprint_state(stdout, st); }
 
+static int view_trace;   /* -view */
+
+/* With -view, a reported state as its view's value: returns whether it
+   printed it. */
+static int print_shown(Value **st) {
+    if (!view_trace || !view_expr) return 0;
+    Value **saved = cur_state;
+    cur_state = st;
+    printf("%s\n", pretty(eval(view_expr, root_ctx)));
+    cur_state = saved;
+    return 1;
+}
+
 static void action_label(int action) {
     if (action < 0) { printf("<Initial predicate>"); return; }
     Action *a = &actions[action];
@@ -7481,6 +7498,7 @@ static void print_numbered(int number, int action, Value **st, Value **prev) {
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
+    if (print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
     if (diff_trace && prev) {
         for (int i = 0; i < nvars; i++)
             if (!unchanged(prev[i], st[i]))
@@ -7693,14 +7711,14 @@ static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
-        print_state(st);
+        if (!print_shown(st)) print_state(st);
         if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
         printf("\n");
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
-        print_state(st);
+        if (!print_shown(st)) print_state(st);
         return TPP_VIOLATION_LIVENESS;
     }
     return 0;
@@ -10659,7 +10677,14 @@ int tpp_check(const TPPOptions *o) {
     check_deadlock = o->check_deadlock;
     nowarning = o->nowarning;
     diff_trace = o->difftrace;
+    view_trace = o->view;
     keep_going = o->keep_going;
+    if (user_file) fclose(user_file);   /* each write is flushed: a run may end anywhere */
+    user_file = NULL;
+    if (o->user_file && !(user_file = fopen(o->user_file, "w"))) {
+        fprintf(stderr, "tpp: cannot write %s\n", o->user_file);
+        return TPP_ERROR;
+    }
 
     root = parse_text(text, path);
     char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
@@ -10788,7 +10813,11 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
         else if (strcmp(argv[i], "-difftrace") == 0) o.difftrace = 1;
         else if (strcmp(argv[i], "-continue") == 0) o.keep_going = 1;
-        else if (strcmp(argv[i], "-metadir") == 0 && i + 1 < argc) i++;    /* TLC's; tpp writes no metadata */
+        else if (strcmp(argv[i], "-view") == 0) o.view = 1;
+        else if (strcmp(argv[i], "-userFile") == 0 && i + 1 < argc) o.user_file = argv[++i];
+        /* TLC's, for its own files and fingerprints: tpp has neither */
+        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits")) && i + 1 < argc) i++;
+        else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}
         else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
         else o.spec = argv[i];
     }

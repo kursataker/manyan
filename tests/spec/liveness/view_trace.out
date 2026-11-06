@@ -1,0 +1,17 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+[p |-> 0, q |-> 0]
+State 2: <A line 7, col 6 to line 7, col 39 of module view_trace>
+[p |-> 1, q |-> 0]
+State 3: <A line 7, col 6 to line 7, col 39 of module view_trace>
+[p |-> 2, q |-> 0]
+State 4: <B line 8, col 6 to line 8, col 39 of module view_trace>
+[p |-> 2, q |-> 1]
+Back to state 3: <B line 8, col 6 to line 8, col 39 of module view_trace>
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+exit 13

@@ -1,0 +1,9 @@
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+<<0, "v">>
+State 2: <Next line 8, col 9 to line 8, col 41 of module view_trace>
+<<1, "v">>
+State 3: <Next line 8, col 9 to line 8, col 41 of module view_trace>
+<<2, "v">>
+exit 12

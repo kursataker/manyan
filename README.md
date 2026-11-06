@@ -86,11 +86,14 @@ exit statuses and the C API.
 - Checking: assumptions, invariants, action properties, deadlock, and
   temporal properties under weak and strong fairness, with TLC's
   counterexamples; random simulation (`-simulate`), drawing the same
-  behaviors as TLC for a seed, and writing them to files (`file=`).
+  behaviors as TLC for a seed, and writing them to files (`file=`);
+  TLC's `-continue`, `-difftrace`, `-view`, `-userFile` and `-dump dot`.
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
 
-Not yet supported: generation mode, checkpoints, distributed checking. Real numbers and `\AA`/`\EE`
+Not yet supported: TLC's `-terse`, `-maxSetSize`, `-dfid`, `-coverage`,
+`-tool` and `-generateSpecTE`, checkpoints, distributed checking (see
+the [manual](docs/manual.md#limitations)). Real numbers and `\AA`/`\EE`
 give TLC's errors, as TLC cannot check them either. The proof language is
 parsed and skipped.
 
@@ -100,7 +103,7 @@ parsed and skipped.
 with TLC 2.19 as the oracle for every choice the language leaves open.
 The tests follow it:
 
-- `tests/spec`: over 200 models, each with TLC's output and exit status.
+- `tests/spec`: over 500 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test
   can't drift from what TLC does. `tests/spec/tlc` holds models imported
   from TLC's own test suite.

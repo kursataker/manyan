@@ -6,6 +6,11 @@ for it as its notes.
 
 ## 0.3.0
 
+- TLC's `-fp`, `-fpmem`, `-fpbits`, `-gzip` and `-cleanup` are accepted
+  and ignored, as `-metadir` is.
+- `-view` prints each state an error reports as the `VIEW`'s value, and
+  `-userFile FILE` writes `Print`'s output to FILE, as in TLC;
+  `TPPOptions.view` and `.user_file` in the C API.
 - `-continue` goes on after a violated invariant or action property,
   reporting each as TLC does; `TPPOptions.keep_going` in the C API.
 - `-difftrace` prints each state of a trace after the first as the

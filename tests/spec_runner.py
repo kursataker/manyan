@@ -62,7 +62,8 @@ def normalize(output, directory):
 
 
 def dumped(directory):
-    """The dot files in directory, each state's fingerprint replaced by its number."""
+    """The files a run wrote in directory: dot files, each state's fingerprint
+    replaced by its number, behaviors, and user output."""
     text = ""
     for dot in sorted(directory.glob("*.dot")):
         ids = {}
@@ -71,8 +72,8 @@ def dumped(directory):
         for line in dot.read_text().splitlines():
             pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
             text += re.sub(pattern, number, line) + "\n"
-    for behavior in sorted(directory.glob("*_0_*")):   # -simulate file=
-        text += f"--- {behavior.name}\n" + behavior.read_text()
+    for written in sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -simulate file=, -userFile
+        text += f"--- {written.name}\n" + written.read_text()
     return text
 
 

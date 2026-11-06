@@ -46,8 +46,10 @@ built in.
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
+| `-view` | print each state an error reports as the value of the configuration's `VIEW`, as TLC does |
+| `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
-| `-metadir DIR` | accepted for TLC's command lines, and ignored: tpp writes no metadata |
+| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: tpp writes no metadata and has its own fingerprints |
 
 A run prints TLC's report on standard output: the initial states, then
 either `Model checking completed. No error has been found.` or the first
@@ -182,8 +184,11 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 
 ## Limitations
 
-Not supported: the proof language (parsed and skipped), TLC's generation
-mode (`-generate`), checkpoints and distributed checking. In a simulation
+Not supported: the proof language (parsed and skipped); TLC 2.19's
+`-terse`, `-maxSetSize` (tpp does not bound the sets it builds, where TLC
+fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
+`-generateSpecTE`, checkpoints (`-checkpoint`, `-recover`) and
+distributed checking. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
 may come between the states; tpp stops at the error. There a temporal
