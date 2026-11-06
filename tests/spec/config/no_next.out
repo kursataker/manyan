@@ -1,0 +1,3 @@
+Finished computing initial states: 2 distinct states generated.
+Error: No next state actions defined to generate successor states from.
+exit 75

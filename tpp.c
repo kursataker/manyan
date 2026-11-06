@@ -7296,6 +7296,10 @@ static int search(void) {
     else
         printf("Finished computing initial states: %ld states generated, with %d of them distinct.\n", generated, nstates);
     fflush(stdout);
+    if (!next_expr) {
+        printf("Error: No next state actions defined to generate successor states from.\n");
+        return TPP_FAILURE_EVAL;
+    }
     gen_init = 0;
     gen_emit = next_emit;
     for (int lo = 0; lo < nstates;) {
@@ -7939,6 +7943,7 @@ static void use_property(Expr *p) {
             name = intern(b.s);
             free(b.s);
         }
+        if (expr_level(e) == 2) config_error("The property %s is not correctly defined.", S(name));   /* an action, not under [] */
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
             if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), name); continue; }
@@ -9151,7 +9156,9 @@ int tpp_check(const TPPOptions *o) {
         print_counts(0, 1);
         return TPP_OK;
     }
-    if (!next_expr) config_error("The configuration file did not specify the next state predicate.");
+    /* With nothing to check on steps, TLC computes the initial states first. */
+    if (!next_expr && (ninvariants || naction_props || ntemporal_props || o->simulate))
+        config_error("The configuration file did not specify the next state predicate.");
     arena = &perm_arena;
     sigjmp_buf here;
     handler = &here;
@@ -9160,7 +9167,7 @@ int tpp_check(const TPPOptions *o) {
         print_error_message();
         return TPP_FAILURE_EVAL;
     }
-    split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Next"));
+    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Next"));
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
