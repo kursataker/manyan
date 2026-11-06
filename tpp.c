@@ -8741,23 +8741,49 @@ static void use_specification(Expr *spec) {
     free(init);
 }
 
-/* A property: []P as an invariant, [][A]_v as an action property, the
-   rest checked on the state graph (§10.5). A part of several is named, as
-   TLC names it, by its location. */
-static void use_property(Expr *p) {
-    Def *d = p->def;
-    Expr **parts = NULL;
-    int n = 0;
-    conjuncts(d->body, p->kind == K_INSTCALL ? p : NULL, &parts, &n, 0);
-    for (int i = 0; i < n; i += 2) {
-        Expr *e = parts[i], *call = parts[i + 1];
-        int name = d->name;
-        if (n > 2) {
+/* The parts of a property, named as TLC names them: a conjunct by its
+   location, unless it calls a definition, or is []P of one, named by
+   that definition. */
+typedef struct { Expr *e, *call; int name; } Part;
+static void property_parts(Expr *e, Expr *call, int name, Part **out, int *n) {
+    if (e->kind == K_CALL && e->n == 0 && eval_depth < 5000) {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;
+        if (d->kind == D_OP && !d->native && !d->nparams) {
+            eval_depth++;
+            property_parts(d->body, call, e->def->name, out, n);
+            eval_depth--;
+            return;
+        }
+    }
+    if (e->kind == K_AND) {
+        for (int i = 0; i < e->n; i++) {
             Buf b = {0};
-            loc_text(&b, e);
-            name = intern(b.s);
+            loc_text(&b, e->args[i]);
+            property_parts(e->args[i], call, intern(b.s), out, n);
             free(b.s);
         }
+        return;
+    }
+    if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        int plain = 1;
+        for (int i = 0; i < e->ndefs; i++) plain &= e->defs[i]->nparams == 0;
+        if (plain) { property_parts(e->def->body, e, name, out, n); return; }
+    }
+    if (e->kind == K_ALWAYS && e->args[0]->kind == K_CALL && e->args[0]->n == 0) name = e->args[0]->def->name;
+    *out = xrealloc(*out, sizeof(Part) * (size_t)(*n + 1));
+    (*out)[(*n)++] = (Part){e, call, name};
+}
+
+/* A property: []P as an invariant, [][A]_v as an action property, the
+   rest checked on the state graph (§10.5). */
+static void use_property(Expr *p) {
+    Def *d = p->def;
+    Part *parts = NULL;
+    int n = 0;
+    property_parts(p->kind == K_INSTCALL ? d->body : p, p->kind == K_INSTCALL ? p : NULL, d->name, &parts, &n);
+    for (int i = 0; i < n; i++) {
+        Expr *e = parts[i].e, *call = parts[i].call;
+        int name = parts[i].name;
         if (expr_level(e) <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), name); continue; }
         if (expr_level(e) == 2) config_error("The property %s is not correctly defined.", S(name));   /* an action, not under [] */
         if (e->kind == K_ALWAYS) {

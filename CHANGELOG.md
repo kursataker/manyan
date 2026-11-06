@@ -190,6 +190,8 @@ for it as its notes.
   through tuples, definitions, their arguments and instances.
 - A subscript may be a set, record or function expression, as SANY
   parses it: `[A]_[a |-> x]` was a parse error.
+- A part of a property is named as TLC names it: by the definition it
+  calls, as `Init2` in `P == Init2 /\ [][A]_v`, or else by its location.
 
 ## 0.2.0
 
