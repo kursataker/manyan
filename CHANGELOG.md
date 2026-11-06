@@ -28,6 +28,9 @@ for it as its notes.
 - A product, `SUBSET`, set of functions or set of records written with
   constants and literals alone is computed once in the search, and keeps
   its elements once enumerated (GameOfLife 6.1 → 3.1 s).
+- Membership in a product of intervals checks each part instead of
+  searching its elements, and applying a function compares atom keys
+  inline (GameOfLife 3.0 → 2.8 s, PaxosCommit 3% faster).
 - Computing a constant definition or an assumption keeps only its value:
   what each iteration of a quantifier made is dropped after it, unless a
   value made before took a part of it (MCReachabilityTestAllGraphs: 5 GB
