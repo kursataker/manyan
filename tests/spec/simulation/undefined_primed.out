@@ -1,0 +1,6 @@
+Error: In evaluation, the identifier x is either undefined or not an operator.
+line 7, col 14 to line 7, col 14 of module undefined_primed
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+exit 151

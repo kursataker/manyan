@@ -1,0 +1,12 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = <<2, 1>>
+
+State 2: <Next line 7, col 28 to line 7, col 47 of module exists_order>
+x = <<4, 2>>
+
+7 states generated, 7 distinct states found, 5 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

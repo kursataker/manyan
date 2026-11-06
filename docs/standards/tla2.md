@@ -310,7 +310,10 @@ stop at the first operand that decides the result; so do `=>` and junction
 lists. An operand that is not a Boolean is an error.
 
 `\A x \in S : p` and `\E x \in S : p` over a finite `S`; several bounds
-`\A x, y \in S, z \in T : p`; tuple binders `\E <<x, y>> \in S \X T : p`.
+`\A x, y \in S, z \in T : p`; tuple binders `\E <<x, y>> \in S \X T : p`. The bound sets are computed
+first; the bindings follow in the order of §7.4 with the first variable
+varying fastest, which decides an action's successors and initial states
+in order (§10).
 Unbounded `\A x : p` and `\E x : p` are errors to evaluate.
 `CHOOSE x \in S : p` is the first element of `S`, in the order of §7.4, that
 satisfies `p`; none is an error. `CHOOSE x : p` is evaluable only as
@@ -634,8 +637,11 @@ the same state adds none. Which lasso is reported is not specified.
 A violation prints the behavior up to the bad state, each state labeled
 with the first action that yields it and steps that change nothing left
 out. An evaluation error, and a successor that leaves a variable
-unassigned, print TLC's unexpected-exception report. The state counts of
-a simulation are unspecified (§11.1).
+unassigned, print TLC's unexpected-exception report, but for an error TLC
+raises as a `TLCRuntimeException`, one with a preamble of §11.3 or an
+undefined primed variable: that prints as `Error:` and its message, then
+the behavior, and exits with status 255 or 151. The state counts of a
+simulation are unspecified (§11.1).
 
 ## 11 Output
 

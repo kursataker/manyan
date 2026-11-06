@@ -204,7 +204,10 @@ static sigjmp_buf *handler;
 static Buf error_message;
 static Expr *error_expr;   /* the expression an evaluation error names, if any */
 static int error_status;   /* the exit status the error implies */
-static int error_module;   /* raised by a standard module's operator: TLC's EvalException */
+/* What TLC raises the error as: 0, its evaluator's RuntimeException; 1, an
+   EvalException of a standard module's operator; 2, a TLCRuntimeException,
+   with the exit status of its error code. */
+static int error_module;
 /* The Java methods of the standard operators being applied, innermost last.
    TLC wraps any error inside one, but an EvalException, in a preamble. */
 static const char *java_frames[64];
@@ -232,7 +235,7 @@ static _Noreturn void raise_error(void) {
 
 static void loc_line(Buf *b, Expr *e);
 
-static _Noreturn void vfail(Expr *e, int module, const char *fmt, va_list ap) {
+static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va_list ap) {
     char small[1024];
     vsnprintf(small, sizeof small, fmt, ap);
     error_reset();
@@ -243,27 +246,35 @@ static _Noreturn void vfail(Expr *e, int module, const char *fmt, va_list ap) {
         buf_puts(&error_message, small);
         loc_line(&error_message, e);
         e = NULL;
-        module = 1;
+        module = 2;
     } else {
         buf_puts(&error_message, small);
     }
     java_depth = 0;   /* errors are caught outside every standard operator */
     error_expr = e;
     error_module = module;
+    error_status = status;
     raise_error();
 }
 
 static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfail(e, 0, fmt, ap);
+    vfail(e, 0, TPP_ERROR, fmt, ap);
+}
+
+/* An error TLC raises as a TLCRuntimeException, which exits with status. */
+static _Noreturn void fail_runtime(Expr *e, int status, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfail(e, 2, status, fmt, ap);
 }
 
 /* An error in an operator of a standard module, which TLC implements in Java. */
 static _Noreturn void fail_module(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfail(NULL, 1, fmt, ap);
+    vfail(NULL, 1, TPP_ERROR, fmt, ap);
 }
 
 #define fail(...) fail_at(NULL, __VA_ARGS__)
@@ -4306,11 +4317,11 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
         if (primed || gen_init) moving_reads++;
         if (primed) {
             if (!next_state || !next_state[d->var_index])
-                fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+                fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
             return next_state[d->var_index];
         }
         if (!cur_state || !cur_state[d->var_index])
-            fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+            fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return cur_state[d->var_index];
     }
     if (d->replacement) return call_def(d->replacement, NULL, 0, (Ctx){NULL, NULL}, where);
@@ -4318,12 +4329,9 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     return d->value;
 }
 
-/* Bindings of `x \in S, <<a, b>> \in T`: calls fn for each, in order,
-   until it returns nonzero. */
+/* Bindings of `x \in S, <<a, b>> \in T`: calls fn for each, in TLC's
+   order, until it returns nonzero. */
 typedef int (*BindFn)(Ctx c, void *data);
-
-/* Iterates the product of bindings with an explicit stack. */
-typedef struct { Value *set; int index; } BindLevel;
 
 /* The set a bound ranges over, enumerated. */
 static Value *bound_set(Bound *b, Ctx c) {
@@ -4333,9 +4341,11 @@ static Value *bound_set(Bound *b, Ctx c) {
     return enumerate(s);
 }
 
+/* As TLC, the sets are enumerated first, and the first variable varies
+   fastest. */
 static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
     if (nb == 1 && bs[0].n == 1 && !bs[0].tuple) {
-        /* x \in S, the common case, without the stack. */
+        /* x \in S, the common case. */
         Value *s = bound_set(&bs[0], c);
         for (int i = 0; i < s->n; i++)
             if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
@@ -4343,50 +4353,32 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
     }
     int total = bounds_total(bs, nb);
     if (total == 0) return fn(c, data);
-    BindLevel *lv = NEWN(BindLevel, total);
     Bound **owner = NEWN(Bound *, total);
-    int *slot = NEWN(int, total);
+    Value **sets = NEWN(Value *, total);
+    int *slot = NEWN(int, total), *index = NEWN(int, total);
     int k = 0;
     for (int i = 0; i < nb; i++) {
-        int count = bs[i].tuple ? 1 : bs[i].n;
-        for (int j = 0; j < count; j++) { owner[k] = &bs[i]; slot[k] = j; k++; }
+        Value *s = bound_set(&bs[i], c);
+        for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) {
+            owner[k] = &bs[i]; slot[k] = j; sets[k] = s; index[k] = 0;
+            if (!s->n) return 0;
+            k++;
+        }
     }
-    Env **envs = NEWN(Env *, total + 1);
-    envs[0] = c.env;
-    int depth = 0, result = 0;
-    lv[0].set = NULL;
-    while (depth >= 0) {
-        Bound *b = owner[depth];
-        if (!lv[depth].set) {
-            lv[depth].set = bound_set(b, (Ctx){envs[depth], c.inst});
-            lv[depth].index = 0;
-        }
-        if (lv[depth].index >= lv[depth].set->n) {
-            lv[depth].set = NULL;
-            depth--;
-            if (depth >= 0) lv[depth].index++;
-            continue;
-        }
-        Value *v = lv[depth].set->u.set.elems[lv[depth].index];
-        Env *env = envs[depth];
-        if (b->tuple) {
+    for (;;) {
+        Env *env = c.env;
+        for (k = 0; k < total; k++) {
+            Bound *b = owner[k];
+            Value *v = sets[k]->u.set.elems[index[k]];
+            if (!b->tuple) { env = mk_binding(b->defs[slot[k]], v, env); continue; }
             if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != b->n)
                 fail("A tuple pattern <<...>> \\in S was matched with %s.", pretty(v));
             for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], v->u.fcn.vals[j], env);
-        } else {
-            env = mk_binding(b->defs[slot[depth]], v, env);
         }
-        envs[depth + 1] = env;
-        if (depth + 1 == total) {
-            Ctx inner = {env, c.inst};
-            if (fn(inner, data)) { result = 1; break; }
-            lv[depth].index++;
-        } else {
-            depth++;
-            lv[depth].set = NULL;
-        }
+        if (fn((Ctx){env, c.inst}, data)) return 1;
+        for (k = 0; k < total && ++index[k] == sets[k]->n; k++) index[k] = 0;
+        if (k == total) return 0;
     }
-    return result;
 }
 
 typedef struct { Expr *body; int value; Expr *where; } QuantData;
@@ -4842,8 +4834,10 @@ static __attribute__((noinline)) Value *ev_map(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
     QuantData q = {e->args[0], e->kind == X_FORALL, e};
+    const char *op = e->kind == X_FORALL ? "\\A" : "\\E";
     for (int i = 0; i < e->nb; i++)
-        if (!e->bounds[i].set) fail_at(e, "TLC cannot handle an unbounded quantifier.");
+        if (!e->bounds[i].set)
+            fail_at(e, "TLC attempted to evaluate an unbounded %s.\nMake sure that the expression is of form %s x \\in S: P(x).", op, op);
     for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
     return BOOLV(q.value);
 }
@@ -7150,7 +7144,7 @@ static int search(void) {
         }
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
-        if (status == TPP_FAILURE_EVAL && !error_module)
+        if (status == TPP_FAILURE_EVAL && error_module != 1)
             printf("Error: TLC threw an unexpected exception.\n"
                    "This was probably caused by an error in the spec or model.\n"
                    "See the User Output or TLC Console for clues to what happened.\n"
@@ -7163,7 +7157,7 @@ static int search(void) {
         replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded, 0);
-        if (status == TPP_FAILURE_EVAL && error_module) status = TPP_ERROR;
+        if (status == TPP_FAILURE_EVAL && error_module == 1) status = TPP_ERROR;
         return status;
     }
     gen_target = succ;
@@ -7315,7 +7309,14 @@ static int sim_print(States *trace) {
     return 1;
 }
 
+/* TLC's simulator reports a TLCRuntimeException plainly, any other as
+   unexpected. */
 static void sim_exception(void) {
+    if (error_module == 2) {
+        printf("Error: ");
+        print_error_text();
+        return;
+    }
     printf("Error: TLC threw an unexpected exception.\n"
            "This was probably caused by an error in the spec or model.\n"
            "See the User Output or TLC Console for clues to what happened.\n"
@@ -7393,11 +7394,12 @@ static int simulate(const TPPOptions *o) {
             return TPP_FAILURE_SAFETY_EVAL;
         }
         sim_exception();
+        int status = error_module == 2 ? error_status : TPP_ERROR;
         if (trace.n) {
             error_check = NULL;
             sim_print(&trace);
         }
-        return TPP_ERROR;
+        return status;
     }
     static Arena init_arena;     /* the initial states, kept for good */
     arena = &init_arena;
@@ -7853,8 +7855,8 @@ static void evaluate_constants(Module *m) {
             Buf b = {0};
             node_text(&b, error_expr);
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
-                         S(c->replacement->name), error_module ? "" : " - specifically: ",
-                         error_module ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? b.s : "");
+                         S(c->replacement->name), error_module == 1 ? "" : " - specifically: ",
+                         error_module == 1 ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? b.s : "");
         }
         call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
         handler = NULL;
