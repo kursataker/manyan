@@ -7398,10 +7398,13 @@ static int replay_emit(void) {
     return 0;
 }
 
-static int replay(Value **from, Value **to) {
+/* The step from `from`, at level `level` (Init's 0 if from is NULL), to `to`. */
+static int replay(Value **from, Value **to, int64_t level) {
     Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
     int (*saved_emit)(void) = gen_emit;
     int saved_init = gen_init;
+    int64_t saved_level = cur_level;
+    cur_level = level;
     Value **st = NEWN(Value *, nvars);
     /* A successor not completely specified is no state to find. */
     replay_target = to;
@@ -7435,6 +7438,7 @@ static int replay(Value **from, Value **to) {
     }
     cur_state = saved_cur; next_state = saved_next; gen_target = saved_target;
     gen_emit = saved_emit; gen_init = saved_init;
+    cur_level = saved_level;
     drawing = saved_drawing;
     if (!simulating) draw_model = saved_model, draw_from = saved_from, draw_due = saved_due;
     return action;   /* the action that yields `to`, the last tried if none */
@@ -7448,7 +7452,7 @@ static void replay_error(Value **from) {
     handler = &here;
     if (!sigsetjmp(here, 0)) {
         replay_checks = !from;
-        replay(from, NULL);
+        replay(from, NULL, cur_level);
     }
     replay_checks = 0;
     handler = saved;
@@ -7471,13 +7475,13 @@ static void print_trace_states(int s1, Value **s2, int action) {
     for (int i = s1; i >= 0; i = states[i].parent) path[--k] = i;
     for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
     /* Each state as TLC rebuilds it, from the one before as rebuilt. */
-    for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i]); st[i] = replay_match; }
+    for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i], i); st[i] = replay_match; }
     printf("Error: The behavior up to this point is:\n");
     for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i]);
-    if (n > 1) { replay(st[n - 2], st[n - 1]); st[n - 1] = replay_match; }
+    if (n > 1) { replay(st[n - 2], st[n - 1], n - 1); st[n - 1] = replay_match; }
     print_numbered(n, states[s1].action, st[n - 1]);
     if (s2) {
-        replay(st[n - 1], s2);
+        replay(st[n - 1], s2, n);
         print_numbered(n + 1, action, s2);
     }
 }
@@ -8444,7 +8448,7 @@ static int sim_print(States *trace) {
        fails as the behavior did if finding it fails; a step it does not
        find again, as one drawn at random, ends in its NullPointerException. */
     for (int i = 0, k = 1; i < trace->n; i++) {
-        int action = i ? replay(trace->a[i - 1], trace->a[i]) : -1;
+        int action = i ? replay(trace->a[i - 1], trace->a[i], i) : -1;
         if (i && !replay_found) {
             handler = outer;
             print_exception("java.lang.NullPointerException", ": ");
@@ -8457,10 +8461,10 @@ static int sim_print(States *trace) {
     return 1;
 }
 
-/* TLC's simulator reports a TLCRuntimeException plainly, any other as
-   unexpected. */
+/* TLC's simulator reports a TLCRuntimeException, or an error raised
+   outside its evaluator, plainly, any other as unexpected. */
 static void sim_exception(void) {
-    if (error_module == 2) {
+    if (error_module == 2 || stackless) {
         printf("Error: ");
         print_error_text();
         return;
@@ -8488,7 +8492,7 @@ static int sim_violates(States *trace) {
         uint64_t fp = fingerprint(st);
         int s = fp_find(fp);
         if (s < 0) s = add_state(st, fp, prev, -1, i + 1);
-        sim_acts[i] = prev < 0 || s == prev ? STUTTER : replay(trace->a[i - 1], st);
+        sim_acts[i] = prev < 0 || s == prev ? STUTTER : replay(trace->a[i - 1], st, i);
         if (prev >= 0) add_edge(prev, s, sim_acts[i]);
         sim_order[i] = s;
         prev = s;
@@ -8555,13 +8559,13 @@ static int simulate(const TPPOptions *o) {
             sim_summary(seed, aril);
             return TPP_ERROR;
         }
-        if (invariant) {
-            printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
+        if (invariant || checking(action_props, naction_props)) {
+            printf("Error: Evaluating %s %s failed.\n", invariant ? "invariant" : "action property", S(error_check->name));
             print_error_text();
             sim_push(&trace, checked);
             if (!sim_print(&trace)) return TPP_ERROR;
             sim_summary(seed, aril);
-            return TPP_FAILURE_SAFETY_EVAL;
+            return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
         }
         sim_exception();
         int status = error_module == 2 ? error_status : TPP_ERROR;
@@ -8611,6 +8615,7 @@ static int simulate(const TPPOptions *o) {
         int in_model = check_list(constraints, nconstraints, st) < 0;
         for (long d = 0; d < depth; d++) {
             sim_push(&trace, st);
+            cur_level = d + 1;
             if (!in_model) break;
             if (!sim_next(st)) {
                 if (!check_deadlock) break;
@@ -10667,6 +10672,11 @@ int tpp_check(const TPPOptions *o) {
             config_error("The configuration file did not specify the initial state predicate.\n"
                          "Can also be caused by trying to run TLC on a specification from\n"
                          "a module imported with a parameterized INSTANCE statement.");
+        if (o->simulate) {   /* TLC's simulator wants an initial state */
+            printf("Computed 0 initial states...\n");
+            printf("Error: There is no state satisfying the initial state predicate.\n");
+            return TPP_ERROR;
+        }
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
         print_counts(0, 1);

@@ -6,6 +6,14 @@ for it as its notes.
 
 ## 0.3.0
 
+- `TLCGet("level")` in a simulation is the behavior's length so far, and
+  as a trace is rebuilt, each step's own level; it was 0, and the level
+  the search stopped at.
+- In a simulation, an action property that fails to evaluate is reported
+  with the step, exiting 13, as TLC does; an error TLC raises outside its
+  evaluator (a check that is not a boolean, a stack overflow in `Init`)
+  is reported plainly; a specification without an initial predicate has
+  no state to start from.
 - `RandomElement`, `RandomSubset` and `RandomSetOfSubsets` draw as TLC
   2.19 does: from one generator for the assumptions, constants and
   initial states and another for the behaviors of a simulation (both

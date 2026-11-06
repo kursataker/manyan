@@ -181,8 +181,10 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 ## Limitations
 
 Not supported: the proof language (parsed and skipped), TLC's generation
-mode (`-generate`), checkpoints and distributed checking. In a simulation, output
-from `Print` comes in a different order than TLC's, and a temporal
+mode (`-generate`), checkpoints and distributed checking. In a simulation
+that stops at an error before its last behavior, TLC's worker goes on
+with the next one while the behavior is printed, so its `Print` output
+may come between the states; tpp stops at the error. There a temporal
 property is checked on the whole graph of each behavior, where TLC may
 miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot

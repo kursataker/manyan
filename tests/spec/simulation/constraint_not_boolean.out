@@ -1,0 +1,8 @@
+Error: TLC expected a boolean value, but did not find one. line 9, col 7 to line 9, col 32 of module constraint_not_boolean
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 18 of module constraint_not_boolean>
+x = 1
+exit 255
