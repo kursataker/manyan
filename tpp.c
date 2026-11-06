@@ -5237,14 +5237,17 @@ static __attribute__((noinline)) Value *ev_prime(Expr *e, Ctx c) {
     return v;
 }
 
-static __attribute__((noinline)) Value *ev_unchanged(Expr *e, Ctx c) {
-    Value *now = eval(e->args[0], c);
+/* Whether e' = e. */
+static int kept(Expr *e, Ctx c) {
+    Value *now = eval(e, c);
     int saved = primed;
     primed = 1;
-    Value *then = eval(e->args[0], c);
+    Value *then = eval(e, c);
     primed = saved;
-    return BOOLV(veq(now, then));
+    return veq(now, then);
 }
+
+static __attribute__((noinline)) Value *ev_unchanged(Expr *e, Ctx c) { return BOOLV(kept(e->args[0], c)); }
 
 static __attribute__((noinline)) Value *ev_times(Expr *e, Ctx c) {
     Value *s = mk_lazy(L_TIMES);
@@ -6340,12 +6343,13 @@ static void bind_natives(void) {
 /* The generator enumerates the assignments an initial predicate or an
    action allows (§10.2, §10.3). Conjuncts still to be satisfied wait in a
    continuation. */
-typedef struct Cont { Expr *e; Ctx c; struct Cont *next; } Cont;
+typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont;   /* unchanged: the conjunct is UNCHANGED e */
 
 static Value **gen_target;      /* the state being assigned */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 
 static int gen(Expr *e, Ctx c, Cont *k);
+static int gen_unchanged(Expr *e, Ctx c, Cont *k);
 
 static _Noreturn void not_boolean(Expr *e, Value *v);
 
@@ -6353,12 +6357,12 @@ static int gen_cont(Cont *k) {
     if (!k) return gen_emit();
     int assigned = 1;
     for (int i = 0; i < nvars && assigned; i++) assigned = gen_target[i] != NULL;
-    if (!assigned) return gen(k->e, k->c, k->next);
+    if (!assigned) return k->unchanged ? gen_unchanged(k->e, k->c, k->next) : gen(k->e, k->c, k->next);
     /* Once every variable has a value, TLC evaluates the remaining
        conjuncts as formulas: a disjunction stops at its first true
        disjunct. */
     for (; k; k = k->next) {
-        Value *v = eval(k->e, k->c);
+        Value *v = k->unchanged ? BOOLV(kept(k->e, k->c)) : eval(k->e, k->c);
         if (v->kind != V_BOOL) not_boolean(k->e, v);
         if (!v->u.i) return 0;
     }
@@ -6602,13 +6606,8 @@ static int unchanged_now(Expr *e, Ctx c) {
 static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     if (e->kind == X_TUPLE) {
         for (int i = e->n - 1; i >= 1; i--) {
-            Expr *u = NEW(Expr);
-            *u = *e;
-            u->kind = K_UNCHANGED;
-            u->n = 1;
-            u->args = NEWN(Expr *, 1);
-            u->args[0] = e->args[i];
-            k = mk_cont(u, c, k);
+            k = mk_cont(e->args[i], c, k);
+            k->unchanged = 1;
         }
         if (e->n == 0) return gen_cont(k);
         return gen_unchanged(e->args[0], c, k);
