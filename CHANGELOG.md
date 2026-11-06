@@ -22,6 +22,9 @@ for it as its notes.
 - Each string has one value, made once, instead of a new one each time a
   literal or a record field is evaluated, and a set of literals such as
   `{"ncs", "e1"}` is computed once (MCBakery 4.5 → 2.6 s).
+- Under symmetry, a successor's fingerprint reuses the permuted hashes of
+  the values it shares with the state before it (symmetry bench and
+  MultiPaxos_MC_small 5% faster).
 - Fixed: `ENABLED` computed the spec's constant definitions again instead
   of using their value, so one drawn with `RandomElement` could differ
   inside it (SpanTreeRandom reported a false violation of `Safety`).

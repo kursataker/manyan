@@ -90,7 +90,10 @@ static void *grow(void *v, int n, size_t size) {
 }
 #define PUSH(v, n, x) ((v) = grow((v), (n), sizeof *(v)), (v)[(n)++] = (x))
 
+static unsigned scratch_resets;   /* a value's address names it only between two */
+
 static void arena_reset(Arena *a) {
+    scratch_resets += a == &scratch_arena;
     Chunk *c = a->head;
     while (c && c->next) { Chunk *next = c->next; free(c); c = next; }
     if (c) c->used = 0;
@@ -7384,15 +7387,31 @@ static uint64_t fingerprint(Value **st) {
         for (int i = 0; i < nvars; i++) h = fmix(h + elem_hash(st[i]));
         return h;
     }
-    /* The least fingerprint of the state's permutations. */
+    /* The least fingerprint of the state's permutations. A successor shares
+       most of its values with its state's: each variable's last value and
+       its hashes under the permutations, h[p] the same for all if unmoved,
+       are kept. */
     static uint64_t *fps, *vh;
-    static int nfps;
-    if (nfps < nsymmetry) { fps = xrealloc(fps, sizeof(uint64_t) * (size_t)nsymmetry); vh = xrealloc(vh, sizeof(uint64_t) * (size_t)nsymmetry); nfps = nsymmetry; }
+    static Value **last;
+    static unsigned *last_resets;
+    if (!fps) {
+        fps = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry);
+        vh = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry * (size_t)nvars);
+        last = calloc((size_t)nvars, sizeof(Value *));
+        last_resets = calloc((size_t)nvars, sizeof(unsigned));
+    }
     memset(fps, 0, sizeof(uint64_t) * (size_t)nsymmetry);
     for (int i = 0; i < nvars; i++) {
-        int moved = permuted_hashes(st[i], vh, 0, 0);
-        uint64_t same = moved ? 0 : elem_hash(st[i]);
-        for (int p = 0; p < nsymmetry; p++) fps[p] = fmix(fps[p] + (moved ? vh[p] : same));
+        uint64_t *h = vh + (size_t)i * (size_t)nsymmetry;
+        if (st[i] != last[i] || last_resets[i] != scratch_resets) {
+            if (!permuted_hashes(st[i], h, 0, 0)) {
+                uint64_t same = elem_hash(st[i]);
+                for (int p = 0; p < nsymmetry; p++) h[p] = same;
+            }
+            last[i] = st[i];
+            last_resets[i] = scratch_resets;
+        }
+        for (int p = 0; p < nsymmetry; p++) fps[p] = fmix(fps[p] + h[p]);
     }
     uint64_t best = fps[0];
     for (int p = 1; p < nsymmetry; p++) if (fps[p] < best) best = fps[p];
