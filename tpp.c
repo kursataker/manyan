@@ -5786,11 +5786,16 @@ static int gen_bound_fn(Ctx c, void *data) {
     return gen(g->body, c, g->k);
 }
 
-typedef struct { Ctx *v; int n; } Ctxs;
+/* The bindings of a quantifier, in the arena. */
+typedef struct { Ctx *v; int n, cap; } Ctxs;
 
 static int collect_fn(Ctx c, void *data) {
     Ctxs *l = data;
-    l->v = xrealloc(l->v, sizeof(Ctx) * (size_t)(l->n + 1));
+    if (l->n == l->cap) {
+        Ctx *v = NEWN(Ctx, l->cap = l->cap ? 2 * l->cap : 8);
+        if (l->n) memcpy(v, l->v, sizeof(Ctx) * (size_t)l->n);
+        l->v = v;
+    }
     l->v[l->n++] = c;
     return 0;
 }
@@ -5888,9 +5893,7 @@ static int gen(Expr *e, Ctx c, Cont *k) {
         for_bindings(e->bounds, e->nb, c, collect_fn, &l);
         if (!l.n) return gen_cont(k);
         for (int i = 1; i < l.n; i++) k = mk_cont(e->args[0], l.v[i], k);
-        Ctx first = l.v[0];
-        free(l.v);
-        return gen(e->args[0], first, k);
+        return gen(e->args[0], l.v[0], k);
     }
     case X_IF: {
         Value *v = eval(e->args[0], c);
