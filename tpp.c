@@ -328,7 +328,9 @@ enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS, MADE_HELD };
 
 enum LazyKind {
     L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_ANY,
-    L_UNION,    /* UNION S, an element of S infinite: S in a */
+    L_UNION,    /* UNION S that TLC keeps as it is, S not a set of sets of their elements: S in a, its
+                   elements once enumerated in b, and in set once TLC keeps them too (union_cache);
+                   n while a is to be sorted (union_sets) */
     L_CUP, L_CAP, L_DIFF
 };
 
@@ -506,6 +508,8 @@ static inline int set_is_infinite(Value *s) { return s->kind == V_LAZY && lazy_i
 static int64_t set_size(Value *s);
 static Value *enumerate_other(Value *s);
 static inline Value *enumerate(Value *s) { return s->kind == V_SET ? s : enumerate_other(s); }
+static Value *union_cache(Value *s);
+static Value *union_sets(Value *s);
 static int kinds_differ(Value *a, Value *b);
 static int enumerable(Value *s);
 static Value *select_members(Value *s, Value *t, int in);
@@ -591,7 +595,11 @@ static void print_value(Buf *b, Value *v) {
         if (v->lazy == L_STRING) { buf_puts(b, "STRING"); return; }
         if (v->lazy == L_ANY) { buf_puts(b, "ANY"); return; }
         if (v->lazy == L_SEQ) { buf_puts(b, "Seq("); print_value(b, v->u.l.a); buf_puts(b, ")"); return; }
-        if (v->lazy == L_UNION) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
+        if (v->lazy == L_UNION) {
+            int infinite = 0;
+            for (int i = 0; i < v->u.l.a->n; i++) infinite |= is_set(v->u.l.a->u.set.elems[i]) && set_is_infinite(v->u.l.a->u.set.elems[i]);
+            if (infinite) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
+        }
         if (v->lazy >= L_CUP && !set_op_enumerable(v)) {
             print_value(b, v->u.l.a);
             buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
@@ -881,8 +889,12 @@ static int vcmp(Value *a, Value *b) {
     }
     if (is_set(a) && is_set(b)) {
         if (a->kind == V_LAZY && b->kind == V_LAZY && a->lazy == b->lazy && a->lazy <= L_STRING) return 0;
+        if (a->kind == V_SET && user_set(b)) {   /* TLC's SetEnumValue cannot enumerate the other */
+            fp_enter(src);
+            fail("Attempted to compare the set %s with the value:\n%s", pretty(a), pretty(b));
+        }
         if (set_is_infinite(a) || set_is_infinite(b)) incomparable(user_set(b) ? b : a, user_set(b) ? a : b);   /* as TLC sorts */
-        a = enumerate(a);
+        a = enumerate(union_cache(a));
         b = enumerate(b);
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         fp_enter(src);
@@ -956,7 +968,7 @@ static int veq(Value *a, Value *b) {
                 return veq(a->u.l.a, b->u.l.a);
             incomparable(a, b);
         }
-        a = enumerate(a);
+        a = enumerate(union_cache(a));
         b = enumerate(b);
         if (a->n != b->n) return 0;
         fp_enter(src);
@@ -1052,26 +1064,24 @@ static int lazy_is_infinite(Value *s) {
 static Value *mk_fcn_from(List *keys, List *vals);
 
 /* All functions from the elements of `dom` (sorted) to elements of `rng`,
-   in the standard order. */
-static Value *enumerate_functions(Value **dom, int nd, Value *rng, int as_record) {
+   made in the standard order: the last value varies fastest. */
+static Value *enumerate_functions(Value **dom, int nd, Value *rng) {
     rng = enumerate(rng);
     int64_t total = 1;
     for (int i = 0; i < nd; i++) {
         total *= rng->n;
         if (total > 100000000) fail("Attempted to enumerate a set of functions with too many elements.");
     }
-    List out = {0};
+    Value *out = mk_set((int)total);
     int *idx = calloc((size_t)nd + 1, sizeof(int));
     for (int64_t k = 0; k < total; k++) {
-        Value *f = mk_fcn(nd);
+        Value *f = out->u.set.elems[k] = mk_fcn(nd);
         for (int i = 0; i < nd; i++) { f->u.fcn.keys[i] = dom[i]; f->u.fcn.vals[i] = rng->u.set.elems[idx[i]]; }
         if (nd == 0) f->empty_fcn = 1;
-        (void)as_record;
-        list_add(&out, f);
         for (int i = nd - 1; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
     }
     free(idx);
-    return list_set(&out);
+    return out;
 }
 
 /* The elements of a finite set, as a normalized V_SET. */
@@ -1115,7 +1125,7 @@ static Value *enumerate_other(Value *s) {
                 fail("Attempted to enumerate a set of the form [D -> R],but the %s:\n%s\ncannot be enumerated.",
                      i ? "range R" : "domain D", pretty(i ? s->u.l.b : s->u.l.a));
         Value *dom = enumerate(s->u.l.a);
-        return enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, 0);
+        return enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b);
     }
     case L_RCDSET: case L_TIMES: {
         int n = s->n;
@@ -1132,7 +1142,9 @@ static Value *enumerate_other(Value *s) {
             total *= sets[i]->n;
             if (total > 100000000) fail("Attempted to enumerate a set with too many elements.");
         }
-        List out = {0};
+        /* Made in the standard order, the last part varying fastest: the
+           parts, and a record's fields, are sorted. */
+        Value *out = mk_set((int)total);
         int *idx = calloc((size_t)n + 1, sizeof(int));
         for (int64_t k = 0; k < total; k++) {
             Value *t;
@@ -1144,11 +1156,11 @@ static Value *enumerate_other(Value *s) {
                 t->made = MADE_RECORD;
                 for (int i = 0; i < n; i++) { t->u.fcn.keys[i] = s->u.l.names[i]; t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]]; }
             }
-            list_add(&out, t);
+            out->u.set.elems[k] = t;
             for (int i = n - 1; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
         }
         free(idx);
-        return list_set(&out);
+        return out;
     }
     case L_FILTER: {
         if (s->u.l.b) return s->u.l.b;
@@ -1161,9 +1173,10 @@ static Value *enumerate_other(Value *s) {
         if (!s->perm || arena == &perm_arena) s->u.l.b = set;
         return set;
     }
-    case L_UNION:
+    case L_UNION: {
         /* As TLC: each element enumerated, unless it is a set it defines. */
-        s->u.l.a = set_normalize(s->u.l.a);
+        if (s->u.l.b) return s->u.l.b;
+        union_sets(s);
         List l = {0};
         for (int i = 0; i < s->u.l.a->n; i++) {
             Value *t = s->u.l.a->u.set.elems[i];
@@ -1171,7 +1184,10 @@ static Value *enumerate_other(Value *s) {
             t = enumerate(t);
             for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
         }
-        return list_set(&l);
+        Value *set = list_set(&l);
+        if (!s->perm || arena == &perm_arena) s->u.l.b = set;
+        return set;
+    }
     case L_CUP: case L_CAP: case L_DIFF: {
         /* As TLC: S \cup T of both, S \cap T of an enumerable one, S \ T of S. */
         if (s->u.l.set) return s->u.l.set;
@@ -1200,6 +1216,41 @@ static Value *enumerate_other(Value *s) {
 }
 
 static Value *normalize_set(Value *v) { return enumerate(v); }
+
+/* The sets of a UNION TLC keeps, sorted once it must. */
+static Value *union_sets(Value *s) {
+    if (s->n) { s->u.l.a = set_normalize(s->u.l.a); s->n = 0; }
+    return s->u.l.a;
+}
+
+/* As TLC's UnionValue once it compares, counts or fingerprints itself:
+   it keeps its elements, which its quantifiers then take in order. */
+static Value *union_cache(Value *s) {
+    if (s->kind == V_LAZY && s->lazy == L_UNION && !s->u.l.set) {
+        Value *e = enumerate(s);
+        if (!s->perm || arena == &perm_arena) s->u.l.set = e;
+    }
+    return s;
+}
+
+/* The elements of s as TLC's quantifiers and actions take them: a UNION it
+   keeps, those of each of its sets in turn, duplicates too; another set,
+   in order. Only to iterate: the result is no normalized set. */
+static Value *elements(Value *s) {
+    if (s->kind != V_LAZY || s->lazy != L_UNION) return enumerate(s);
+    if (s->u.l.set) return s->u.l.set;
+    union_sets(s);
+    List l = {0};
+    for (int i = 0; i < s->u.l.a->n; i++) {
+        Value *t = s->u.l.a->u.set.elems[i];
+        if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
+        t = elements(t);
+        for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
+    }
+    Value *r = mk_set(l.n);
+    if (l.n) memcpy(r->u.set.elems, l.v, sizeof(Value *) * (size_t)l.n);
+    return r;
+}
 
 /* TLC's error counting an infinite set: the first part it cannot count. */
 static _Noreturn void count_infinite(Value *s) {
@@ -1333,7 +1384,7 @@ static int set_member(Value *v, Value *s) {
             if (s->u.l.b) return set_member(v, s->u.l.b);
             return set_member(v, s->u.l.a) && filter_member_test(s, v) == TRUEV;
         case L_UNION:
-            s->u.l.a = set_normalize(s->u.l.a);
+            union_sets(s);
             for (int i = 0; i < s->u.l.a->n; i++) if (set_member(v, s->u.l.a->u.set.elems[i])) return 1;
             return 0;
         case L_CUP: case L_CAP: case L_DIFF: {
@@ -4782,7 +4833,7 @@ static Value *bound_value(Bound *b, Ctx c) {
     return s;
 }
 
-static Value *bound_set(Bound *b, Ctx c) { return enumerate(bound_value(b, c)); }
+static Value *bound_set(Bound *b, Ctx c) { return elements(bound_value(b, c)); }
 
 /* As TLC, the sets are enumerated first, and the first variable varies
    fastest. */
@@ -4795,7 +4846,7 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
                 if (fn((Ctx){mk_binding(bs[0].defs[0], mk_int(x), c.env), c.inst}, data)) return 1;
             return 0;
         }
-        s = enumerate(s);
+        s = elements(s);
         for (int i = 0; i < s->n; i++)
             if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
         return 0;
@@ -5024,6 +5075,7 @@ static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     Def *d = e->def;
+    if (d->kind == D_VAR && !d->replacement) return decl_value(d, c, e);
     if (d->native && !d->replacement && e->n <= 4 && e->n == d->nparams) {
         /* The common operators of the standard modules: no arena for the arguments. */
         Value *vals[4];
@@ -5138,7 +5190,7 @@ static __attribute__((noinline)) Value *ev_subset(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
     Expr *x = e->args[0];
     Value *s;
-    int hold = 0;   /* TLC combines only sets of their elements */
+    int hold = 0;   /* TLC combines only sets of their elements; it keeps another UNION as it is */
     if (x->kind == X_SETENUM) {
         /* TLC sorts a set's elements only once it must, as Nat and {-1}
            cannot be: UNION {{-1}, Nat} is a set. */
@@ -5149,21 +5201,18 @@ static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
         hold = s->kind != V_SET || s->made == MADE_HELD;
         s = enumerate(s);
     }
-    for (int i = 0; i < s->n; i++)
-        if (is_set(s->u.set.elems[i]) && set_is_infinite(s->u.set.elems[i])) {
-            Value *u = mk_lazy(L_UNION);
-            u->u.l.a = s;
-            return u;
-        }
+    for (int i = 0; i < s->n; i++) hold |= s->u.set.elems[i]->kind != V_SET || s->u.set.elems[i]->made == MADE_HELD;
+    if (hold) {
+        Value *u = mk_lazy(L_UNION);
+        u->u.l.a = s;
+        u->n = x->kind == X_SETENUM;   /* its sets, to be sorted */
+        return u;
+    }
     if (x->kind == X_SETENUM) s = set_normalize(s);
     List l = {0};
-    for (int i = 0; i < s->n; i++) {
-        Value *t = s->u.set.elems[i];
-        hold |= t->kind != V_SET || t->made == MADE_HELD;
-        t = enumerate(t);
-        for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
-    }
-    return hold ? held(list_set(&l)) : list_set(&l);
+    for (int i = 0; i < s->n; i++)
+        for (int j = 0; j < s->u.set.elems[i]->n; j++) list_add(&l, s->u.set.elems[i]->u.set.elems[j]);
+    return list_set(&l);
 }
 
 static __attribute__((noinline)) Value *ev_domain(Expr *e, Ctx c) {
@@ -5805,7 +5854,7 @@ static int tlc_finite(Value *s) {
     case L_CUP: return tlc_finite(a) && tlc_finite(b);
     case L_SUBSET: return tlc_finite(a);
     case L_UNION:
-        s->u.l.a = set_normalize(a);
+        union_sets(s);
         for (int i = 0; i < s->u.l.a->n; i++) if (!tlc_finite(s->u.l.a->u.set.elems[i])) return 0;
         return 1;
     default: return !set_is_infinite(s);
@@ -5818,7 +5867,7 @@ NATIVE(n_cardinality) {
     UNUSED;
     if (!is_set(a[0]) || user_set(a[0])) fail_module("Attempted to compute cardinality of the value\n%s", pretty(a[0]));
     if (set_is_infinite(a[0])) count_infinite(a[0]);
-    int64_t n = set_size(a[0]);
+    int64_t n = set_size(union_cache(a[0]));
     if (n < 0)
         fail("Overflow when computing the number of elements in%s%s",
                     a[0]->lazy == L_TIMES ? " " : ":\n", pretty(a[0]));
@@ -6699,7 +6748,7 @@ static int gen(Expr *e, Ctx c, Cont *k) {
                     if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && gen_assign(var, base->u.set.elems[i], k)) return 1;
                 return 0;
             }
-            s = enumerate(s);
+            s = elements(s);
             for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
             return 0;
         }
@@ -6928,7 +6977,7 @@ static uint64_t value_hash(Value *v) {
     }
     case V_SET: case V_LAZY: {
         if (v->kind == V_LAZY && set_is_infinite(v)) fail("Attempted to fingerprint the infinite set %s.", pretty(v));
-        Value *set = enumerate(v);
+        Value *set = enumerate(union_cache(v));
         if (!(sum = set->u.set.hash)) {
             fp_enter(set->u.set.source);
             for (int i = 0; i < set->n; i++) sum += elem_hash(set->u.set.elems[i]);

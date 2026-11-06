@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 38 of module compare_set_overridden failed.
+Attempted to compare the set {-1} with the value:
+Nat
+exit 10

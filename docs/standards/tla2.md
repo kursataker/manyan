@@ -364,6 +364,13 @@ filter is enumerated. A quantifier or `CHOOSE` over a value that is not a
 set, or over `Nat`, `Int`, `STRING` or `Seq(S)`, is an error at once; over
 another infinite set, the error is that of enumerating it.
 
+A `UNION S` that TLC keeps is taken by quantifiers, set images and
+`x \in S` in an action one element of `S` after another, in the standard
+order of `S`, with any duplicates; `CHOOSE`, filters and functions take it
+sorted. Once it has been counted, fingerprinted, or compared as the left
+side of `=` or of the standard order, TLC holds its elements, and
+quantifiers take them sorted too.
+
 ### 6.6 Functions
 
 `[x \in S |-> e]` and `[x \in S, y \in T |-> e]`; application `f[a]` and

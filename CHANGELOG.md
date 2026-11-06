@@ -4,6 +4,25 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
+## 0.5.0
+
+- Faster set operations: `S \cap T` and `S \ T` keep `S`'s order instead
+  of sorting again, sets of atoms compare inline, and `SUBSET S` is
+  enumerated in the standard order (partition bench 0.27 → 0.19 s).
+- Liveness checking keeps each state's product nodes beside it instead of
+  in a hash table over the whole product, and their edges in an arena; it
+  no longer leaks them from one property to the next (liveness bench
+  0.26 → 0.22 s; 30% less memory on larger models).
+- `UNION S` stays lazy, as in TLC, when an element of `S` is not an
+  enumerated set: membership no longer enumerates it, and iterating it
+  visits each element set in turn, duplicates included, in TLC's order
+  (MCDisruptor_MPMC now matches TLC, in 0.6 s; it timed out after 60 s).
+- Cartesian products, record sets and function sets are generated in
+  order instead of sorted afterwards (GameOfLife 11.9 → 6.1 s).
+- Comparing a set with a set that cannot be enumerated, as sorting
+  `UNION {Nat, {-1}}` does, reports TLC's "Attempted to compare the set"
+  error.
+
 ## 0.4.0
 
 0.3.0 was never tagged; its changes are released here, with 0.4.0's.
