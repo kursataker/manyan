@@ -7396,7 +7396,10 @@ static int init_emit(void) {
     generated++;
     Value **st = NEWN(Value *, nvars);
     memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
-    if (check_list(constraints, nconstraints, st) >= 0) return 0;
+    if (check_list(constraints, nconstraints, st) >= 0) {   /* as TLC, checked though not kept */
+        violation = check_initial(st);
+        return violation != 0;
+    }
     error_state = st;
     uint64_t fp = fingerprint(st);
     error_state = NULL;
@@ -7410,6 +7413,17 @@ static int init_emit(void) {
 
 /* Whether the state a violation reports was new: as TLC, it is not queued. */
 static int violation_fresh;
+
+/* Whether a step to st violates an action property, which TLC checks
+   for every step. */
+static int action_violated(Value **st) {
+    int bad = check_actions(action_props, naction_props, cur_state, st);
+    if (bad < 0) return 0;
+    printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+    print_trace(expanding, st, cur_action);
+    violation = TPP_VIOLATION_LIVENESS;
+    return 1;
+}
 
 static int next_emit(void) {
     succ_count++;
@@ -7429,8 +7443,19 @@ static int next_emit(void) {
     }
     Value **st = NEWN(Value *, nvars);
     memcpy(st, succ, sizeof(Value *) * (size_t)nvars);
-    if (check_list(constraints, nconstraints, st) >= 0) return 0;
-    if (check_actions(action_constraints, naction_constraints, cur_state, st) >= 0) return 0;
+    /* As TLC: a state outside the model is not kept, but its invariants
+       are checked each time it is found. */
+    if (check_list(constraints, nconstraints, st) >= 0 || check_actions(action_constraints, naction_constraints, cur_state, st) >= 0) {
+        int bad = check_list(invariants, ninvariants, st);
+        violation_fresh = 0;
+        if (bad >= 0) {
+            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+            print_trace(expanding, st, cur_action);
+            violation = TPP_VIOLATION_SAFETY;
+            return 1;
+        }
+        return action_violated(st);
+    }
     uint64_t fp = fingerprint(st);
     int found = fp_find(fp);
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
@@ -7450,15 +7475,8 @@ static int next_emit(void) {
             return 1;
         }
     }
-    int bad = check_actions(action_props, naction_props, cur_state, st);
     violation_fresh = found < 0;
-    if (bad >= 0) {
-        printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
-        print_trace(expanding, st, cur_action);
-        violation = TPP_VIOLATION_LIVENESS;
-        return 1;
-    }
-    return 0;
+    return action_violated(st);
 }
 
 static void collect_fairnesses(void);
@@ -7663,6 +7681,9 @@ static int worker_emit(void) {
             if (made) settle(c);
             f.claim = (uint32_t)(c - claims);
         }
+    } else if (check_list(invariants, ninvariants, succ) >= 0 || check_actions(action_props, naction_props, cur_state, succ) >= 0) {
+        w_clean = 0;   /* outside the model: the search reports it */
+        return 1;
     }
     if (w_n + sizeof f > results_room()) { w_clean = 0; return 1; }   /* the search expands it */
     memcpy(results[w_id] + w_n, &f, sizeof f);

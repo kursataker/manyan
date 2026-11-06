@@ -175,6 +175,10 @@ for it as its notes.
 - `IsFiniteSet` answers as TLC's `isFinite`: a function is a finite set, a
   value that is no set an error, and a filter over a set that is not
   finite, or an intersection of two such sets, an error.
+- A state outside the constraints, or a step outside the action
+  constraints, is checked against the invariants and action properties
+  each time it is found, as TLC checks it; tpp skipped it, missing a
+  violation.
 
 ## 0.2.0
 

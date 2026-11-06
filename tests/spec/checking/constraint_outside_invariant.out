@@ -1,0 +1,26 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 8, col 12 to line 8, col 45 of module constraint_outside_invariant>
+/\ x = 0
+/\ y = 1
+
+State 3: <Next line 8, col 12 to line 8, col 45 of module constraint_outside_invariant>
+/\ x = 0
+/\ y = 2
+
+State 4: <Next line 8, col 12 to line 8, col 45 of module constraint_outside_invariant>
+/\ x = 0
+/\ y = 3
+
+State 5: <Next line 9, col 12 to line 9, col 31 of module constraint_outside_invariant>
+/\ x = 9
+/\ y = 3
+
+31 states generated, 15 distinct states found, 5 states left on queue.
+The depth of the complete state graph search is 5.
+exit 12
