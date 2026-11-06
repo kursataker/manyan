@@ -179,6 +179,12 @@ for it as its notes.
   constraints, is checked against the invariants and action properties
   each time it is found, as TLC checks it; tpp skipped it, missing a
   violation.
+- An error evaluating a constraint or action constraint on a successor
+  is TLC's unexpected exception, without the behavior; one evaluating an
+  action property is reported as "Evaluating action property P failed."
+  An action constraint that is not a boolean is an error, not false.
+- `[A]_e` evaluates `e` only when `A` is false, and `<<A>>_e` only when it
+  is true, as TLC does; an `A` that is not a boolean has TLC's message.
 
 ## 0.2.0
 

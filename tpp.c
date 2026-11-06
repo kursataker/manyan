@@ -219,7 +219,7 @@ static int error_status;   /* the exit status the error implies */
    EvalException of a standard module's operator; 2, a TLCRuntimeException,
    with the exit status of its error code. */
 static int error_module;
-static int overflowed;        /* the error is TLC's StackOverflowError */
+static int stackless;         /* TLC's error call stack is empty: 1, or 2 for its StackOverflowError */
 /* The Java methods of the standard operators being applied, innermost last.
    TLC wraps any error inside one, but an EvalException, in a preamble. */
 static const char *java_frames[64];
@@ -244,7 +244,7 @@ static void error_reset(void) {
     error_expr = NULL;
     error_status = TPP_ERROR;
     error_module = 0;
-    overflowed = 0;
+    stackless = 0;
 }
 
 static _Noreturn void raise_error(void) {
@@ -1479,7 +1479,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
         fail("Attempted to apply the record\n%s\nto nonexistent record field %s.", pretty(f), S(a->u.i));
     }
     if (f->made >= MADE_LAMBDA)
-        fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.", pretty(f), pretty(a));
+        fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.\n", pretty(f), pretty(a));
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
          pretty(f), pretty(a));
 }
@@ -4369,7 +4369,7 @@ static void deeper(void) {
              "of an incorrect recursive function definition that caused TLC to enter\n"
              "an infinite loop when trying to compute the function or its application\n"
              "to an element in its putative domain.");
-    overflowed = 1;
+    stackless = 2;
     raise_error();
 }
 
@@ -5319,15 +5319,18 @@ static __attribute__((noinline)) Value *ev_let(Expr *e, Ctx c) {
 }
 
 static __attribute__((noinline)) Value *ev_sqact(Expr *e, Ctx c) {
-    /* [A]_v and <<A>>_v evaluated on a pair of states. */
-    int a = eval_bool(e->args[0], c);
+    /* [A]_v and <<A>>_v evaluated on a pair of states; as TLC, v only
+       when A does not decide. */
+    int sq = e->kind == X_SQACT;
+    Value *a = eval(e->args[0], c);
+    if (a->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form %s, but A was not a boolean.", sq ? "[A]_e" : "<A>_e");
+    if (a->u.i == sq) return a;
     Value *now = eval(e->args[1], c);
     int saved = primed;
     primed = 1;
     Value *then = eval(e->args[1], c);
     primed = saved;
-    int unchanged = veq(now, then);
-    return BOOLV(e->kind == X_SQACT ? a || unchanged : a && !unchanged);
+    return BOOLV(veq(now, then) == sq);
 }
 
 #define EVAL(name) static Value *name(Expr *e, Ctx c)
@@ -7263,9 +7266,19 @@ static int violation;         /* the exit status of the first violation, 0 if no
 static Check *error_check;
 static Value **error_state;
 
-/* Whether the check an error stopped is an invariant. */
-static int checking_invariant(void) {
-    return error_check && ninvariants && error_check >= invariants && error_check < invariants + ninvariants;
+/* Whether the check an error stopped is one of list. */
+static int checking(Check *list, int n) { return error_check && n && error_check >= list && error_check < list + n; }
+static int checking_invariant(void) { return checking(invariants, ninvariants); }
+
+/* A check that is no boolean, an error TLC raises outside its evaluator. */
+static _Noreturn void not_boolean_check(Check *c) {
+    Expr *body = c->def && c->def->body ? c->def->body : c->expr;
+    error_reset();
+    buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
+    node_text(&error_message, body);
+    error_status = TPP_FAILURE_EVAL;
+    stackless = 1;
+    raise_error();
 }
 
 static int check_list(Check *list, int n, Value **st) {
@@ -7278,12 +7291,7 @@ static int check_list(Check *list, int n, Value **st) {
         Value *v = eval(list[i].expr, root_ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
-            Expr *body = list[i].def && list[i].def->body ? list[i].def->body : list[i].expr;
-            error_reset();
-            buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
-            node_text(&error_message, body);
-            error_status = TPP_FAILURE_EVAL;
-            raise_error();
+            not_boolean_check(&list[i]);
         }
         if (!v->u.i) bad = i;
     }
@@ -7297,13 +7305,19 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
     Value **saved_cur = cur_state, **saved_next = next_state;
     cur_state = from;
     next_state = to;
-    for (int i = 0; i < n; i++) {
+    int bad = -1;
+    for (int i = 0; i < n && bad < 0; i++) {
+        error_check = &list[i];
+        error_state = to;
         Value *v = eval(list[i].expr, root_ctx);
-        if (v->kind != V_BOOL || !v->u.i) { cur_state = saved_cur; next_state = saved_next; return i; }
+        if (v->kind != V_BOOL) not_boolean_check(&list[i]);
+        if (!v->u.i) bad = i;
     }
+    error_check = NULL;
+    error_state = NULL;
     cur_state = saved_cur;
     next_state = saved_next;
-    return -1;
+    return bad;
 }
 
 #define STUTTER (-2)
@@ -7925,7 +7939,7 @@ static int search(void) {
     if (sigsetjmp(here, 0)) {
         handler = NULL;
         int status = error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL;
-        int over = overflowed;   /* TLC's StackOverflowError, with an empty call stack */
+        int over = stackless;
         int nfp = fp_depth < 64 ? fp_depth : 64;
         Expr *fps[64];
         memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
@@ -7939,14 +7953,30 @@ static int search(void) {
             }
             /* After an error in a property TLC went on as it replays Init. */
             if (!live_init_failed) replay_error(NULL);
-            if (!over) print_unfingerprinted(fps, nfp);
+            if (over != 2) print_unfingerprinted(fps, nfp);
             print_counts(nstates, 0);
             return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
-        if (over) {   /* TLC prints its Java stack */
+        if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
             print_counts(nstates - expanded - checking_invariant(), checking_invariant());
             return checking_invariant() ? TPP_ERROR : TPP_FAILURE_EVAL;
+        }
+        if (checking(constraints, nconstraints) || checking(action_constraints, naction_constraints)) {
+            /* TLC: an unexpected exception, without the behavior */
+            print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": util.Assert$TLCRuntimeException: ");
+            print_error_text();
+            if (!over) print_unfingerprinted(fps, nfp);
+            print_counts(0, 0);
+            return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
+        }
+        if (checking(action_props, naction_props)) {
+            printf("Error: Evaluating action property %s failed.\n", S(error_check->name));
+            print_error_text();
+            print_trace(expanding, error_state, cur_action);
+            print_unfingerprinted(fps, nfp);
+            print_counts(nstates - expanded - violation_fresh, 0);
+            return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking_invariant()) {
             /* An invariant of a new state failed to evaluate. */

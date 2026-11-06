@@ -1,0 +1,16 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating action property P failed.
+Attempted to evaluate an expression of form [A]_e, but A was not a boolean.
+line 8, col 8 to line 8, col 37 of module action_property_not_boolean
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 6, col 9 to line 6, col 27 of module action_property_not_boolean>
+x = 1
+
+State 3: <Next line 6, col 9 to line 6, col 27 of module action_property_not_boolean>
+x = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+exit 75
