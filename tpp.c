@@ -398,7 +398,6 @@ struct Value {
         unsigned char made;  /* Made of a V_FCN or V_SET */
         unsigned char keep;  /* V_LAMBDA: TLC's KeepLazy when it was made, which it is computed in full with */
     };
-    unsigned char empty_fcn; /* an empty V_FCN made as a function prints << >> */
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
     int n;                   /* elements of a set, tuple, or function */
     union {
@@ -605,7 +604,7 @@ static int fcn_is_tuple(Value *f) {
     if (f->kind == V_TUPLE) return 1;
     for (int i = 0; i < f->n; i++)
         if (f->u.fcn.keys[i]->kind != V_INT || f->u.fcn.keys[i]->u.i != i + 1) return 0;
-    return f->n > 0 || !f->empty_fcn;
+    return 1;
 }
 
 static int fcn_is_record(Value *f) {
@@ -717,7 +716,7 @@ static void print_value(Buf *b, Value *v) {
         buf_puts(b, "}");
         return;
     case V_TUPLE: case V_FCN:
-        if (v->n == 0) { buf_puts(b, v->empty_fcn ? "<< >>" : "<<>>"); return; }
+        if (v->n == 0) { buf_puts(b, "<<>>"); return; }
         if (fcn_is_tuple(v)) {
             buf_puts(b, "<<");
             for (int i = 0; i < v->n; i++) {
@@ -1002,7 +1001,7 @@ static _Noreturn void equality_error(Value *a, Value *b) {
     if (a->kind == V_FCN && a->made == MADE_RECORD)
         fail("Attempted to check equality of record:\n%s\nwith non-record\n%s", pretty(a), pretty(b));
     if (user_set(a)) fail("Attempted to compare overridden value %s with non-overridden value:\n%s", pretty(a), pretty(b));
-    if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", a->n ? pretty(a) : "<< >>", pretty(b));
+    if (is_fcn(a)) fail("Attempted to check equality of the function %s with the value:\n%s", pretty(a), pretty(b));
     if (is_set(a)) fail("Attempted to check equality of the set %s with the value:\n%s", pretty(a), pretty(b));
     fail("Attempted to check equality of %s %s with non-%s:\n%s", k, pretty(a), k, pretty(b));
 }
@@ -1155,7 +1154,6 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng) {
         f->u.fcn.keys = keys;
         f->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)nd);
         for (int i = 0; i < nd; i++) f->u.fcn.vals[i] = rng->u.set.elems[idx[i]];
-        if (nd == 0) f->empty_fcn = 1;
         for (int i = nd - 1; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
     }
     free(idx);
@@ -1499,7 +1497,7 @@ static int set_member(Value *v, Value *s) {
             return all_members(v, s->u.l.a);
         case L_SEQ:
             if (v->kind == V_STR) v = str_chars(v);
-            if (!is_fcn(v) || !(fcn_is_tuple(v) || v->n == 0))
+            if (!is_fcn(v) || !fcn_is_tuple(v))
                 fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
             for (int i = 0; i < v->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.a)) return 0;
             return 1;
@@ -1525,7 +1523,7 @@ static int set_member(Value *v, Value *s) {
             return 1;
         }
         case L_TIMES: {
-            if (!is_fcn(v) || !(fcn_is_tuple(v) || v->n == 0))
+            if (!is_fcn(v) || !fcn_is_tuple(v))
                 fail("Attempted to check if non-tuple\n%s\nis in the set of tuples:\n%s", pretty(v), pretty(s));
             if (v->n != s->n) return 0;
             for (int i = 0; i < s->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.names[s->n + i])) return 0;
@@ -1718,12 +1716,12 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     if (i >= 0) return f->u.fcn.vals[i];
     if (f->kind == V_TUPLE) {
         fp_enter(f->u.fcn.source);   /* TLC cannot fingerprint the tuple */
-        if (a->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument.");
-        fail("Attempted to apply tuple\n%s\nto integer %lld which is out of domain.", pretty(f), (long long)a->u.i);
+        if (a->kind != V_INT) fail("Attempted to access tuple at a non integral index: %s", pretty(a));
+        fail("Attempted to access index %lld of tuple\n%s\nwhich is out of bounds.", (long long)a->u.i, pretty(f));
     }
     if (f->made == MADE_RECORD) {
-        if (a->kind != V_STR) fail("Attempted to apply record to a non-string value %s.", pretty(a));
-        fail("Attempted to apply the record\n%s\nto nonexistent record field %s.", pretty(f), S(a->u.i));
+        if (a->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(a));
+        fail("Attempted to access nonexistent field '%s' of record\n%s", S(a->u.i), pretty(f));
     }
     if (f->made >= MADE_LAMBDA)
         fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.\n", pretty(f), pretty(a));
@@ -1751,7 +1749,6 @@ static Value *mk_fcn_from(List *keys, List *vals) {
     if (n > 1) qsort(p, (size_t)n, sizeof(Pair), cmp_pair);
     Value *f = mk_fcn(n);
     for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = p[i].k; f->u.fcn.vals[i] = p[i].v; }
-    if (n == 0) f->empty_fcn = 1;
     return f;
 }
 
@@ -4818,7 +4815,6 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
         g->u.fcn.vals[i] = lambda_apply(f, dom->u.set.elems[i]);
     }
     keep_lazy = keep;
-    if (!dom->n) g->empty_fcn = 1;
     g->made = params ? MADE_PARAMS : MADE_LAMBDA;
     if (may_keep(f)) { *f = *g; g = f; }
     arena = saved;
@@ -5125,7 +5121,6 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
                              : eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, k, c.env, e), c.inst});
     }
     fp_leave(where);
-    if (!dom->n) f->empty_fcn = 1;
     if (!d) f->made = params ? MADE_PARAMS : MADE_LAMBDA;
     return f;
 }
@@ -5142,6 +5137,7 @@ static int nowarning;   /* TLC's warnings off (-nowarning) */
    turn them off. */
 static int warned;
 static void warning(const char *text) {
+    if (nowarning) return;
     printf("Warning: %s\n", text);
     if (!warned++) printf("(Use the -nowarning option to disable this warning.)\n");
     fflush(stdout);
@@ -5168,8 +5164,8 @@ static void warn_except(Expr *e) {
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
     if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
-    if (f->kind == V_TUPLE && key->kind != V_INT) fail("Attempted to apply tuple to a non-integer argument %s.", pretty(key));
-    if (f->kind == V_FCN && f->made == MADE_RECORD && key->kind != V_STR) fail("Attempted to apply record to a non-string argument %s.", pretty(key));
+    if (f->kind == V_TUPLE && key->kind != V_INT) fail("Attempted to access tuple at a non integral index: %s", pretty(key));
+    if (f->kind == V_FCN && f->made == MADE_RECORD && key->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(key));
     int k = f->kind == V_LAMBDA ? -1 : fcn_index(f, key);
     if (f->kind != V_LAMBDA && k < 0) { warn_except(where->args[0]); return f; }
     Value *old = k >= 0 ? f->u.fcn.vals[k] : fcn_apply(f, key, where);
@@ -5719,7 +5715,7 @@ EVAL(ev_temporal) {
                      : e->kind == X_TFORALL ? "\\AA" : "\\EE";
     fail_runtime(e, TPP_ERROR, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
 }
-EVAL(ev_cdot) { UNUSED_C; (void)e; fail("The current version of TLC does not support action composition."); }
+EVAL(ev_cdot) { UNUSED_C; (void)e; fail("The current version of TLC does not support action composition.  An incomplete implementation can be enabled via the tlc2.tool.impl.Tool.cdot=true java property."); }
 #undef UNUSED_C
 #undef EVAL
 
@@ -6295,7 +6291,6 @@ NATIVE(n_permutations) {
     for (;;) {
         Value *f = mk_fcn(n);
         for (int i = 0; i < n; i++) { f->u.fcn.keys[i] = s->u.set.elems[i]; f->u.fcn.vals[i] = s->u.set.elems[p[i]]; }
-        if (n == 0) f->empty_fcn = 1;
         list_add(&out, f);
         int i = n - 2;
         while (i >= 0 && p[i] >= p[i + 1]) i--;
@@ -6398,7 +6393,6 @@ static Value *product_element(Value *s, Value **vals) {
         t->u.fcn.vals[i] = vals[i];
     }
     if (s->lazy == L_RCDSET) t->made = MADE_RECORD;
-    if (!n && s->lazy == L_FCNSET) t->empty_fcn = 1;
     return t;
 }
 
@@ -7325,7 +7319,7 @@ static void encode(Buf *b, Value *v) {
         return;
     }
     case V_TUPLE: case V_FCN: {
-        if (v->kind == V_FCN && v->n == 0) { put_tagged(b, v->empty_fcn ? 'E' : 'T', 0); return; }
+        if (v->kind == V_FCN && v->n == 0) { put_tagged(b, 'T', 0); return; }
         put_tagged(b, v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : 'F', v->n);
         for (int i = 0; i < v->n; i++) {
             if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
@@ -7365,7 +7359,6 @@ static Value *decode(const char **p) {
         t->u.fcn.hash = sum;
         return t;
     }
-    case 'E': { get32(p); Value *f = mk_fcn(0); f->empty_fcn = 1; return f; }
     default: {
         int n = get32(p);
         Value *f = mk_fcn(n);
@@ -7494,7 +7487,6 @@ static Value *permute_value(Value *v, Value *perm) {
             list_add(&vals, permute_value(v->u.fcn.vals[i], perm));
         }
         Value *f = mk_fcn_from(&keys, &vals);
-        f->empty_fcn = v->empty_fcn;
         f->made = v->made;
         return f;
     }
@@ -7933,9 +7925,9 @@ static int print_trace(int s1, Value **s2, int action) {
     return failed;
 }
 
-static void print_counts(int queued, int with_depth) {
+static void print_counts(int queued) {
     printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates, queued);
-    if (with_depth) printf("The depth of the complete state graph search is %d.\n", max_depth);
+    printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
     fflush(stdout);
 }
 
@@ -8063,7 +8055,8 @@ static void dump_node(int idx, Value **st) {
             buf_add(&b, c, 1);
         }
     }
-    fprintf(dump_file, "%lld [label=\"%s\"%s\n", (long long)states[idx].fp, b.s, states[idx].parent < 0 ? ",style = filled]" : "];");
+    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)states[idx].fp, b.s);
+    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)states[idx].fp, b.s, b.s);
     free(b.s);
     if (states[idx].parent < 0) dump_rank(idx);
 }
@@ -8158,7 +8151,7 @@ static int next_emit(void) {
         printf("Error: Successor state is not completely specified by ");
         if (nactions == 1) printf("the next-state action");
         else printf("action %s of the next-state relation", S(actions[cur_action].name));
-        printf(". The following variable%s not assigned: ", unassigned == 1 ? " is" : "s are");
+        printf(". The following variable%s not defined: ", unassigned == 1 ? " is" : "s are");
         for (int i = 0, k = 0; i < nvars; i++) if (!succ[i]) printf("%s%s", k++ ? ", " : "", S(vars[i]->name));
         printf(".\n\n");
         print_trace(expanding, succ, cur_action);
@@ -8255,14 +8248,14 @@ static int expand_state(int idx) {
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
         if (violation) {
-            print_counts(nstates - expanded - (violation != TPP_FAILURE_EVAL && violation_fresh), 1);
+            print_counts(nstates - expanded - (violation != TPP_FAILURE_EVAL && violation_fresh));
             return violation;
         }
     }
     if (succ_count == 0 && check_deadlock) {
         printf("Error: Deadlock reached.\n");
         print_trace(idx, NULL, 0);
-        print_counts(nstates - expanded, 1);
+        print_counts(nstates - expanded);
         return TPP_VIOLATION_DEADLOCK;
     }
     note_expanded(idx);
@@ -8687,12 +8680,12 @@ static int search(void) {
             /* After an error in a property TLC went on as it replays Init. */
             if (!live_init_failed) replay_error(NULL);
             if (over != 2) print_unfingerprinted(fps, nfp);
-            print_counts(nstates, 0);
+            print_counts(nstates);
             return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
         if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
-            print_counts(nstates - expanded - checking_invariant(), checking_invariant());
+            print_counts(nstates - expanded - checking_invariant());
             return checking_invariant() ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         int outside = fingerprinting;
@@ -8702,7 +8695,7 @@ static int search(void) {
             print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": util.Assert$TLCRuntimeException: ");
             print_error_text();
             if (!over) print_unfingerprinted(fps, nfp);
-            print_counts(outside ? nstates - expanded : 0, 0);
+            print_counts(outside ? nstates - expanded : 0);
             return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking(action_props, naction_props)) {
@@ -8710,7 +8703,7 @@ static int search(void) {
             print_error_text();
             int failed = print_trace(expanding, error_state, cur_action);
             print_unfingerprinted(fps, nfp);
-            print_counts(nstates - expanded - violation_fresh, 0);
+            print_counts(nstates - expanded - violation_fresh);
             return failed ? failed : error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
         }
         if (checking_invariant()) {
@@ -8719,7 +8712,7 @@ static int search(void) {
             printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
             print_error_text();
             int failed = print_trace(expanding, error_state, cur_action);
-            print_counts(nstates - expanded - 1, !failed);
+            print_counts(nstates - expanded - 1);
             return failed ? failed : TPP_FAILURE_SAFETY_EVAL;
         }
         /* TLC reports an error of its own evaluator in Next as an unexpected
@@ -8733,7 +8726,7 @@ static int search(void) {
         print_trace(expanding, NULL, 0);
         replay_error(from);
         print_unfingerprinted(fps, nfp);
-        print_counts(nstates - expanded, 0);
+        print_counts(nstates - expanded);
         if (status == TPP_FAILURE_EVAL && error_module == 1) status = TPP_ERROR;
         return status;
     }
@@ -8749,7 +8742,7 @@ static int search(void) {
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops, exiting as if no error */
         if (violation) printf("\n");
-        print_counts(nstates, 0);
+        print_counts(nstates);
         return TPP_OK;
     }
     if (violation) return violation;
@@ -8781,14 +8774,14 @@ static int search(void) {
         handler = &live;
         if (sigsetjmp(live, 0)) return live_error();
         if (live_violated()) {
-            print_counts(exit_requested ? nstates - expanded : 0, 0);
+            print_counts(exit_requested ? nstates - expanded : 0);
             return TPP_VIOLATION_LIVENESS;
         }
         handler = &here;
     }
     handler = NULL;
     printf("Model checking completed. No error has been found.\n");
-    print_counts(exit_requested ? nstates - expanded : 0, 1);
+    print_counts(exit_requested ? nstates - expanded : 0);
     return TPP_OK;
 }
 
@@ -9888,7 +9881,17 @@ static int literal_def(Expr *e) { return e->def->body->kind == X_NUM || e->def->
 static int config_check(Expr *e, const char *what) {
     Value *v = literal_def(e) ? NULL : constant_value(e);
     if (!v) return 1;
-    if (v->kind == V_BOOL && v->u.i) return 0;
+    if (v->kind == V_BOOL && v->u.i) {
+        if (!strcmp(what, "invariant")) {
+            Buf b = {0};
+            buf_printf(&b, "The invariant %s is a constant-level formula (i.e., it contains no variables, primes, or temporal operators) and evaluates to TRUE. "
+                       "To assert constant-level formulas in your spec, use ASSUME ConstInv. If you optionally want to give the assumption a name, write ASSUME YourAssumption == ConstInv instead. "
+                       "See https://explain.tlapl.us/assumptions-and-invariants for additional details.", S(e->def->name));
+            warning(b.s);
+            free(b.s);
+        }
+        return 0;
+    }
     config_error("The %s of %s is equal to %s", what, S(e->def->name), pretty(v));
 }
 
@@ -10002,6 +10005,19 @@ static int setup_model(void) {
             if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, e->def->name);
         } else if (strncmp(k, "PROPERT", 7) == 0) {
             e = config_call(it->name, "property", 's');
+            if (expr_level(e) == 1) {
+                Buf b = {0};
+                const char *p = S(it->name);
+                buf_printf(&b, "The formula %s is a state-level formula, but it was used as a PROPERTY (or PROPERTIES), "
+                           "where a temporal formula is typically expected. State-level formulas used as PROPERTY "
+                           "or PROPERTIES are only checked in the initial state. To verify that the formula %s "
+                           "holds in all states of every behavior, use INVARIANT %s instead. Alternatively, "
+                           "applying the \"always\" temporal operator ([]) to the state-level formula %s changes it "
+                           "into a temporal formula, asserting that %s holds in all states of every behavior. "
+                           "See https://explain.tlapl.us/invariants-and-properties for additional details.", p, p, p, p, p);
+                warning(b.s);
+                free(b.s);
+            }
             if (config_check(e, "property")) use_property(e);
         } else if (strncmp(k, "CONSTRAINT", 10) == 0) {
             e = config_call(it->name, "constraint", 'r');
@@ -11131,11 +11147,6 @@ int tpp_check(const TPPOptions *o) {
         if (nsymmetry)
             warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
                     "violations of the stated liveness properties. Please check liveness without symmetry defined.");
-        if (nconstraints || naction_constraints)
-            warning("Declaring state or action constraints during liveness checking is dangerous: "
-                    "Please read section 14.3.5 on page 247 of Specifying Systems "
-                    "(https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at "
-                    "https://discuss.tlapl.us/msg00994.html for more details.");
     }
     int status = 0;
     for (int i = 0; i < nmodules && !status; i++) {
@@ -11158,7 +11169,7 @@ int tpp_check(const TPPOptions *o) {
         }
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
-        print_counts(0, 1);
+        print_counts(0);
         return TPP_OK;
     }
     /* With nothing to check on steps, TLC computes the initial states first. */
@@ -11176,7 +11187,7 @@ int tpp_check(const TPPOptions *o) {
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
-        fputs("strict digraph DiskGraph {\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
+        fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
         dump_actions = o->dump_actions;
     }
     /* A simulation is TLC's with one worker; -continue reports in the search's order. */
