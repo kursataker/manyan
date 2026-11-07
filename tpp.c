@@ -9576,6 +9576,25 @@ static void property_parts(Expr *e, Expr *call, int name, Part **out, int *n) {
     (*out)[(*n)++] = (Part){e, call, name};
 }
 
+/* A property's part that is an action, not under []. */
+static void action_property(Expr *e, int name) {
+    Buf at = {0};
+    loc_text(&at, e);
+    const char *n = S(name), *l = at.s;
+    const char *level = "is an action-level formula (i.e., it contains no temporal operators). "
+                        "Only temporal-level (or state-level) formulas are allowed under PROPERTY or PROPERTIES.";
+    const char *book = "Specifying Systems at https://lamport.azurewebsites.net/tla/book.html";
+    if (e->kind == X_SQACT)
+        config_error("The formula %s at %s %s To check that action %s holds in *every* step of the behavior, define a temporal property "
+                     "by applying the \"always\" temporal operator ([]) to the formula at %s (compare page 90 of %s).", n, l, level, n, l, book);
+    if (e->kind == X_ANGLEACT)
+        config_error("The formula %s at %s %s To check that infinitely many %s steps occur, define a temporal property by applying "
+                     "the \"always eventually\" temporal operator combination ([]<>) to the formula at %s (compare page 91 of %s).", n, l, level, n, l, book);
+    config_error("The formula %s at %s %s To check that action %s holds in *every* step of the behavior, define a temporal property: "
+                 "Let A be the formula at %s; rewrite A as [][A]_v, where v is a state function (typically the tuple of variables) "
+                 "(compare page 90 of %s).", n, l, level, n, l, book);
+}
+
 /* A property: []P as an invariant, [][A]_v as an action property, the
    rest checked on the state graph (§10.5). */
 static void use_property(Expr *p) {
@@ -9587,7 +9606,7 @@ static void use_property(Expr *p) {
         Expr *e = parts[i].e, *call = parts[i].call;
         int name = parts[i].name;
         if (expr_level(e) <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), name); continue; }
-        if (expr_level(e) == 2) config_error("The property %s is not correctly defined.", S(name));   /* an action, not under [] */
+        if (expr_level(e) == 2) action_property(e, name);
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
             if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), name); continue; }
