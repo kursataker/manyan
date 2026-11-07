@@ -542,7 +542,12 @@ the sets in it, so an infinite `S \cup T` or `S \ T` is an error there.
 `Any` is the set of every value; it prints as `ANY`. `TLCSet(i, v)`, for
 a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 `TLCGet(i)` yields it, and is an error when nothing was kept;
-`TLCGet("level")` is the depth of the current state. `TLCGet` fails while the
+`TLCGet("level")` is the depth of the state a predicate is evaluated on
+(of the step's first state in an action, 0 in Init and the assumptions);
+`TLCGet("config")` is the record `[mode |-> "bfs", deadlock |-> b, worker
+|-> n, seed |-> s]` of a search, without TLC's fields naming its jar and its
+fingerprint polynomial. TLC implements `TLCGet` by an evaluation method, so
+its errors carry that method's preamble (§11.3). `TLCGet` fails while the
 model is read, before the assumptions are checked, as TLC's does before
 its checker exists: a definition that uses it is not evaluated once as a
 constant, but each time it is used.

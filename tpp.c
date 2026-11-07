@@ -6379,6 +6379,7 @@ static Buf *registers;
 static int nregisters;
 static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
 static int64_t search_counter(const char *key);
+static Value *search_config(void);
 
 NATIVE(n_tlcget) {
     UNUSED;
@@ -6386,13 +6387,14 @@ NATIVE(n_tlcget) {
     if (a[0]->kind == V_STR) {
         const char *key = S(a[0]->u.i);
         if (!strcmp(key, "level")) return mk_int(cur_level);
+        if (!strcmp(key, "config") && !simulating) return search_config();
         int64_t n = search_counter(key);
-        if (n < 0) fail_module("TLCGet(%s) was undefined.", key);
+        if (n < 0) fail("TLCGet(%s) was undefined.", key);
         return mk_int(n);
     }
     if (a[0]->kind != V_INT || a[0]->u.i < 0)
-        fail_module("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
-    if (a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail_module("TLCGet(%s) was undefined.", pretty(a[0]));
+        fail("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
+    if (a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail("TLCGet(%s) was undefined.", pretty(a[0]));
     const char *p = registers[a[0]->u.i].s;
     return decode(&p);
 }
@@ -6678,6 +6680,9 @@ NATIVE(n_tlceval) { UNUSED; return a[0]; }
 #define J_I "tlc2.value.impl.IntValue"
 #define J_IV "tlc2.value.impl.IntervalValue"
 #define J_B "tlc2.value.IBoolValue"
+/* An evaluation method's, which takes its arguments unevaluated. */
+#define J_EVAL "tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context," \
+               "tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel"
 
 /* Each native operator, with the Java method TLC implements it by. */
 static const struct { const char *module, *name; Native fn; const char *ret, *method; } natives[] = {
@@ -6709,7 +6714,7 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "PrintT", n_printt, J_V, "PrintT(" J_V ")"},
     {"TLC", "Assert", n_assert, J_V, "Assert(" J_V "," J_V ")"},
     {"TLC", "JavaTime", n_javatime, J_V, "JavaTime()"},
-    {"TLC", "TLCGet", n_tlcget, J_V, "TLCGet(" J_V ")"},
+    {"TLC", "TLCGet", n_tlcget, J_V, "TLCGetSet.TLCGetEval(" J_EVAL ")"},
     {"TLC", "TLCSet", n_tlcset, J_V, "TLCSet(" J_V "," J_V ")"},
     {"TLC", ":>", n_singleton, J_V, "MakeFcn(" J_V "," J_V ")"},
     {"TLC", "@@", n_merge, J_V, "CombineFcn(" J_V "," J_V ")"},
@@ -6723,8 +6728,10 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};
 
-/* The number of arguments of a native's Java method. */
+/* The number of arguments of a native's Java method; an evaluation
+   method's operator takes one. */
 static int native_arity(const char *method) {
+    if (strstr(method, "ExprOrOpArgNode[]")) return 1;
     const char *p = strchr(method, '(');
     int n = p[1] != ')';
     for (; *p; p++) n += *p == ',';
@@ -6745,10 +6752,12 @@ static void bind_natives(void) {
                     && d->nparams == native_arity(natives[k].method)) {
                     d->native = natives[k].fn;
                     /* TLC always loads Integers (its trace modules use it), and takes
-                       Naturals' operators from its class. */
+                       Naturals' operators from its class; a method may name its own. */
+                    const char *m = natives[k].method;
                     const char *cls = strcmp(natives[k].module, "Naturals") == 0 ? "Integers" : natives[k].module;
+                    int named = memchr(m, '.', (size_t)(strchr(m, '(') - m)) != NULL;
                     Buf b = {0};
-                    buf_printf(&b, "public static %s tlc2.module.%s.%s", natives[k].ret, cls, natives[k].method);
+                    buf_printf(&b, "public static %s tlc2.module.%s%s%s", natives[k].ret, named ? "" : cls, named ? "" : ".", m);
                     d->java = buf_take(&b);
                 }
         }
@@ -8435,6 +8444,20 @@ static int next_emit(void) {
 }
 
 static time_t started;   /* when checking began, for TLCGet("duration") */
+
+/* TLCGet("config") of a search: TLC's fields but those naming its
+   fingerprint polynomial and its jar. */
+static Value *search_config(void) {
+    char seed[24];
+    snprintf(seed, sizeof seed, "%lld", (long long)draw_seed);
+    const char *names[] = {"mode", "deadlock", "worker", "seed"};
+    Value *vals[] = {mk_str(intern("bfs")), BOOLV(check_deadlock), mk_int(nworkers), mk_str(intern(seed))};
+    List keys = {0}, l = {0};
+    for (int i = 0; i < 4; i++) list_add(&keys, mk_str(intern(names[i]))), list_add(&l, vals[i]);
+    Value *r = mk_fcn_from(&keys, &l);
+    r->made = MADE_RECORD;
+    return r;
+}
 
 /* TLCGet's counters of the search, -1 for another key. As TLC, a new
    successor joins the queue once checked; a simulation counts none but
