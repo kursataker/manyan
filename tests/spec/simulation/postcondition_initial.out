@@ -1,0 +1,8 @@
+Error: Invariant Inv is violated by the initial state:
+x = 0
+
+Error: The post condition Nope specified in the configuration file
+is not defined in the specification.
+While working on the initial state:
+x = 0
+exit 255

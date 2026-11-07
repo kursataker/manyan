@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 7, col 9 to line 7, col 13 of module postcondition_liveness>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module postcondition_liveness>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module postcondition_liveness>
+x = 2
+
+State 4: <Next line 8, col 9 to line 8, col 27 of module postcondition_liveness>
+x = 3
+
+State 5: Stuttering
+Error: Evaluating postcondition Post at line 10, col 9 to line 10, col 30 of module postcondition_liveness failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLCGetSet.TLCGetEval(tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context,tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel),
+but it produced the following error:
+TLCGet(distinct) was undefined.
+exit 13

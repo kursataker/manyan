@@ -766,8 +766,9 @@ behavior to it, then the failure of TLC's postcondition that writes the
 behavior out, and exits with status 75. An evaluation error prints TLC's
 unexpected-exception report, but for an error TLC raises as a
 `TLCRuntimeException`, one with a preamble of §11.3 or an undefined primed
-variable: that prints as `Error:` and its message, then the behavior, and
-exits with status 255 or 151. With `-continue` a violation ends its
+variable, in a behavior: that prints as `Error:` and its message, then
+the behavior, and exits with status 255 or 151; as the initial states are
+computed it is a `java.lang.RuntimeException` (exit 255). With `-continue` a violation ends its
 behavior and the simulation goes on, ending as if none was found. The
 state counts of a simulation are unspecified (§11.1).
 
@@ -790,7 +791,11 @@ TLC's unexpected `java.lang.RuntimeException`, and no postcondition is
 checked. After an error the exit status is the error's, and an error
 resolving a name is ignored; else a false or failed postcondition replaces
 `Model checking completed. No error has been found.`, before the counts,
-with exit 10, and an error resolving one with exit 255.
+with exit 10, and an error resolving one with exit 255. A simulation
+reports an error resolving a name as `Error:` and its message, exit 151,
+even after an error, whose status it replaces; after an initial state
+that violates an invariant, it is followed by `While working on the
+initial state:` and the state, exit 255.
 
 ## 11 Output
 

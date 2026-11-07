@@ -8274,21 +8274,24 @@ static int print_trace(int s1, Value **s2, int action) { return trace_states(s1,
 static int *posts, nposts;   /* the POSTCONDITIONs' names */
 
 /* The postconditions checked as TLC checks them once the search is done,
-   or after an error it reported (after_error), in order: returns the exit
-   status of the first that is false or fails, which it reports, or 0.
+   or after an error it reported (after_error), in order: the first that
+   is false or fails is reported, with its exit status but after an error.
    As TLC, each name is resolved first, and an error resolving one stops
-   the check: reported, but ignored after an error. */
+   the check: the simulator reports it plainly, with its status, even
+   after an error; the model checker as an unexpected exception, but
+   ignores it after an error. */
 static int check_posts(int after_error) {
     Def **d = NEWN(Def *, nposts + 1);
     for (int i = 0; i < nposts; i++) {
         Buf why = {0};
         if ((d[i] = late_def(posts[i], "post condition", &why))) continue;
-        if (!after_error) {
+        if (simulating) printf("Error: %s\n", why.s);
+        else if (!after_error) {
             print_exception("java.lang.RuntimeException", ": ");
             printf("%s\n", why.s);
         }
         free(why.s);
-        return after_error ? 0 : TPP_ERROR;
+        return simulating ? TPP_ERROR_CONFIG : after_error ? 0 : TPP_ERROR;
     }
     EvalState saved = eval_save();
     ErrorState error = error_save();
@@ -8322,7 +8325,7 @@ static int check_posts(int after_error) {
     eval_restore(saved);
     error_restore(&error);
     cur_level = level;
-    return status;
+    return after_error ? 0 : status;
 }
 
 /* An error TLC reports for a state, or a step from it to s2, is followed
@@ -9376,15 +9379,16 @@ static void sim_print(States *trace) {
         print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL, trace->a[i + (i + 1 < trace->n)]);
 }
 
-/* TLC's simulator reports a TLCRuntimeException, or an error raised
-   outside its evaluator, plainly, any other as unexpected. */
-static void sim_exception(void) {
-    if (error_module == 2 || stackless) {
+/* TLC's simulator reports an error raised outside its evaluator, and a
+   TLCRuntimeException in a behavior (in_behavior), plainly, any other as
+   unexpected. */
+static void sim_exception(int in_behavior) {
+    if (stackless || (in_behavior && error_module == 2)) {
         printf("Error: ");
         print_error_text();
         return;
     }
-    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
+    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module == 1 ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
     print_error_text();
 }
 
@@ -9482,8 +9486,8 @@ static int simulate(const TPPOptions *o) {
             sim_summary(seed, aril);
             return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
         }
-        sim_exception();
-        int status = error_module == 2 ? error_status : TPP_ERROR;
+        sim_exception(trace.n > 0);
+        int status = trace.n && error_module == 2 ? error_status : TPP_ERROR;
         if (trace.n) {
             error_check = NULL;
             sim_print(sim_behavior(&trace, NULL, 0));
@@ -9513,6 +9517,12 @@ static int simulate(const TPPOptions *o) {
                 return TPP_ERROR;
             }
         int violated = check_initial(st);
+        if (violated && check_posts(1)) {   /* TLC's error, as one in an invariant */
+            printf("While working on the initial state:\n");
+            print_state(st);
+            printf("\n");
+            return TPP_ERROR;
+        }
         if (violated) return violated;
         if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st, -1);
     }
@@ -9564,7 +9574,10 @@ static int simulate(const TPPOptions *o) {
                 } else break;
                 sim_print(b);
                 sim_summary(seed, aril);
-                if (!keep_going) return status;
+                if (!keep_going) {
+                    int post = check_posts(1);
+                    return post ? post : status;
+                }
                 ended = 1;   /* as TLC, the behavior ends; the next begins */
                 break;
             }
@@ -9574,7 +9587,8 @@ static int simulate(const TPPOptions *o) {
         if (ended) continue;
         if (ntemporal_props && sim_violates(sim_behavior(&trace, NULL, 0))) {
             sim_summary(seed, aril);
-            return TPP_VIOLATION_LIVENESS;
+            int post = check_posts(1);
+            return post ? post : TPP_VIOLATION_LIVENESS;
         }
         if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(&trace, NULL, 0));
     }

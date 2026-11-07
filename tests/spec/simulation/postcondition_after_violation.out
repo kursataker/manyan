@@ -1,0 +1,14 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 9 to line 7, col 13 of module postcondition_after_violation>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module postcondition_after_violation>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module postcondition_after_violation>
+x = 2
+
+Error: Postcondition Post at line 10, col 9 to line 10, col 31 of module postcondition_after_violation is false.
+exit 12
