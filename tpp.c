@@ -403,6 +403,7 @@ struct Value {
         unsigned char keep;  /* V_LAMBDA: TLC's KeepLazy when it was made, which it is computed in full with */
     };
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
+    unsigned char range;     /* a V_FCN whose domain TLC keeps as the interval of its keys */
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
@@ -767,7 +768,8 @@ static int pp_odd_name(int name) {
 static int pp_plain(Value *v) {
     if (v->kind == V_LAMBDA) return try_realize(v)->kind == V_LAMBDA;   /* TLC cannot parse <expression ...> */
     if (v->kind == V_MODEL) return pp_odd_name((int)v->u.i);
-    if (v->kind == V_INTERVAL || (v->kind == V_LAZY && !expandable(v))) return 1;
+    if (v->kind == V_INTERVAL) return v->n && v->u.range.lo < 0;   /* TLC cannot parse -1..3 */
+    if (v->kind == V_LAZY && !expandable(v)) return 1;
     if (v->kind == V_LAZY) return pp_plain(normalize_set(v));
     if (v->kind == V_SET)
         for (int i = 0; i < v->n; i++) if (pp_plain(v->u.set.elems[i])) return 1;
@@ -1136,7 +1138,7 @@ static Value *mk_fcn_from(List *keys, List *vals);
 
 /* All functions from the elements of `dom` (sorted) to elements of `rng`,
    made in the standard order: the last value varies fastest. */
-static Value *enumerate_functions(Value **dom, int nd, Value *rng) {
+static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
     rng = enumerate(rng);
     int64_t total = 1;
     for (int i = 0; i < nd; i++) {
@@ -1151,6 +1153,7 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng) {
         Value *f = out->u.set.elems[k] = NEW(Value);
         f->kind = V_FCN;
         f->n = nd;
+        f->range = range && nd;
         f->u.fcn.keys = keys;
         f->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)nd);
         for (int i = 0; i < nd; i++) f->u.fcn.vals[i] = rng->u.set.elems[idx[i]];
@@ -1231,7 +1234,7 @@ static Value *enumerate_lazy(Value *s) {
                 fail("Attempted to enumerate a set of the form [D -> R],but the %s:\n%s\ncannot be enumerated.",
                      i ? "range R" : "domain D", pretty(i ? s->u.l.b : s->u.l.a));
         Value *dom = enumerate(s->u.l.a);
-        Value *out = enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b);
+        Value *out = enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, s->u.l.a->kind == V_INTERVAL);
         fp_leave(s->u.l.expr);
         return out;
     }
@@ -1733,6 +1736,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
 static Value *fcn_domain(Value *f) {
     if (f->kind == V_LAMBDA) return f->u.l.a;
     if (f->kind == V_TUPLE) return mk_interval(1, f->n);
+    if (f->range) return mk_interval(f->u.fcn.keys[0]->u.i, f->u.fcn.keys[f->n - 1]->u.i);
     Value *s = mk_set(f->n);
     for (int i = 0; i < f->n; i++) s->u.set.elems[i] = f->u.fcn.keys[i];
     return s;
@@ -4786,6 +4790,11 @@ static Value *lambda_body(Value *f, Value *a) {
     return v;
 }
 
+/* Whether TLC keeps the domain of [x \in dom |-> e] as an interval. */
+static int interval_domain(Value *dom, Bound *bs, int nb) {
+    return dom->kind == V_INTERVAL && nb == 1 && bs[0].n == 1 && !bs[0].tuple;
+}
+
 /* The function a lazy one is, which it becomes in place where the arenas
    allow; one over an infinite domain stays as it is. */
 static __attribute__((cold)) Value *realize_lambda(Value *f) {
@@ -4805,6 +4814,7 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
     }
     keep_lazy = keep;
     g->made = MADE_LAMBDA;
+    g->range = interval_domain(f->u.l.a, d ? d->bounds : f->u.l.expr->bounds, d ? d->nb : f->u.l.expr->nb) && dom->n;
     if (may_keep(f)) { *f = *g; g = f; }
     arena = saved;
     return g;
@@ -5123,6 +5133,7 @@ static Value *fcndef_apply(Def *d, Value *a, Ctx c) {
    dom; an error meanwhile is one TLC cannot fingerprint at `where`. */
 static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
     fp_enter(where);
+    int range = interval_domain(dom, d ? d->bounds : e->bounds, d ? d->nb : e->nb);
     dom = enumerate(dom);
     Value *f = mk_fcn(dom->n);
     memcpy(f->u.fcn.keys, dom->u.set.elems, sizeof(Value *) * (size_t)dom->n);
@@ -5136,6 +5147,7 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
     }
     fp_leave(where);
     if (!d) f->made = MADE_LAMBDA;
+    f->range = range && dom->n;
     return f;
 }
 
@@ -6403,6 +6415,7 @@ static Value *product_element(Value *s, Value **vals) {
         t->u.fcn.vals[i] = vals[i];
     }
     if (s->lazy == L_RCDSET) t->made = MADE_RECORD;
+    if (s->lazy == L_FCNSET) t->range = s->u.l.a->kind == V_INTERVAL && n;
     return t;
 }
 
@@ -7333,7 +7346,7 @@ static void encode(Buf *b, Value *v) {
     }
     case V_TUPLE: case V_FCN: {
         if (v->kind == V_FCN && v->n == 0) { put_tagged(b, 'T', 0); return; }
-        put_tagged(b, v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : 'F', v->n);
+        put_tagged(b, v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : v->range ? 'N' : 'F', v->n);
         for (int i = 0; i < v->n; i++) {
             if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
             encode(b, v->u.fcn.vals[i]);
@@ -7381,6 +7394,7 @@ static Value *decode(const char **p) {
         }
         f->u.fcn.hash = sum;
         if (tag == 'R') f->made = MADE_RECORD;
+        f->range = tag == 'N';
         return f;
     }
     }
@@ -7501,6 +7515,7 @@ static Value *permute_value(Value *v, Value *perm) {
         }
         Value *f = mk_fcn_from(&keys, &vals);
         f->made = v->made;
+        f->range = v->range;
         return f;
     }
     default:
