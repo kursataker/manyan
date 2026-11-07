@@ -1,0 +1,12 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+z = 0
+
+State 2: <Next line 6, col 9 to line 6, col 28 of module alias_one_field>
+z = 1
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

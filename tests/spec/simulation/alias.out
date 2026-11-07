@@ -1,0 +1,23 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 6, col 9 to line 6, col 13 of module alias>
+/\ z = 0
+/\ n = 1
+/\ l = 1
+
+State 2: <Next line 7, col 9 to line 7, col 18 of module alias>
+/\ z = 1
+/\ n = 2
+/\ l = 2
+
+State 3: <Next line 7, col 9 to line 7, col 18 of module alias>
+/\ z = 2
+/\ n = 3
+/\ l = 3
+
+State 4: <Next line 7, col 9 to line 7, col 18 of module alias>
+/\ z = 3
+/\ n = 3
+/\ l = 4
+exit 12

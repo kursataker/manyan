@@ -584,6 +584,7 @@ a keyword where one is expected, a keyword repeated or followed by nothing, an a
 | `ACTION_CONSTRAINT`, `ACTION_CONSTRAINTS` | actions bounding the explored transitions |
 | `SYMMETRY` | a set of permutations of model values |
 | `VIEW` | the expression whose value identifies states |
+| `ALIAS` | the expression a trace's states are printed as (§11.2) |
 | `CHECK_DEADLOCK` | `TRUE` (the default) or `FALSE` |
 | `POSTCONDITION`, `POSTCONDITIONS` | constant formulas checked once the states are explored (§10.9) |
 
@@ -841,6 +842,17 @@ is named by the definition the step's disjunct belongs to, with the
 values of its constant arguments, `<Inc(1,2) ...>`, and located by that
 disjunct.
 
+With an `ALIAS`, each state of a trace, a counterexample, a simulated
+behavior, or an initial state that violates an invariant or property is
+printed as the alias's value on the step from it to the state after it,
+the last state's to itself and a cycle's last to the state it goes back
+to, with `TLCGet("level")` the state's number: a record is printed as the
+state, its fields as variables in the order its constructor gives them,
+any other value leaves the state as it is. TLC resolves the alias as it
+prints a state, so an undefined name, a constant, or one with parameters
+is, like an error evaluating it, printed as a variable `_ALIASEvalError`,
+a string of the error's message, after the state's variables.
+
 TLC builds a trace by evaluating Init, and Next from each state, until it
 finds the state, so what they print is printed again as the trace is
 printed. After a deadlock, a violated invariant or action property, or a
@@ -867,7 +879,7 @@ capacity it grows to twice plus one, moving entries from the last bucket
 to the first, each to the head of its new bucket. It enumerates the
 buckets from the last to the first, each from its head.
 
-A liveness counterexample is introduced by `Error: Temporal properties were
+A liveness counterexample is introduced by `Error: Temporal property P was
 violated.` and `Error: The following behavior constitutes a
 counter-example:`; it ends with `Back to state i: <Action ...>` when it
 loops back to state `i`, or `State n: Stuttering` when it stutters forever.

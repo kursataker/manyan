@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 0
+/\ next = 1
+
+State 2: <Next line 7, col 9 to line 7, col 24 of module alias>
+/\ x = 1
+/\ next = 2
+
+State 3: <Next line 7, col 9 to line 7, col 24 of module alias>
+/\ x = 2
+/\ next = 0
+
+Back to state 1: <Next line 7, col 9 to line 7, col 24 of module alias>
+
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 13

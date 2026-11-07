@@ -8130,17 +8130,78 @@ static int unchanged(Value *p, Value *v) {
 
 /* State number of a trace, reached by action. With -difftrace, only the
    variables that changed from prev, unless prev is NULL. */
-static void print_numbered(int number, int action, Value **st, Value **prev) {
+/* The definition the configuration names as role, which TLC resolves
+   only as it uses it: a POSTCONDITION or the ALIAS. NULL if TLC fails to,
+   its error in why. */
+static Def *late_def(int name, const char *role, Buf *why) {
+    Sym *s = module_lookup(root, name);
+    Def *d = s && s->def->kind == D_OP ? s->def : NULL;
+    if (!d) buf_printf(why, "The %s %s specified in the configuration file\nis not defined in the specification.", role, S(name));
+    else if (d->cache || d->value) buf_printf(why, "The %s %s cannot be a constant.", role, S(name));
+    else if (d->nparams) buf_printf(why, "TLC requires %s not to take any argument, but one was given: %s", role, S(name));
+    else return d;
+    return NULL;
+}
+
+static int alias_name;   /* the ALIAS, 0 if none */
+static Expr *unfold(Expr *e);
+
+/* State st of a trace, the level-th, followed by next, as TLC prints it:
+   with an ALIAS, the alias's value on the step from st to next is printed
+   as the state if it is a record, its fields as variables, in the order a
+   record constructor gives them, as TLC prints the record unnormalized; an
+   error evaluating it is printed as a variable _ALIASEvalError after st's. */
+static void print_trace_state(Value **st, Value **next, int level) {
+    if (!alias_name) { print_state(st); return; }
+    Buf why = {0};
+    Def *d = late_def(alias_name, "alias", &why);
+    Value *v = NULL;
+    if (d) {
+        EvalState saved = eval_save();
+        ErrorState error = error_save();
+        int64_t saved_level = cur_level;
+        sigjmp_buf here;
+        handler = &here;
+        if (!sigsetjmp(here, 0)) {
+            cur_state = st;
+            next_state = next;
+            cur_level = level;
+            v = realize(eval(d->body, root_ctx));
+        } else {
+            buf_puts(&why, error_message.s ? error_message.s : "");
+            if (error_expr && error_expr->mod) buf_puts(&why, "\n"), node_text(&why, error_expr);
+        }
+        eval_restore(saved);
+        error_restore(&error);
+        cur_level = saved_level;
+    }
+    if (v && fcn_is_record(v)) {
+        Expr *made = unfold(d->body);
+        for (int i = 0; i < v->n; i++) {
+            int k = i;
+            for (int j = 0; made->kind == X_RECORD && j < v->n; j++)
+                if (v->u.fcn.keys[j]->u.i == made->segs[i].name) k = j;
+            printf("%s%s = %s\n", v->n == 1 ? "" : "/\\ ", S(v->u.fcn.keys[k]->u.i), pretty(v->u.fcn.vals[k]));
+        }
+        return;
+    }
+    if (v) { print_state(st); return; }
+    for (int i = 0; i < nvars; i++) printf("/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    printf("/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
+    free(why.s);
+}
+
+static void print_numbered(int number, int action, Value **st, Value **prev, Value **next) {
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
     if (print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
-    if (diff_trace && prev) {
+    if (diff_trace && prev && !alias_name) {
         for (int i = 0; i < nvars; i++)
             if (!unchanged(prev[i], st[i]))
                 printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
     } else {
-        print_state(st);
+        print_trace_state(st, next, number);
     }
     printf("\n");
 }
@@ -8177,12 +8238,12 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
     /* The last state is printed whole, as TLC prints it. TLC prints an
        initial one as it has it, but rebuilds it to rebuild the behavior. */
     if (print) printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i + 1 < n && print; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL);
+    for (int i = 0; i + 1 < n && print; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL, st[i + 1]);
     if (n > 1 || !print) { replay(n > 1 ? st[n - 2] : NULL, st[n - 1], n - 1); st[n - 1] = replay_match; }
-    if (print) print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL);
+    if (print) print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL, s2 ? s2 : st[n - 1]);
     if (s2) {
         replay(st[n - 1], s2, n);
-        if (print) print_numbered(n + 1, action, s2, NULL);
+        if (print) print_numbered(n + 1, action, s2, NULL, s2);
     }
 }
 
@@ -8220,17 +8281,14 @@ static int *posts, nposts;   /* the POSTCONDITIONs' names */
 static int check_posts(int after_error) {
     Def **d = NEWN(Def *, nposts + 1);
     for (int i = 0; i < nposts; i++) {
-        Sym *s = module_lookup(root, posts[i]);
-        d[i] = s && s->def->kind == D_OP ? s->def : NULL;
-        const char *why = !d[i] ? "The post condition %s specified in the configuration file\nis not defined in the specification."
-                        : d[i]->cache || d[i]->value ? "The post condition %s cannot be a constant."
-                        : d[i]->nparams ? "TLC requires post condition not to take any argument, but one was given: %s" : NULL;
-        if (!why) continue;
-        if (after_error) return 0;
-        print_exception("java.lang.RuntimeException", ": ");
-        printf(why, S(posts[i]));
-        printf("\n");
-        return TPP_ERROR;
+        Buf why = {0};
+        if ((d[i] = late_def(posts[i], "post condition", &why))) continue;
+        if (!after_error) {
+            print_exception("java.lang.RuntimeException", ": ");
+            printf("%s\n", why.s);
+        }
+        free(why.s);
+        return after_error ? 0 : TPP_ERROR;
     }
     EvalState saved = eval_save();
     ErrorState error = error_save();
@@ -8448,14 +8506,14 @@ static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
-        if (!print_shown(st)) print_state(st);
+        if (!print_shown(st)) print_trace_state(st, st, 1);
         printf("\n");
         if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
-        if (!print_shown(st)) print_state(st);
+        if (!print_shown(st)) print_trace_state(st, st, 1);
         return TPP_VIOLATION_LIVENESS;
     }
     return 0;
@@ -9314,7 +9372,8 @@ static int sim_next(Value **st) {
    by the action it was reached by. */
 static void sim_print(States *trace) {
     printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i < trace->n; i++) print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL);
+    for (int i = 0; i < trace->n; i++)
+        print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL, trace->a[i + (i + 1 < trace->n)]);
 }
 
 /* TLC's simulator reports a TLCRuntimeException, or an error raised
@@ -10512,7 +10571,8 @@ static int setup_model(void) {
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
             symmetry_tables();
-        } else if (strncmp(k, "POSTCONDITION", 13) == 0) {
+        } else if (strcmp(k, "ALIAS") == 0) alias_name = it->name;
+        else if (strncmp(k, "POSTCONDITION", 13) == 0) {
             posts = xrealloc(posts, sizeof(int) * (size_t)(nposts + 1));
             posts[nposts++] = it->name;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
@@ -11176,8 +11236,8 @@ static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed
 }
 
 /* State number of a counterexample, state s, after the state prev (-1 for none). */
-static void print_live_state(int number, int s, int action, int prev) {
-    print_numbered(number, action, state_values(s), prev < 0 ? NULL : state_values(prev));
+static void print_live_state(int number, int s, int action, int prev, int next) {
+    print_numbered(number, action, state_values(s), prev < 0 ? NULL : state_values(prev), state_values(next));
 }
 
 /* Whether t holds from position pos of the lasso of the n states ls,
@@ -11315,7 +11375,9 @@ static void print_counterexample(int *inits, int ninits) {
     for (int i = 0; i < path.n; i++) {
         int p = (int)path.v[i]->u.i;
         int act = (int)acts.v[i]->u.i;
-        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state);
+        number++;
+        print_live_state(number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state,
+                         lasso[number < nlasso ? number : stutter_only ? number - 1 : path.n - 1]);
     }
     int entry_number = number;
     if (stutter_only) {
@@ -11325,7 +11387,8 @@ static void print_counterexample(int *inits, int ninits) {
     for (int i = 0; i + 1 < cyc.n; i++) {
         int p = (int)cyc.v[i]->u.i;
         int before = (int)(i ? cyc.v[i - 1] : path.v[path.n - 1])->u.i;
-        print_live_state(++number, pnodes[p].state, (int)cacts.v[i]->u.i, pnodes[before].state);
+        number++;
+        print_live_state(number, pnodes[p].state, (int)cacts.v[i]->u.i, pnodes[before].state, lasso[number < nlasso ? number : path.n - 1]);
     }
     printf("Back to state %d: ", entry_number);
     action_label((int)cacts.v[cyc.n - 1]->u.i);

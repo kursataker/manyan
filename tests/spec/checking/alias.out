@@ -1,0 +1,32 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ double = 0
+/\ x = 0
+/\ next = 1
+/\ level = 1
+/\ bad = -1
+
+State 2: <Next line 9, col 9 to line 9, col 37 of module alias>
+/\ x = 1
+/\ y = 0
+/\ _ALIASEvalError = "The second argument of \\div is 0."
+
+State 3: <Next line 9, col 9 to line 9, col 37 of module alias>
+/\ double = 4
+/\ x = 2
+/\ next = 3
+/\ level = 3
+/\ bad = 1
+
+State 4: <Next line 9, col 9 to line 9, col 37 of module alias>
+/\ double = 6
+/\ x = 3
+/\ next = 3
+/\ level = 4
+/\ bad = 0
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 11
