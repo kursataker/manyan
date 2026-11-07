@@ -9150,16 +9150,15 @@ static _Noreturn void config_error(const char *fmt, ...) {
 /* line: where the lexer is; tline: the line of the token last read. */
 typedef struct { const char *s; int pos, line, tline; } CfgLexer;
 
-/* A configuration TLC cannot read: its ConfigFileException. */
+/* A configuration TLC cannot read. */
 static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
-    print_exception("tlc2.tool.ConfigFileException", ": ");
-    printf("TLC found an error in the configuration file at line %d\n", L->tline);
+    printf("Error: TLC found an error in the configuration file at line %d\n", L->tline);
     va_list ap;
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
     printf("\n");
-    exit(TPP_ERROR);
+    exit(TPP_ERROR_CONFIG);
 }
 
 static void cfg_space(CfgLexer *L) {
@@ -9633,7 +9632,7 @@ static void evaluate_constant(Def *d) {
 
 /* TLC evaluates the constant definitions of each module at startup, in
    the order SANY finishes the modules (a module after those it uses): a
-   constant replaced by a definition must evaluate as a constant, and every
+   constant replaced by a definition with variables must evaluate, and every
    other constant definition without parameters is evaluated once, any
    error ignored. Side effects such as Print show then. */
 static void evaluate_constants(Module *m) {
@@ -9647,6 +9646,8 @@ static void evaluate_constants(Module *m) {
         handler = &here;
         if (sigsetjmp(here, 0)) {
             handler = NULL;
+            /* A constant definition that fails is reported as the model is checked. */
+            if (expr_level(c->replacement->body) == 0) continue;
             Buf b = {0};
             node_text(&b, error_expr);
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),

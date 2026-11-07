@@ -1,5 +1,6 @@
 ---- MODULE substitute_java ----
-\* A substitution that fails in a Java operator names the error.
+\* A constant substitution that fails in a Java operator is reported as
+\* the initial states are computed.
 EXTENDS Naturals
 CONSTANT C
 VARIABLE x
