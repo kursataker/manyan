@@ -5,17 +5,18 @@ the same specifications and model configurations as TLC and produces same
 outcome, 1.1 to 27.2 times faster with one worker (`make release`).
 
 ```
-$ tpp -workers auto MySpec
+$ ./tpp examples/DieHard
+tpp version 0.5.0
 Finished computing initial states: 1 distinct state generated.
-Error: Invariant Safe is violated.
+Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
-/\ x = 0
-/\ y = 0
+/\ big = 0
+/\ small = 0
 
-State 2: <Next line 7, col 9 to line 7, col 30 of module MySpec>
-/\ x = 1
-/\ y = 0
+State 2: <Next line 9, col 12 to line 9, col 37 of module DieHard>
+/\ big = 5
+/\ small = 0
 ...
 ```
 
@@ -62,10 +63,10 @@ built for macOS, Linux and Windows. To build it instead:
 
 ```sh
 make                          # builds ./tpp; needs a C11 compiler
-make release                  # faster ./tpp: profile-guided, trained on tests/spec
-./tpp -config MySpec.cfg MySpec
-./tpp -workers auto MySpec    # one worker per core
-make install                  # PREFIX=/usr/local by default
+./tpp examples/DieHard        # checks examples/DieHard.tla with examples/DieHard.cfg
+./tpp -workers auto examples/DieHard   # one worker per core
+make install PREFIX=~/.local  # installs ~/.local/bin/tpp
+make release                  # faster ./tpp: profile-guided; needs python3
 ```
 
 See [the manual](docs/manual.md) for the options, the configuration file,
@@ -101,7 +102,8 @@ parsed and skipped.
 
 `tpp` follows [the tpp TLA⁺ Standard](docs/standards/tla2.md),
 with TLC 2.19 as the oracle for every choice the language leaves open.
-The tests follow it:
+The tests follow it; they need python3, and those that run TLC also need
+Java (they download tla2tools 1.7.4 themselves):
 
 - `tests/spec`: over 500 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test
@@ -128,6 +130,7 @@ docs/optimizations.md  what made tpp fast, and what did not
 docs/roadmap.md        where tpp is going
 tests/spec/            conformance tests, by chapter of the standard
 tests/tla/             TLA⁺ models of tpp's algorithms
+examples/              a spec and its configuration to try tpp on
 bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
 CHANGELOG.md           what each release changed; releasing is tagging vX.Y.Z
 ```
