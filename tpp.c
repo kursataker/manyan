@@ -6379,6 +6379,7 @@ static Buf *registers;
 static int nregisters;
 static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
 static int64_t search_counter(const char *key);
+static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for the initial states */
 static Value *search_config(void);
 
 NATIVE(n_tlcget) {
@@ -6388,6 +6389,7 @@ NATIVE(n_tlcget) {
         const char *key = S(a[0]->u.i);
         if (!strcmp(key, "level")) return mk_int(cur_level);
         if (!strcmp(key, "config") && !simulating) return search_config();
+        if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
         int64_t n = search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
         return mk_int(n);
@@ -6519,13 +6521,13 @@ static int jr_int(JRandom *r, int bound) {
 }
 
 /* What RandomElement and the Randomization module draw from: TLC's
-   RandomEnumerableValues. A simulation draws as TLC 2.19's threads do,
-   from java.util.Random(0): one for the model and the initial states,
-   another for the behaviors. Model checking draws from java.util.Random
-   seeded with -seed, again for Init and for each state expanded, xored
-   with the state's fingerprint so that a trace can be rebuilt; tpp's
-   fingerprints are not TLC's, so there the draws are not TLC's. */
-static JRandom draw_model = JRANDOM(0), draw_behaviors = JRANDOM(0), *drawing = &draw_model;
+   RandomEnumerableValues, java.util.Random seeded with the seed. A
+   simulation draws as TLC's threads do, from one for the model and the
+   initial states and another for the behaviors. Model checking draws
+   again for Init and for each state expanded, xored with the state's
+   fingerprint so that a trace can be rebuilt; tpp's fingerprints are not
+   TLC's, so there the draws are not TLC's. */
+static JRandom draw_model, draw_behaviors, *drawing = &draw_model;
 static int64_t draw_seed;
 static Value **draw_from;   /* the state expanded, NULL for Init */
 static int draw_due;        /* to seed at the next draw */
@@ -7989,16 +7991,25 @@ static int print_shown(Value **st) {
     return 1;
 }
 
-static void action_label(int action) {
-    if (action < 0 && !simulating) { printf("<Initial predicate>"); return; }
+/* An action as TLC names it, an initial predicate without a name as
+   `unnamed`; outside a simulation TLC knows no initial predicate's. */
+static void action_text(Buf *b, int action, const char *unnamed) {
+    if (action < 0 && !simulating) { buf_puts(b, "<Initial predicate>"); return; }
     Action *a = action < 0 ? NULL : &actions[action];
     Expr *l = a ? a->loc : init_where;
-    printf("<%s", a ? S(a->name) : init_def ? S(init_def->name) : "Initial predicate");
+    buf_printf(b, "<%s", a ? S(a->name) : init_def ? S(init_def->name) : unnamed);
     const char *sep = "(";
     for (int i = 0; a && a->op && i < a->op->nparams; i++)
-        if (!a->op->params[i]->arity) { printf("%s%s", sep, pretty(force(env_find(a->c.env, a->op->params[i])))); sep = ","; }
-    if (*sep == ',') printf(")");
-    printf(" line %d, col %d to line %d, col %d of module %s>", l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
+        if (!a->op->params[i]->arity) { buf_printf(b, "%s%s", sep, pretty(force(env_find(a->c.env, a->op->params[i])))); sep = ","; }
+    if (*sep == ',') buf_puts(b, ")");
+    buf_printf(b, " line %d, col %d to line %d, col %d of module %s>", l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
+}
+
+static void action_label(int action) {
+    Buf b = {0};
+    action_text(&b, action, "Initial predicate");
+    fputs(b.s, stdout);
+    free(b.s);
 }
 
 static int cur_action;
@@ -8388,6 +8399,18 @@ static int check_initial(Value **st) {
     return 0;
 }
 
+/* TLC's error for a successor st of cur_action that leaves variables out. */
+static void print_unspecified(Value **st) {
+    int unassigned = 0;
+    for (int i = 0; i < nvars; i++) unassigned += !st[i];
+    printf("Error: Successor state is not completely specified by ");
+    if (nactions == 1) printf("the next-state action");
+    else printf("action %s of the next-state relation", S(actions[cur_action].name));
+    printf(". The following variable%s not defined: ", unassigned == 1 ? " is" : "s are");
+    for (int i = 0, k = 0; i < nvars; i++) if (!st[i]) printf("%s%s", k++ ? ", " : "", S(vars[i]->name));
+    printf(".\n\n");
+}
+
 static int init_emit(void) {
     for (int i = 0; i < nvars; i++)
         if (!succ[i]) fail("The variable %s was not assigned a value by the initial predicate.", S(vars[i]->name));
@@ -8433,12 +8456,7 @@ static int next_emit(void) {
     int unassigned = 0;
     for (int i = 0; i < nvars; i++) unassigned += !succ[i];
     if (unassigned) {
-        printf("Error: Successor state is not completely specified by ");
-        if (nactions == 1) printf("the next-state action");
-        else printf("action %s of the next-state relation", S(actions[cur_action].name));
-        printf(". The following variable%s not defined: ", unassigned == 1 ? " is" : "s are");
-        for (int i = 0, k = 0; i < nvars; i++) if (!succ[i]) printf("%s%s", k++ ? ", " : "", S(vars[i]->name));
-        printf(".\n\n");
+        print_unspecified(succ);
         reported_trace(expanding, succ, cur_action);
         violation = TPP_FAILURE_EVAL;
         return 1;
@@ -9131,33 +9149,83 @@ static int rng_prime(void) {
 /* States in order, complete or not. A simulation keeps them as values, as
    TLC does: it fingerprints only what it must (a liveness check, a trace),
    so a state may hold a function TLC cannot fingerprint. */
-typedef struct { Value ***a; int n, cap; } States;
+/* States, each with the action it was reached by, -1 for an initial one. */
+typedef struct { Value ***a; int *act, n, cap; } States;
 static States sim_found;
 
-static void sim_push(States *s, Value **st) {
+static void sim_push(States *s, Value **st, int act) {
     if (s->n == s->cap) {
         s->cap = s->cap ? 2 * s->cap : 64;
         s->a = xrealloc(s->a, sizeof(Value **) * (size_t)s->cap);
+        s->act = xrealloc(s->act, sizeof(int) * (size_t)s->cap);
     }
-    s->a[s->n++] = st;
+    s->a[s->n] = st;
+    s->act[s->n++] = act;
+}
+
+/* Whether two states are equal, as TLC compares them: variable by variable. */
+static int same_state(Value **s, Value **t) {
+    for (int i = 0; i < nvars; i++)
+        if (s[i] && t[i] ? !veq(s[i], t[i]) : s[i] != t[i]) return 0;
+    return 1;
+}
+
+/* The behavior so far, then `last` reached by act if it is not NULL, as
+   TLC's worker gives it: a state equal to the one before it left out,
+   compared from the end. */
+static States *sim_behavior(States *trace, Value **last, int act) {
+    static States all, b;
+    all.n = b.n = 0;
+    for (int i = 0; i < trace->n; i++) sim_push(&all, trace->a[i], trace->act[i]);
+    if (last) sim_push(&all, last, act);
+    char *keep = NEWN(char, all.n);
+    for (int i = all.n - 1; i >= 0; i--) keep[i] = !i || !same_state(all.a[i], all.a[i - 1]);
+    for (int i = 0; i < all.n; i++) if (keep[i]) sim_push(&b, all.a[i], all.act[i]);
+    return &b;
 }
 
 static void materialize(Value *v);
 
 /* A state found, normalized as TLC normalizes a state's values. */
-static int sim_emit(void) {
+static Value **sim_state(void) {
     Value **st = snapshot(gen_target);
     for (int i = 0; i < nvars; i++)
         if (st[i]) materialize(st[i]);
-    sim_push(&sim_found, st);
+    return st;
+}
+
+static int sim_emit(void) {
+    sim_push(&sim_found, sim_state(), -1);
+    return 0;
+}
+
+/* A successor as TLC's simulation worker takes it, checking it as it is
+   generated: complete, then the invariants and action properties, then
+   kept if in the model. A failed check stops the generation. */
+static Value **sim_checked;   /* the successor being checked */
+static int sim_failed;        /* its failed check: 1 incomplete, 2 an invariant, 3 an action property */
+static int sim_bad;           /* the invariant or action property */
+
+static int sim_succ_emit(void) {
+    generated++;
+    Value **s1 = sim_checked = sim_state();
+    for (int v = 0; v < nvars; v++)
+        if (!s1[v]) return sim_failed = 1;
+    if ((sim_bad = check_list(invariants, ninvariants, s1)) >= 0) return sim_failed = 2;
+    if ((sim_bad = check_actions(action_props, naction_props, cur_state, s1)) >= 0) return sim_failed = 3;
+    if (check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, cur_state, s1) < 0)
+        sim_push(&sim_found, s1, cur_action);
     return 0;
 }
 
 /* The successors of st by one action: TLC picks the first action at
-   random, then steps through them by a random prime until one has. */
+   random, then steps through them by a random prime until one has, or
+   a check fails. */
 static int sim_next(Value **st) {
     sim_found.n = 0;
+    sim_failed = 0;
     int a = rng_index(nactions), p = rng_prime();
+    gen_emit = sim_succ_emit;
     for (int i = 0; i < nactions; i++) {
         cur_state = st;
         cur_action = a;
@@ -9165,44 +9233,17 @@ static int sim_next(Value **st) {
         next_state = succ;
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
-        if (sim_found.n) return 1;
+        if (sim_found.n || sim_failed) return sim_found.n;
         a = (a + p) % nactions;
     }
     return 0;
 }
 
 /* A random behavior up to its error, as TLC prints it: each state labeled
-   with the first action that yields it, a step that changes nothing left
-   out. TLC fingerprints every state first, which may fail: then it prints
-   the exception instead, and so does sim_print, returning 0. */
-static void sim_exception(void);
-
-static int sim_print(States *trace) {
+   by the action it was reached by. */
+static void sim_print(States *trace) {
     printf("Error: The behavior up to this point is:\n");
-    sigjmp_buf here, *outer = handler;
-    handler = &here;
-    if (sigsetjmp(here, 0)) {
-        handler = outer;
-        sim_exception();
-        return 0;
-    }
-    uint64_t *fps = NEWN(uint64_t, trace->n);
-    for (int i = 0; i < trace->n; i++) fps[i] = fingerprint(trace->a[i]);
-    /* TLC finds the action of every step, a repeated state's too, and
-       fails as the behavior did if finding it fails; a step it does not
-       find again, as one drawn at random, ends in its NullPointerException. */
-    for (int i = 0, k = 1; i < trace->n; i++) {
-        int action = i ? replay(trace->a[i - 1], trace->a[i], i) : -1;
-        if (i && !replay_found) {
-            handler = outer;
-            print_exception("java.lang.NullPointerException", ": ");
-            printf("Cannot read field \"state\" because \"currentStateInfo\" is null\n");
-            return 0;
-        }
-        if (!i || fps[i] != fps[i - 1]) print_numbered(k++, action, trace->a[i], i ? trace->a[i - 1] : NULL);
-    }
-    handler = outer;
-    return 1;
+    for (int i = 0; i < trace->n; i++) print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL);
 }
 
 /* TLC's simulator reports a TLCRuntimeException, or an error raised
@@ -9236,7 +9277,7 @@ static int sim_violates(States *trace) {
         uint64_t fp = fingerprint(st);
         int s = fp_find(fp);
         if (s < 0) s = add_state(st, fp, prev, -1, i + 1);
-        sim_acts[i] = prev < 0 || s == prev ? STUTTER : replay(trace->a[i - 1], st, i);
+        sim_acts[i] = prev < 0 || s == prev ? STUTTER : trace->act[i];
         if (prev >= 0) add_edge(prev, s, sim_acts[i]);
         sim_order[i] = s;
         prev = s;
@@ -9260,7 +9301,10 @@ static void sim_write(const char *file, long t, States *trace) {
     if (!f) fail("Cannot write the behavior to %s.", name.s);
     fprintf(f, "---------------- MODULE %s -----------------\n", name.s);
     for (int i = 0; i < trace->n; i++) {
-        fprintf(f, "STATE_%d == \n", i + 1);
+        Buf b = {0};
+        action_text(&b, trace->act[i], "Action");
+        fprintf(f, "\\* %s\nSTATE_%d == \n", b.s, i + 1);
+        free(b.s);
         fprint_state(f, trace->a[i]);
         fprintf(f, "\n\n");
     }
@@ -9273,7 +9317,7 @@ static void sim_write(const char *file, long t, States *trace) {
    The initial states are kept for good; a behavior, with all it
    evaluates, until it ends. */
 static int simulate(const TPPOptions *o) {
-    int64_t seed = o->seed_given ? o->seed : (int64_t)time(NULL) * 1000003 ^ getpid();
+    int64_t seed = draw_seed;
     rng_seed(seed);
     for (int64_t i = 0; i < o->aril; i++) rng_index(1);
     int64_t aril = rng_aril;
@@ -9284,8 +9328,6 @@ static int simulate(const TPPOptions *o) {
     sigjmp_buf here;
     handler = &here;
     static States init, trace;   /* static: read after an error jumps back */
-    static Value **checked;      /* the successor being checked */
-    static Value **current;      /* the state the behavior is in, as TLC's */
     static EvalState fresh;
     fresh = eval_save();
     if (sigsetjmp(here, 0)) {
@@ -9294,7 +9336,7 @@ static int simulate(const TPPOptions *o) {
         arena = in_use;
         handler = NULL;
         int invariant = checking_invariant();
-        if (!trace.n && invariant) {
+        if (!trace.n && (invariant || checking(constraints, nconstraints))) {
             printf("Error: ");
             print_error_text();
             printf("While working on the initial state:\n");
@@ -9306,17 +9348,15 @@ static int simulate(const TPPOptions *o) {
         if (invariant || checking(action_props, naction_props)) {
             printf("Error: Evaluating %s %s failed.\n", invariant ? "invariant" : "action property", S(error_check->name));
             print_error_text();
-            sim_push(&trace, checked);
-            if (!sim_print(&trace)) return TPP_ERROR;
+            sim_print(sim_behavior(&trace, sim_checked, cur_action));
             sim_summary(seed, aril);
             return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
         }
         sim_exception();
         int status = error_module == 2 ? error_status : TPP_ERROR;
-        if (current && (!trace.n || trace.a[trace.n - 1] != current)) sim_push(&trace, current);
         if (trace.n) {
             error_check = NULL;
-            sim_print(&trace);
+            sim_print(sim_behavior(&trace, NULL, 0));
         }
         return status;
     }
@@ -9344,7 +9384,7 @@ static int simulate(const TPPOptions *o) {
             }
         int violated = check_initial(st);
         if (violated) return violated;
-        if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st);
+        if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st, -1);
     }
     if (!init.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
@@ -9360,66 +9400,57 @@ static int simulate(const TPPOptions *o) {
     collect_fairnesses();
     arena = &scratch_arena;
     drawing = &draw_behaviors;   /* TLC's worker thread */
-    int reported = 0;            /* -continue: a behavior ended in a violation */
     for (long t = 0; !o->traces || t < o->traces; t++) {
         arena_reset(&scratch_arena);
         trace.n = 0;
-        Value **st = current = init.a[rng_index(init.n)];
-        cur_level = 0;
-        int in_model = 1, ended = 0;
+        sim_traces = t + 1;
+        Value **st = init.a[rng_index(init.n)];
+        sim_push(&trace, st, -1);
+        int ended = 0;
         for (long d = 0; d < depth && !ended; d++) {
-            sim_push(&trace, st);
             cur_level = d + 1;
-            if (!in_model) break;
             if (!sim_next(st)) {
-                if (!check_deadlock) break;
-                printf("Error: Deadlock reached.\n");
-                if (!sim_print(&trace)) return TPP_ERROR;
-                sim_summary(seed, aril);
-                return TPP_VIOLATION_DEADLOCK;
-            }
-            for (int i = 0; i < sim_found.n; i++) {
-                generated++;
-                Value **s1 = checked = sim_found.a[i];
-                for (int v = 0; v < nvars; v++)
-                    if (!s1[v]) {
-                        /* TLC prints the behavior, then fails to fingerprint the successor. */
-                        printf("Error: Successor state is not completely specified by the next-state action.\n\n");
-                        if (!sim_print(&trace)) return TPP_ERROR;
-                        printf("\n");
-                        print_exception("java.lang.NullPointerException", ": ");
-                        printf("Cannot invoke \"tlc2.value.IValue.fingerPrint(long)\" because \"minVals[i]\" is null\n");
-                        return TPP_ERROR;
-                    }
-                const char *what = "Invariant";
-                Check *list = invariants;
-                int status = TPP_VIOLATION_SAFETY;
-                int bad = check_list(invariants, ninvariants, s1);
-                if (bad < 0) what = "Action property", list = action_props, status = TPP_VIOLATION_LIVENESS, bad = check_actions(action_props, naction_props, st, s1);
-                if (bad < 0) continue;
-                printf("Error: %s %s is violated.\n", what, S(list[bad].name));
-                sim_push(&trace, s1);
-                if (!sim_print(&trace)) return TPP_ERROR;
+                int status = 0;
+                if (sim_failed == 1) {
+                    States *b = sim_behavior(&trace, sim_checked, cur_action);
+                    print_unspecified(sim_checked);
+                    sim_print(b);
+                    /* TLC's postcondition writing the behavior fails on it. */
+                    printf("\nError: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.\n"
+                           "Attempted to apply the operator overridden by the Java method\n"
+                           "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"
+                           "but it produced the following error:\n"
+                           "Cannot invoke \"tlc2.value.impl.Value.fingerPrint(long)\" because \"this.values[i]\" is null\n");
+                    return TPP_FAILURE_EVAL;
+                }
+                States *b = sim_behavior(&trace, sim_failed ? sim_checked : NULL, cur_action);
+                if (sim_failed) {
+                    Check *list = sim_failed == 2 ? invariants : action_props;
+                    printf("Error: %s %s is violated.\n", sim_failed == 2 ? "Invariant" : "Action property", S(list[sim_bad].name));
+                    status = sim_failed == 2 ? TPP_VIOLATION_SAFETY : TPP_VIOLATION_LIVENESS;
+                } else if (check_deadlock) {
+                    printf("Error: Deadlock reached.\n");
+                    status = TPP_VIOLATION_DEADLOCK;
+                } else break;
+                sim_print(b);
                 sim_summary(seed, aril);
                 if (!keep_going) return status;
-                reported = ended = 1;   /* as TLC, the behavior ends; the next begins */
+                ended = 1;   /* as TLC, the behavior ends; the next begins */
                 break;
             }
-            if (ended) break;
-            Value **s1 = sim_found.a[rng_index(sim_found.n)];
-            in_model = check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, st, s1) < 0;
-            st = current = s1;
+            int k = rng_index(sim_found.n);
+            sim_push(&trace, st = sim_found.a[k], sim_found.act[k]);
         }
         if (ended) continue;
-        if (ntemporal_props && sim_violates(&trace)) {
+        if (ntemporal_props && sim_violates(sim_behavior(&trace, NULL, 0))) {
             sim_summary(seed, aril);
             return TPP_VIOLATION_LIVENESS;
         }
-        if (o->trace_file) sim_write(o->trace_file, t, &trace);
+        if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(&trace, NULL, 0));
     }
     handler = NULL;
     printf("Progress: %ld states checked.\n", generated);
-    return reported ? TPP_ERROR : TPP_OK;   /* TLC 2.19's exit after reporting */
+    return TPP_OK;
 }
 
 /* ---------------------------------------------------------------- configuration */
@@ -11530,7 +11561,10 @@ int tpp_check(const TPPOptions *o) {
         }
     }
     bind_natives();
-    if (!o->simulate) jr_seed(&draw_model, draw_seed = o->seed);   /* TLC: random without -seed */
+    /* TLC's simulation: random without -seed */
+    draw_seed = o->simulate && !o->seed_given ? (int64_t)time(NULL) * 1000003 ^ getpid() : o->seed;
+    jr_seed(&draw_model, draw_seed);
+    jr_seed(&draw_behaviors, draw_seed);
     starting = 1;
     read_config(config_text, 0);
     setup_model();

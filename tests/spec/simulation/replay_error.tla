@@ -1,6 +1,6 @@
 ---- MODULE replay_error ----
-\* TLC finds the action of every step of the behavior it prints, a step
-\* that repeats a state too; finding it fails here as the behavior did.
+\* A behavior is printed with the action of each step as taken, the steps
+\* that repeat a state left out, without evaluating Next again.
 \* options: -simulate num=4 -depth 10 -seed 124
 EXTENDS Naturals
 VARIABLE x

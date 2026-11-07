@@ -40,8 +40,8 @@ built in.
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
-| `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., as TLC does |
-| `-depth D` | the length of each random behavior, in states (100) |
+| `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., each after a comment naming its action, as TLC does |
+| `-depth D` | the length of each random behavior, in steps (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
@@ -104,8 +104,8 @@ output TLC produces when it reconstructs a trace.
 `-simulate` checks random behaviors instead of the whole state graph: from
 an initial state drawn at random, it takes a random action's successors,
 checks every one of them against the invariants and action properties,
-and moves to one at random, until the behavior is `-depth` states long or
-stops (Standard §10.8). Temporal properties are checked on each behavior.
+and moves to one in the constraints at random, until the behavior has
+taken `-depth` steps or stops (Standard §10.8). Temporal properties are checked on each behavior.
 With the same `-seed` and `-aril`, tpp draws the same behaviors as TLC
 with one worker and prints the same report; `-workers` is ignored. A
 seed is drawn at random unless one is given.

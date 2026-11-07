@@ -725,20 +725,26 @@ With `-simulate`, the checker explores random behaviors instead of the
 state graph, as TLC does with one worker. `-seed S` (random if not given)
 and `-aril A` choose the behaviors: the generator is Java's
 `java.util.Random`, seeded with `S` and advanced `A` doubles, whose first
-long seeds the generator that draws the behaviors. `num=N` bounds the
-number of behaviors (unbounded if not given) and `-depth D` their length
-in states (100).
+long seeds the generator that draws the behaviors. `RandomElement` and
+the Randomization operators draw from two more, both seeded with `S`: one
+for the model and the initial states, one for the behaviors. `num=N`
+bounds the number of behaviors (unbounded if not given) and `-depth D`
+their length in steps (100).
 
 The initial states are computed and checked first, against the
 invariants; a property that is a state predicate is not checked at all,
-as TLC's simulation ignores it. Each behavior starts at
-an initial state drawn at random. In each state, an action (§10.3) is drawn
-at random, then a prime from a fixed list of 1341, and the actions are
-tried in steps of that prime until one has successors. Every successor is
-checked, against the invariants then the action properties, and one is
-drawn as the next state. A behavior ends at its length, at a state outside
-the constraints, or at a state with no successor, a deadlock unless
-`CHECK_DEADLOCK` is `FALSE`. A temporal property is then checked on the
+as TLC's simulation ignores it. Those outside the constraints are dropped,
+then `Finished computing initial states: N distinct state generated.`
+reports the rest (no state left is an error). Each behavior starts at one
+of them drawn at random. In each state, an action (§10.3) is drawn at
+random, then a prime from a fixed list of 1341, and the actions are tried
+in steps of that prime until one has a successor in the constraints and
+action constraints. Each successor is checked as it is generated, against
+the invariants then the action properties, and one of those kept is
+drawn as the next state. A behavior ends at its length, or at a state
+with no successor kept, a deadlock unless `CHECK_DEADLOCK` is `FALSE`.
+`TLCGet("diameter")` is the number of the behavior, from 1. A temporal
+property is then checked on the
 behavior, on a graph TLC builds as the states arrive. For a property
 whose only temporal parts are `[]<>P` and `<>[]P`, as with fairness alone,
 the graph has every state and step of the behavior, and every state may
@@ -750,13 +756,19 @@ behavior, by the state stuttering or taking the behavior's next step there
 the same state adds none. Which lasso is reported is not specified.
 
 A violation prints the behavior up to the bad state, each state labeled
-with the first action that yields it and steps that change nothing left
-out. An evaluation error, and a successor that leaves a variable
-unassigned, print TLC's unexpected-exception report, but for an error TLC
-raises as a `TLCRuntimeException`, one with a preamble of §11.3 or an
-undefined primed variable: that prints as `Error:` and its message, then
-the behavior, and exits with status 255 or 151. The state counts of a
-simulation are unspecified (§11.1).
+with the action it was taken by (the first by the last initial predicate:
+a definition's name, else `Initial predicate`, and where it is written),
+and the states equal to the one before them left out, compared variable
+by variable from the end. Nothing is evaluated again. A successor that
+leaves a variable unassigned prints as in model checking, with the
+behavior to it, then the failure of TLC's postcondition that writes the
+behavior out, and exits with status 75. An evaluation error prints TLC's
+unexpected-exception report, but for an error TLC raises as a
+`TLCRuntimeException`, one with a preamble of §11.3 or an undefined primed
+variable: that prints as `Error:` and its message, then the behavior, and
+exits with status 255 or 151. With `-continue` a violation ends its
+behavior and the simulation goes on, ending as if none was found. The
+state counts of a simulation are unspecified (§11.1).
 
 ## 11 Output
 

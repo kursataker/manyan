@@ -1,7 +1,7 @@
 ---- MODULE random_draws ----
 \* A simulation draws as TLC: one stream for the model, one for the
-\* behaviors, whatever the seed, and functions, records and tuples draw
-\* part by part; a violated behavior is rebuilt drawing again.
+\* behaviors, both from the seed, and functions, records and tuples draw
+\* part by part.
 \* options: -simulate num=2 -depth 4 -seed 7
 EXTENDS Naturals, TLC, Randomization
 VARIABLE x, y

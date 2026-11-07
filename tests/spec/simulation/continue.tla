@@ -1,6 +1,6 @@
 ---- MODULE continue ----
 \* -continue in a simulation: a violation ends its behavior, and the
-\* next begins; TLC then exits 255.
+\* next begins; the simulation then ends as if none was found.
 \* options: -continue -simulate num=2 -depth 6 -seed 1
 EXTENDS Naturals
 VARIABLE x

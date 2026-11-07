@@ -1,5 +1,5 @@
 ---- MODULE constraint ----
-\* A behavior ends at a state outside the constraint.
+\* A successor outside the constraint is never taken: x = 3 deadlocks.
 \* options: -simulate num=4 -depth 10 -seed 5
 EXTENDS Naturals
 VARIABLE x

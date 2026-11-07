@@ -1,5 +1,5 @@
 ---- MODULE successor_incomplete ----
-\* A successor that leaves a variable out: TLC prints the behavior, then fails to fingerprint the successor.
+\* A successor that leaves a variable out: TLC prints the behavior to it, then its trace postcondition fails.
 \* options: -simulate -depth 100 -seed 99
 EXTENDS Integers, Sequences, TLC
 VARIABLES a, b

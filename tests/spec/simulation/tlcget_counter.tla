@@ -1,5 +1,5 @@
 ---- MODULE tlcget_counter ----
-\* A simulation keeps none of TLCGet's counters of the search but the time.
+\* In a simulation TLCGet("diameter") counts the behaviors, from 1.
 \* options: -simulate num=2 -depth 3 -seed 2
 EXTENDS Naturals, TLC
 VARIABLE x
