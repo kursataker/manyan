@@ -7668,6 +7668,10 @@ static Value **decode_state(int idx) {
 typedef struct { Def *def; Expr *expr; int name; } Check;
 
 static Expr *init_expr, *next_expr;
+/* The last of the initial predicates, which a simulation names an initial
+   state by: a definition's body by the definition, as TLC's Action. */
+static Def *init_def;
+static Expr *init_where;
 static Ctx root_ctx;
 static Check *invariants, *implied_inits, *constraints, *action_constraints, *action_props, *temporal_props;
 static int ninvariants, nimplied_inits, nconstraints, naction_constraints, naction_props, ntemporal_props;
@@ -7986,12 +7990,12 @@ static int print_shown(Value **st) {
 }
 
 static void action_label(int action) {
-    if (action < 0) { printf("<Initial predicate>"); return; }
-    Action *a = &actions[action];
-    Expr *l = a->loc;
-    printf("<%s", S(a->name));
+    if (action < 0 && !simulating) { printf("<Initial predicate>"); return; }
+    Action *a = action < 0 ? NULL : &actions[action];
+    Expr *l = a ? a->loc : init_where;
+    printf("<%s", a ? S(a->name) : init_def ? S(init_def->name) : "Initial predicate");
     const char *sep = "(";
-    for (int i = 0; a->op && i < a->op->nparams; i++)
+    for (int i = 0; a && a->op && i < a->op->nparams; i++)
         if (!a->op->params[i]->arity) { printf("%s%s", sep, pretty(force(env_find(a->c.env, a->op->params[i])))); sep = ","; }
     if (*sep == ',') printf(")");
     printf(" line %d, col %d to line %d, col %d of module %s>", l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
@@ -9329,6 +9333,7 @@ static int simulate(const TPPOptions *o) {
     sim_found = (States){0};
     generated = init.n;
     printf("Computed %d initial states...\n", init.n);
+    States in_model = {0};   /* as TLC, the behaviors start in the model */
     for (int i = 0; i < init.n; i++) {
         Value **st = init.a[i];
         for (int v = 0; v < nvars; v++)
@@ -9339,11 +9344,18 @@ static int simulate(const TPPOptions *o) {
             }
         int violated = check_initial(st);
         if (violated) return violated;
+        if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st);
     }
     if (!init.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
         return TPP_ERROR;
     }
+    if (!in_model.n) {
+        printf("Error: There is no state satisfying the initial state predicate and the state-constraint(s).\n");
+        return TPP_ERROR;
+    }
+    init = in_model;
+    printf("Finished computing initial states: %d distinct state generated.\n", init.n);
     arena = &perm_arena;
     collect_fairnesses();
     arena = &scratch_arena;
@@ -9354,7 +9366,7 @@ static int simulate(const TPPOptions *o) {
         trace.n = 0;
         Value **st = current = init.a[rng_index(init.n)];
         cur_level = 0;
-        int in_model = check_list(constraints, nconstraints, st) < 0, ended = 0;
+        int in_model = 1, ended = 0;
         for (long d = 0; d < depth && !ended; d++) {
             sim_push(&trace, st);
             cur_level = d + 1;
@@ -9646,6 +9658,13 @@ static Expr *config_call(int name, const char *what, int args) {
 }
 
 /* The body of a definition with no parameters, or the expression. */
+/* The definition a call without arguments is of. */
+static Def *named_def(Expr *e) {
+    if (e->kind != K_CALL || e->n) return NULL;
+    Def *d = e->def->replacement ? e->def->replacement : e->def;   /* Init <- MCInit */
+    return d->kind == D_OP && !d->native && !d->nparams ? d : NULL;
+}
+
 static Expr *unfold(Expr *e) {
     for (int i = 0; i < 5000 && e->kind == K_CALL && e->n == 0; i++) {   /* a cycle by substitution is left to fail */
         Def *d = e->def->replacement ? e->def->replacement : e->def;   /* Init <- MCInit */
@@ -9698,7 +9717,8 @@ static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
         if (!v->u.i) config_error("The spec is trivially false because %s is false.", S(e->def->name));
         return;
     }
-    e = unfold(e);
+    Def *d = named_def(e);
+    if (!d || expr_level(d->body) > 1) e = unfold(e);   /* as TLC, an initial predicate kept whole */
     if (e->kind == K_AND && eval_depth < 5000) {   /* as unfold */
         eval_depth++;
         for (int i = 0; i < e->n; i++) conjuncts(e->args[i], call, out, n, spec);
@@ -9778,8 +9798,10 @@ static void use_specification(Expr *spec) {
     for (int i = 0; i < n; i += 2) {
         Expr *e = parts[i], *call = parts[i + 1];
         if (expr_level(e) <= 1) {
+            init_def = named_def(e);
+            init_where = init_def ? init_def->body : e;
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
-            init[ninit++] = in_instance(call, e);
+            init[ninit++] = in_instance(call, init_where);
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             if (nnext++)
                 config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
@@ -10393,7 +10415,11 @@ static int setup_model(void) {
     }
     if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
     if (spec) use_specification(spec);
-    if (init) init_expr = init;
+    if (init) {
+        init_expr = init;
+        init_def = named_def(init);
+        init_where = init_def ? init_def->body : init;
+    }
     if (next) next_expr = next;
     return 0;
 }
