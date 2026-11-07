@@ -10942,24 +10942,6 @@ static int check_property(TF *negated) {
     return 0;
 }
 
-/* TLC checks []<>c and <>[]c, joined at the top, without its tableau;
-   in the tableau a constant is never evaluated, so FALSE there is TRUE. */
-static TF *tableau_constants(TF *t, int top) {
-    switch (t->op) {
-    case TF_FALSE: return top ? t : tf_new(TF_TRUE, NULL, NULL);
-    case TF_AND: case TF_OR:
-        t->a = tableau_constants(t->a, top);
-        t->b = tableau_constants(t->b, top);
-        return t;
-    case TF_ALWAYS: case TF_EVENTUALLY:
-        if (top && (t->a->op == TF_ALWAYS || t->a->op == TF_EVENTUALLY) && t->a->op != t->op &&
-            (t->a->a->op == TF_TRUE || t->a->a->op == TF_FALSE)) return t;
-        t->a = tableau_constants(t->a, 0);
-        return t;
-    default: return t;
-    }
-}
-
 /* What TLC evaluates of the properties on each initial state, before its
    invariants: the literals of each initial node of a tableau, up to a
    false one; without a tableau, each state predicate but ENABLED. */
@@ -10978,7 +10960,7 @@ static void live_init_lits(void) {
         natoms = 0;
         neventualities = 0;
         ntnodes = 0;
-        TF *neg = tableau_constants(to_tf(temporal_props[p].expr, root_ctx, 1), 1);
+        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
         if (!tf_tableau(neg)) {
             for (int i = 0; i < natoms; i++)
                 if (atoms[i]->atom->kind != K_ENABLED) add_init_lits(&atoms[i], 1);
@@ -11087,7 +11069,7 @@ static int live_violated(void) {
         npnodes = 0;
         free(pnodes_of);
         pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
-        TF *neg = tableau_constants(to_tf(temporal_props[p].expr, root_ctx, 1), 1);
+        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
         free(state_atom_cache);
         state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
         if (check_property(neg)) return 1;

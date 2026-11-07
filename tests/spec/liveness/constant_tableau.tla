@@ -1,6 +1,6 @@
 ---- MODULE constant_tableau ----
-\* In TLC's tableau a constant is never evaluated: the negation of
-\* <>TRUE \/ <>(x = 1) is []FALSE /\ [](x # 1), and its FALSE holds.
+\* A constant in the tableau is its value: the negation of
+\* <>TRUE \/ <>(x = 1) is []FALSE /\ [](x # 1), which no behavior satisfies.
 EXTENDS Naturals
 VARIABLE x
 Init == x = 0
