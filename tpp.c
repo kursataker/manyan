@@ -649,6 +649,16 @@ static void print_string(Buf *b, int id) {
     buf_puts(b, "\"");
 }
 
+static void print_value(Buf *b, Value *v);
+/* An operand of \cup, \cap or \, which TLC parenthesizes unless it is
+   Nat, Int, STRING or Seq(S). */
+static void print_operand(Buf *b, Value *v) {
+    if (user_set(v)) { print_value(b, v); return; }
+    buf_puts(b, "(");
+    print_value(b, v);
+    buf_puts(b, ")");
+}
+
 static void print_value(Buf *b, Value *v) {
     if (v->kind == V_LAMBDA) v = try_realize(v);
     if (v->kind == V_LAMBDA) { print_lambda(b, v); return; }
@@ -673,13 +683,20 @@ static void print_value(Buf *b, Value *v) {
             if (infinite) { buf_puts(b, "UNION "); print_value(b, v->u.l.a); return; }
         }
         if (v->lazy >= L_CUP && !set_op_enumerable(v)) {
-            print_value(b, v->u.l.a);
+            print_operand(b, v->u.l.a);
             buf_puts(b, v->lazy == L_CUP ? " \\cup " : v->lazy == L_CAP ? " \\cap " : " \\ ");
-            print_value(b, v->u.l.b);
+            print_operand(b, v->u.l.b);
             return;
         }
         if (expandable(v)) { print_value(b, normalize_set(v)); return; }
-        if (v->lazy == L_SUBSET) { buf_puts(b, "SUBSET "); print_value(b, v->u.l.a); return; }
+        if (v->lazy == L_SUBSET) {
+            Value *a = v->u.l.a;
+            int paren = a->kind == V_INTERVAL || (a->kind == V_LAZY && a->lazy >= L_CUP);   /* .. binds tighter */
+            buf_puts(b, paren ? "SUBSET (" : "SUBSET ");
+            print_value(b, a);
+            if (paren) buf_puts(b, ")");
+            return;
+        }
         if (v->lazy == L_FCNSET) {
             buf_puts(b, "[");
             print_value(b, v->u.l.a);
@@ -2275,8 +2292,8 @@ static const OpInfo op_table[] = {
     {"//", 13, 13, 0, INFIX}, {"\\div", 13, 13, 0, INFIX}, {"\\oslash", 13, 13, 0, INFIX},
     {"^", 14, 14, 0, INFIX}, {"^^", 14, 14, 0, INFIX},
     {"~", 4, 4, 0, PREFIX}, {"[]", 4, 15, 0, PREFIX}, {"<>", 4, 15, 0, PREFIX},
-    {"ENABLED", 4, 15, 0, PREFIX}, {"UNCHANGED", 4, 15, 0, PREFIX}, {"SUBSET", 10, 13, 0, PREFIX},
-    {"UNION", 10, 13, 0, PREFIX}, {"DOMAIN", 10, 13, 0, PREFIX}, {"-.", 12, 12, 0, PREFIX},
+    {"ENABLED", 4, 15, 0, PREFIX}, {"UNCHANGED", 4, 15, 0, PREFIX}, {"SUBSET", 8, 8, 0, PREFIX},
+    {"UNION", 8, 8, 0, PREFIX}, {"DOMAIN", 9, 9, 0, PREFIX}, {"-.", 12, 12, 0, PREFIX},
     {"'", 15, 15, 0, POSTFIX}, {"^+", 15, 15, 0, POSTFIX}, {"^*", 15, 15, 0, POSTFIX}, {"^#", 15, 15, 0, POSTFIX},
     {NULL, 0, 0, 0, 0}};
 

@@ -1,2 +1,22 @@
-Error: Parsing or semantic analysis failed.
-exit 150
+<<{1, 2, 3, 5}, 4, TRUE, FALSE, TRUE>>
+<<TRUE, FALSE, 4>>
+<< TRUE,
+   FALSE,
+   {[a |-> 1, b |-> "x"], [a |-> 2, b |-> "x"], [a |-> 3, b |-> "y"]} >>
+<<{2, 3, 5}, <<10, 20>>, {{}, {1}, {2}, {1, 2}}>>
+<<{}, {}, {1, 2}>>
+Finished computing initial states: 3 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 4
+
+State 2: <Next line 17, col 9 to line 17, col 53 of module union_kept>
+x = 5
+
+State 3: <Next line 17, col 9 to line 17, col 53 of module union_kept>
+x = 6
+
+11 states generated, 6 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

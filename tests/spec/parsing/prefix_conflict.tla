@@ -1,5 +1,5 @@
 ---- MODULE prefix_conflict ----
-\* DOMAIN binds at 10-13 in SANY, so it conflicts with + (10).
+\* UNION binds at 8, as \ does, so they conflict.
 EXTENDS Naturals
-ASSUME DOMAIN <<1>> + 1 = 2
+ASSUME UNION {{1}} \ {1} = {}
 ====

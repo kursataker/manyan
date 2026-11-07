@@ -289,11 +289,12 @@ overlap, unless `op1` and `op2` are the same left-associative operator.
 | `:>` `<:` | 7–7 | |
 | `\` | 8–8 | |
 | `\cap` `\intersect` `\cup` `\union` | 8–8 | left |
+| `SUBSET` `UNION` (prefix) | 8–8 | |
 | `..` `...` | 9–9 | |
+| `DOMAIN` (prefix) | 9–9 | |
 | `!!` | 9–13 | |
 | `##` `$` `$$` `??` `\uplus` `\sqcap` `\sqcup` | 9–13 | left |
 | `\wr` | 9–14 | |
-| `SUBSET` `UNION` `DOMAIN` (prefix) | 10–13 | |
 | `\X` `\times` | 10–13 | n-ary |
 | `+` `++` `\oplus` `(+)` | 10–10 | left |
 | `%` | 10–11 | |
