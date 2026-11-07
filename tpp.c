@@ -11011,8 +11011,8 @@ static void live_init(Value **st) {
 /* An error checking the temporal properties, reported as TLC reports it:
    TLC evaluates their predicates as it expands each state: ENABLED on
    the state, other state predicates on each successor, the actions on
-   each step and on stuttering. It reports the first error then, as
-   unexpected, with the counts of that moment. */
+   each step and on stuttering. It reports the first error then, as one
+   in Next, with the behavior to the state and the counts of that moment. */
 static int live_error(void) {
     natoms = 0;
     neventualities = 0;
@@ -11022,7 +11022,11 @@ static int live_error(void) {
     handler = &here;
     if (sigsetjmp(here, 0)) {
         handler = NULL;
-        sim_exception();
+        printf("\n");
+        if (eval_failure_status() == TPP_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
+        else printf("Error: ");
+        print_error_text();
+        print_trace(s, NULL, 0);
         printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
         printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
         return TPP_ERROR;
