@@ -3,4 +3,5 @@ Error: Attempted to check if the value:
 is an element of Seq({0, 1}).
 
 1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

@@ -13,12 +13,17 @@ v = 0
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-1) line 7, col 39 to line 7, col 79 of module fingerprint_next
-0) line 7, col 23 to line 7, col 80 of module fingerprint_next
+0. Line 7, column 9 to line 7, column 80 in fingerprint_next
+1. Line 7, column 9 to line 7, column 13 in fingerprint_next
+2. Line 7, column 18 to line 7, column 80 in fingerprint_next
+3. Line 7, column 23 to line 7, column 80 in fingerprint_next
+4. Line 7, column 39 to line 7, column 79 in fingerprint_next
+5. Line 7, column 55 to line 7, column 78 in fingerprint_next
 
 Reason:
 Attempted to compute the value of an expression of form
 CHOOSE x \in S: P, but no element of S satisfied P.
 line 7, col 55 to line 7, col 78 of module fingerprint_next
 1 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

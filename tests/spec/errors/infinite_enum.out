@@ -1,5 +1,8 @@
 Error: Evaluating assumption line 3, col 8 to line 3, col 35 of module infinite_enum failed.
-TLC encountered a non-enumerable quantifier bound
-Nat.
+TLC encountered the non-enumerable quantifier bound
+Nat
 line 3, col 24 to line 3, col 26 of module infinite_enum
+The set Nat contains infinitely many elements. As a result, TLC cannot evaluate expressions that
+universally (\A) or existentially (\E) quantify over Nat, because this would require checking an
+infinite number of cases. Note that TLC handles set membership like T \subseteq Nat for any finite set T.
 exit 10

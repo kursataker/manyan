@@ -1,8 +1,4 @@
-<<3, "a", "bc", "abc", "abcd", "bcd">>
-<<<<"a", "a">>, <<1, "a", "b">>, TRUE, FALSE>>
-<<0, "", "">>
-Finished computing initial states: 0 distinct states generated.
-Model checking completed. No error has been found.
-0 states generated, 0 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 1.
-exit 0
+Error: Evaluating assumption line 4, col 8 to line 4, col 110 of module string_sequences failed.
+The argument of Head should be a sequence, but instead it is:
+"ab"
+exit 10

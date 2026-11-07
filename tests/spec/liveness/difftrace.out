@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Live was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -24,4 +24,5 @@ State 5: <B line 9, col 6 to line 9, col 60 of module difftrace>
 Back to state 4: <C line 10, col 6 to line 10, col 42 of module difftrace>
 
 6 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
 exit 13

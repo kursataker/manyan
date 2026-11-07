@@ -1,6 +1,4 @@
-<<TRUE, TRUE, TRUE, TRUE, FALSE, TRUE>>
-<<FALSE, TRUE, FALSE, FALSE>>
-Error: Evaluating assumption line 7, col 8 to line 7, col 40 of module string_tuple failed.
+Error: Evaluating assumption line 5, col 8 to line 5, col 120 of module string_tuple failed.
 Attempted to check equality of the function <<"a">> with the value:
-"a"
+"-"
 exit 10

@@ -17,10 +17,12 @@ endif
 PREFIX ?= /usr/local
 OBJDIR = .obj
 
-# TLA+ tools 1.7.4 (TLC 2.19), the oracle, pinned by checksum.
+# TLA+ tools 1.8.0, the oracle, pinned by checksum. 1.8.0 is a pre-release,
+# whose jar can be rebuilt under the same tag: this one is commit d8fb231de4e4
+# (its manifest's X-Git-Revision) and prints Version 2026.11.06.222357.
 TLA_JAR = $(OBJDIR)/tla/tla2tools.jar
-TLA_URL = https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
-TLA_SHA256 = 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+TLA_URL = https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+TLA_SHA256 = e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 

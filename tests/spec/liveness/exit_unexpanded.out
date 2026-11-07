@@ -1,5 +1,5 @@
 Finished computing initial states: 2 distinct states generated.
-Error: Temporal properties were violated.
+Error: Temporal property Prop was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -14,4 +14,5 @@ n = 3
 
 State 4: Stuttering
 6 states generated, 5 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 4.
 exit 13

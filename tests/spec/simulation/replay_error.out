@@ -1,9 +1,7 @@
+Finished computing initial states: 1 distinct state generated.
 Error: In evaluation, the identifier x is either undefined or not an operator.
 line 9, col 30 to line 9, col 30 of module replay_error
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 20 of module replay_error>
 x = <<1, 2>>
-
-Error: In evaluation, the identifier x is either undefined or not an operator.
-line 9, col 30 to line 9, col 30 of module replay_error
 exit 151

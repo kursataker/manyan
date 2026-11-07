@@ -3,7 +3,7 @@ Error: TLC threw an unexpected exception.
 This was probably caused by an error in the spec or model.
 See the User Output or TLC Console for clues to what happened.
 The exception was a java.lang.RuntimeException
-: Attempted to apply tuple to a non-integer argument "m".
+: Attempted to access tuple at a non integral index: "m"
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
 rec = [m |-> 0]
@@ -12,4 +12,5 @@ State 2: <Drop line 7, col 9 to line 7, col 19 of module except_tuple_key>
 rec = <<>>
 
 4 states generated, 3 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 2.
 exit 75

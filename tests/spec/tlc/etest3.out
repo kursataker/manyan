@@ -1,3 +1,5 @@
+Warning: The invariant Inv is a constant-level formula (i.e., it contains no variables, primes, or temporal operators) and evaluates to TRUE. To assert constant-level formulas in your spec, use ASSUME ConstInv. If you optionally want to give the assumption a name, write ASSUME YourAssumption == ConstInv instead. See https://explain.tlapl.us/assumptions-and-invariants for additional details.
+(Use the -nowarning option to disable this warning.)
 "This test should deadlock after finding two states"  TRUE
 Finished computing initial states: 1 distinct state generated.
 Error: Deadlock reached.
@@ -13,6 +15,7 @@ State 2: <Next line 14, col 9 to line 18, col 18 of module etest3>
 /\ y = {}
 /\ z = 1
 
+"This test should deadlock after finding two states"  TRUE
 2 states generated, 2 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 2.
 exit 11

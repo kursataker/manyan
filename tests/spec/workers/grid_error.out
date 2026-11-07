@@ -152,4 +152,5 @@ State 30: <Next line 8, col 12 to line 8, col 38 of module grid_error>
 /\ z = 9
 
 12318 states generated, 4486 distinct states found, 331 states left on queue.
+The depth of the complete state graph search is 31.
 exit 255

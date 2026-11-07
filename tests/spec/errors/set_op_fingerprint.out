@@ -15,7 +15,8 @@ x = 0
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-0) line 8, col 19 to line 8, col 28 of module set_op_fingerprint
+0. Line 8, column 9 to line 8, column 38 in set_op_fingerprint
+1. Line 8, column 19 to line 8, column 28 in set_op_fingerprint
 
 Reason:
 Attempted to enumerate S \cap T when neither S:
@@ -24,4 +25,5 @@ nor T:
 Nat
 is enumerable
 1 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

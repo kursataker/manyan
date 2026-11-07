@@ -1,7 +1,8 @@
+Finished computing initial states: 1 distinct state generated.
 Error: Evaluating action property P failed.
 The second argument of \div is 0.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 13 of module action_property_error>
 x = 0
 
 State 2: <Next line 8, col 9 to line 8, col 18 of module action_property_error>

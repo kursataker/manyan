@@ -3,4 +3,5 @@ of an incorrect recursive function definition that caused TLC to enter
 an infinite loop when trying to compute the function or its application
 to an element in its putative domain.
 0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
 exit 75

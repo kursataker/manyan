@@ -1,16 +1,16 @@
 Error: Evaluating assumption line 5, col 8 to line 5, col 80 of module params_order_message failed.
 In applying the function
 << << ( <<"a", 1>> :> 0 @@
-        <<"b", 1>> :> 0 @@
         <<"a", 2>> :> 0 @@
+        <<"b", 1>> :> 0 @@
         <<"b", 2>> :> 0 ) >>,
    << ( <<"a", 1>> :> 0 @@
-        <<"b", 1>> :> 0 @@
         <<"a", 2>> :> 0 @@
+        <<"b", 1>> :> 0 @@
         <<"b", 2>> :> 0 ) >>,
    << ( <<"a", 1>> :> 0 @@
-        <<"b", 1>> :> 0 @@
         <<"a", 2>> :> 0 @@
+        <<"b", 1>> :> 0 @@
         <<"b", 2>> :> 0 ) >> >>,
 the first argument is:
 9

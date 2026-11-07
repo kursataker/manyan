@@ -1,13 +1,18 @@
-Error: Successor state is not completely specified by the next-state action.
+Finished computing initial states: 20 distinct state generated.
+Error: Successor state is not completely specified by action Sw of the next-state relation. The following variable is not defined: a.
 
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 38 of module successor_incomplete>
 /\ a = 3
 /\ b = "x"
 
-Error: TLC threw an unexpected exception.
-This was probably caused by an error in the spec or model.
-See the User Output or TLC Console for clues to what happened.
-The exception was a java.lang.NullPointerException
-: Cannot invoke "tlc2.value.IValue.fingerPrint(long)" because "minVals[i]" is null
-exit 255
+State 2: <Sw line 8, col 7 to line 8, col 49 of module successor_incomplete>
+/\ a = null
+/\ b = "y"
+
+Error: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.
+Attempted to apply the operator overridden by the Java method
+public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,
+but it produced the following error:
+Cannot invoke "tlc2.value.impl.Value.fingerPrint(long)" because "this.values[i]" is null
+exit 75

@@ -10,9 +10,6 @@ x = 1
 State 3: <Next line 7, col 9 to line 7, col 18 of module tlcget_level_invariant>
 x = 2
 
-State 4: <Next line 7, col 9 to line 7, col 18 of module tlcget_level_invariant>
-x = 3
-
-4 states generated, 4 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 4.
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
 exit 12

@@ -1,8 +1,9 @@
+Finished computing initial states: 1 distinct state generated.
 Error: Attempted to apply the operator overridden by the Java method
-public static tlc2.value.impl.IntValue tlc2.module.Naturals.Plus(tlc2.value.impl.IntValue,tlc2.value.impl.IntValue),
+public static tlc2.value.impl.IntValue tlc2.module.Integers.Plus(tlc2.value.impl.IntValue,tlc2.value.impl.IntValue),
 but it produced the following error:
 Cannot cast tlc2.value.impl.StringValue to tlc2.value.impl.IntValue
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 13 of module java_error>
 x = 0
 exit 255

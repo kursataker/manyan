@@ -1,3 +1,83 @@
+line 26, col 13 to line 26, col 13 of module test2
+
+The field name "c" in the record constructor is identical to the existing definition or declaration
+named c, located at line 8, col 16 to line 8, col 16 of module test2.
+The field in the record will not take the value of the c definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [c |-> ...] = {"c"} holds true.
+
+line 26, col 22 to line 26, col 22 of module test2
+
+The field name "a" in the record constructor is identical to the existing definition or declaration
+named a, located at line 8, col 10 to line 8, col 10 of module test2.
+The field in the record will not take the value of the a definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [a |-> ...] = {"a"} holds true.
+
+line 26, col 31 to line 26, col 31 of module test2
+
+The field name "b" in the record constructor is identical to the existing definition or declaration
+named b, located at line 8, col 13 to line 8, col 13 of module test2.
+The field in the record will not take the value of the b definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [b |-> ...] = {"b"} holds true.
+
+line 30, col 9 to line 30, col 9 of module test2
+
+The field name "c" in the record constructor is identical to the existing definition or declaration
+named c, located at line 8, col 16 to line 8, col 16 of module test2.
+The field in the record will not take the value of the c definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [c |-> ...] = {"c"} holds true.
+
+line 30, col 18 to line 30, col 18 of module test2
+
+The field name "a" in the record constructor is identical to the existing definition or declaration
+named a, located at line 8, col 10 to line 8, col 10 of module test2.
+The field in the record will not take the value of the a definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [a |-> ...] = {"a"} holds true.
+
+line 30, col 27 to line 30, col 27 of module test2
+
+The field name "b" in the record constructor is identical to the existing definition or declaration
+named b, located at line 8, col 13 to line 8, col 13 of module test2.
+The field in the record will not take the value of the b definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [b |-> ...] = {"b"} holds true.
+
+line 31, col 11 to line 31, col 11 of module test2
+
+The field name "a" in the record constructor is identical to the existing definition or declaration
+named a, located at line 8, col 10 to line 8, col 10 of module test2.
+The field in the record will not take the value of the a definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [a |-> ...] = {"a"} holds true.
+
+line 31, col 20 to line 31, col 20 of module test2
+
+The field name "b" in the record constructor is identical to the existing definition or declaration
+named b, located at line 8, col 13 to line 8, col 13 of module test2.
+The field in the record will not take the value of the b definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [b |-> ...] = {"b"} holds true.
+
+line 31, col 29 to line 31, col 29 of module test2
+
+The field name "c" in the record constructor is identical to the existing definition or declaration
+named c, located at line 8, col 16 to line 8, col 16 of module test2.
+The field in the record will not take the value of the c definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [c |-> ...] = {"c"} holds true.
+
+line 51, col 52 to line 51, col 52 of module test2
+
+The field name "a" in the record constructor is identical to the existing definition or declaration
+named a, located at line 8, col 10 to line 8, col 10 of module test2.
+The field in the record will not take the value of the a definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [a |-> ...] = {"a"} holds true.
+
 "Test 1 OK"  TRUE
 "Test 2 OK"  TRUE
 "Test 3 OK"  TRUE
@@ -11,6 +91,8 @@
 "Test 11 OK"  TRUE
 "Test 12 OK"  TRUE
 "Test 13 OK"  TRUE
+Warning: The invariant Inv is a constant-level formula (i.e., it contains no variables, primes, or temporal operators) and evaluates to TRUE. To assert constant-level formulas in your spec, use ASSUME ConstInv. If you optionally want to give the assumption a name, write ASSUME YourAssumption == ConstInv instead. See https://explain.tlapl.us/assumptions-and-invariants for additional details.
+(Use the -nowarning option to disable this warning.)
 Finished computing initial states: 1 distinct state generated.
 Model checking completed. No error has been found.
 2 states generated, 1 distinct states found, 0 states left on queue.

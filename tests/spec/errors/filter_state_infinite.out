@@ -14,4 +14,5 @@ Attempted to enumerate a set of the form s1 \X s2 ... \X sn,
 but can't enumerate s0:
 Nat
 1 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

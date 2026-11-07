@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Successor state is not completely specified by the next-state action. The following variables are not assigned: y, z.
+Error: Successor state is not completely specified by the next-state action. The following variables are not defined: y, z.
 
 Error: The behavior up to this point is:
 State 1: <Initial predicate>

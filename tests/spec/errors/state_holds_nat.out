@@ -3,7 +3,16 @@ Error: TLC threw an unexpected exception.
 This was probably caused by an error in the spec or model.
 See the User Output or TLC Console for clues to what happened.
 The exception was a java.lang.RuntimeException
-: util.Assert$TLCRuntimeException: TLC has found a state in which the value of a variable contains Nat
+: TLC has found a state in which the value of a variable contains Nat
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = {}
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: TLC has found a state in which the value of a variable contains Nat
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
@@ -12,4 +21,5 @@ Fingerprint Stack Trace:
 Reason:
 TLC has found a state in which the value of a variable contains Nat
 2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

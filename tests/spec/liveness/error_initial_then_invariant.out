@@ -6,11 +6,14 @@ x = 0
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-0) line 12, col 18 to line 12, col 24 of module error_initial_then_invariant
+0. Line 8, column 9 to line 8, column 13 in error_initial_then_invariant
+1. Line 12, column 8 to line 12, column 32 in error_initial_then_invariant
+2. Line 12, column 18 to line 12, column 24 in error_initial_then_invariant
 
 Reason:
 Attempted to enumerate S \ T when S:
 0
 is not enumerable.
 1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

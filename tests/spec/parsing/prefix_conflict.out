@@ -1,2 +1,6 @@
-Error: Parsing or semantic analysis failed.
-exit 150
+Error: Evaluating assumption line 4, col 8 to line 4, col 27 of module prefix_conflict failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.IntValue tlc2.module.Integers.Plus(tlc2.value.impl.IntValue,tlc2.value.impl.IntValue),
+but it produced the following error:
+Cannot cast tlc2.value.impl.TupleValue to tlc2.value.impl.IntValue
+exit 10

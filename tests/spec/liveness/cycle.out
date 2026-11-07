@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Reach was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -12,4 +12,5 @@ x = 1
 Back to state 1: <Next line 6, col 12 to line 6, col 26 of module cycle>
 
 5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
 exit 13

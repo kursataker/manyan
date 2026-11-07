@@ -1,5 +1,8 @@
-Error: The configuration file substitutes constant C with non-constant Foo - specifically: Attempted to apply the operator overridden by the Java method
-public static tlc2.value.impl.IntValue tlc2.module.Naturals.Plus(tlc2.value.impl.IntValue,tlc2.value.impl.IntValue),
+Error: Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.IntValue tlc2.module.Integers.Plus(tlc2.value.impl.IntValue,tlc2.value.impl.IntValue),
 but it produced the following error:
 Cannot cast tlc2.value.impl.StringValue to tlc2.value.impl.IntValue
-exit 151
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
+exit 75

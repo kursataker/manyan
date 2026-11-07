@@ -1,5 +1,5 @@
 Error: Evaluating assumption line 3, col 8 to line 3, col 34 of module apply_tuple failed.
-Attempted to apply tuple
+Attempted to access index 3 of tuple
 <<1, 2>>
-to integer 3 which is out of domain.
+which is out of bounds.
 exit 10

@@ -1,4 +1,4 @@
 Error: Evaluating assumption line 3, col 8 to line 3, col 24 of module compare_function_set failed.
-Attempted to check equality of the function << >> with the value:
+Attempted to check equality of the function <<>> with the value:
 {}
 exit 10

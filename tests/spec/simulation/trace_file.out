@@ -1,70 +1,100 @@
-
+Finished computing initial states: 2 distinct state generated.
 exit 0
 --- walk_0_0
 ---------------- MODULE walk_0_0 -----------------
+\* <Init line 7, col 9 to line 7, col 32 of module trace_file>
 STATE_1 == 
 /\ x = 10
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_2 == 
 /\ x = 9
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_3 == 
 /\ x = 8
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_4 == 
 /\ x = 7
+/\ y = "a"
+
+
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
+STATE_5 == 
+/\ x = 6
 /\ y = "a"
 
 
 =================================================
 --- walk_0_1
 ---------------- MODULE walk_0_1 -----------------
+\* <Init line 7, col 9 to line 7, col 32 of module trace_file>
 STATE_1 == 
 /\ x = 0
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_2 == 
 /\ x = -1
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_3 == 
 /\ x = -2
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_4 == 
 /\ x = -1
+/\ y = "a"
+
+
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
+STATE_5 == 
+/\ x = 0
 /\ y = "a"
 
 
 =================================================
 --- walk_0_2
 ---------------- MODULE walk_0_2 -----------------
+\* <Init line 7, col 9 to line 7, col 32 of module trace_file>
 STATE_1 == 
 /\ x = 0
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_2 == 
 /\ x = -1
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_3 == 
 /\ x = -2
 /\ y = "a"
 
 
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
 STATE_4 == 
 /\ x = -3
+/\ y = "a"
+
+
+\* <Next line 8, col 9 to line 8, col 44 of module trace_file>
+STATE_5 == 
+/\ x = -2
 /\ y = "a"
 
 

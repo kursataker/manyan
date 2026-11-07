@@ -36,7 +36,8 @@ NOISE = re.compile(
     r"The average outdegree|  Estimates of the probability|  because two distinct states|"
     r"  calculated \(optimistic\)|  based on the actual fingerprints|Checking \d+ branches of temporal properties|"
     r"Warning: Please run the Java VM|GuardMalloc\[|"
-    r"Progress: \d+ states checked|The number of states generated: |Simulation using seed )")
+    r"Progress: \d+ states checked|The number of states generated: |Simulation using seed |"
+    r"Linting of module|Trace exploration spec path: )")
 
 
 def normalize(output, directory):

@@ -1,5 +1,5 @@
-<<728, {<<2, 9, 2>>, <<5, 2, 1>>, <<9, 7, 3>>}>>
-{{4}, {1, 4}, {2, 4, 6}}
+<<728, {<<2, 9, 4>>, <<5, 8, 9>>, <<8, 8, 8>>}>>
+{{3}, {1, 3, 5, 6}}
 Finished computing initial states: 1 distinct state generated.
 Model checking completed. No error has been found.
 2 states generated, 1 distinct states found, 0 states left on queue.

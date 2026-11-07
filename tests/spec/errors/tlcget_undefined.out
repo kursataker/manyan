@@ -1,3 +1,5 @@
-Error: Evaluating assumption line 8, col 8 to line 8, col 36 of module tlcget_undefined failed.
-TLCGet(config) was undefined.
-exit 10
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

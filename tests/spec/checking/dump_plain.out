@@ -13,12 +13,13 @@ The depth of the complete state graph search is 2.
 exit 11
 --- graph.dot
 strict digraph DiskGraph {
+node [shape=box,style=rounded]
 nodesep=0.35;
 subgraph cluster_graph {
 color="white";
 s0 [label="f = << \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n   \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" >>",style = filled]
 s0 -> s1 [label="",color="black",fontcolor="black"];
-s1 [label="f = <<\"y\", \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">>"];
+s1 [label="f = <<\"y\", \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">>",tooltip="f = <<\"y\", \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">>"];
 {rank = same; s0;}
 }
 }

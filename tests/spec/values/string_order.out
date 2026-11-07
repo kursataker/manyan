@@ -1,3 +1,11 @@
+line 6, col 42 to line 6, col 45 of module string_order
+
+The field name "zeta" in the record constructor is identical to the existing definition or declaration
+named zeta, located at line 3, col 10 to line 3, col 13 of module string_order.
+The field in the record will not take the value of the zeta definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [zeta |-> ...] = {"zeta"} holds true.
+
 {"zeta", "Beta", "gamma", "alpha", "beta", "delta"}
 [zeta |-> 3, gamma |-> 1, alpha |-> 2]
 Finished computing initial states: 1 distinct state generated.

@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Fired was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -14,4 +14,5 @@ State 2: <Move line 6, col 12 to line 6, col 48 of module sf_refine>
 Back to state 1: <Move line 7, col 12 to line 7, col 41 of module sf_refine>
 
 11 states generated, 6 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
 exit 13

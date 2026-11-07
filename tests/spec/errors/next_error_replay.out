@@ -22,7 +22,11 @@ x = 1
 State 3: <Next line 5, col 9 to line 7, col 32 of module next_error_replay>
 x = 2
 
+<<"init", 0>>
+<<"next", 0>>
+<<"next", 1>>
 <<"next", 2>>
 
 3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
 exit 75

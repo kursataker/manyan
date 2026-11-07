@@ -1,17 +1,18 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Done was violated.
 
 Error: The following behavior constitutes a counter-example:
 
 State 1: <Initial predicate>
 c = <<0, 0>>
 
-State 2: <Inc line 5, col 11 to line 5, col 73 of module partial_fairness>
+State 2: <Inc(1) line 5, col 11 to line 5, col 73 of module partial_fairness>
 c = <<1, 0>>
 
-State 3: <Inc line 5, col 11 to line 5, col 73 of module partial_fairness>
+State 3: <Inc(1) line 5, col 11 to line 5, col 73 of module partial_fairness>
 c = <<2, 0>>
 
 State 4: Stuttering
 5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
 exit 13

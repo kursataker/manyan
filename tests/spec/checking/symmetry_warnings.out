@@ -1,7 +1,6 @@
 Warning: The set Alone has been defined to be a symmetry set but contains less than two elements.
 (Use the -nowarning option to disable this warning.)
 Warning: Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss violations of the stated liveness properties. Please check liveness without symmetry defined.
-Warning: Declaring state or action constraints during liveness checking is dangerous: Please read section 14.3.5 on page 247 of Specifying Systems (https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at https://discuss.tlapl.us/msg00994.html for more details.
 Finished computing initial states: 2 states generated, with 1 of them distinct.
 Model checking completed. No error has been found.
 4 states generated, 1 distinct states found, 0 states left on queue.

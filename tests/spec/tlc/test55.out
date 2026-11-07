@@ -1,3 +1,5 @@
+Warning: The formula InitProperty is a state-level formula, but it was used as a PROPERTY (or PROPERTIES), where a temporal formula is typically expected. State-level formulas used as PROPERTY or PROPERTIES are only checked in the initial state. To verify that the formula InitProperty holds in all states of every behavior, use INVARIANT InitProperty instead. Alternatively, applying the "always" temporal operator ([]) to the state-level formula InitProperty changes it into a temporal formula, asserting that InitProperty holds in all states of every behavior. See https://explain.tlapl.us/invariants-and-properties for additional details.
+(Use the -nowarning option to disable this warning.)
 Finished computing initial states: 1 distinct state generated.
 Model checking completed. No error has been found.
 3 states generated, 2 distinct states found, 0 states left on queue.

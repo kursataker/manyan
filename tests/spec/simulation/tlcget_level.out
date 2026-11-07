@@ -1,20 +1,14 @@
+Finished computing initial states: 1 distinct state generated.
 <<0, 1>>
 <<1, 2>>
-<<2, 3>>
 Error: Invariant I is violated.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 13 of module tlcget_level>
 x = 0
 
-<<0, 1>>
 State 2: <Next line 8, col 9 to line 8, col 52 of module tlcget_level>
 x = 1
 
-<<1, 2>>
 State 3: <Next line 8, col 9 to line 8, col 52 of module tlcget_level>
 x = 2
-
-<<2, 3>>
-State 4: <Next line 8, col 9 to line 8, col 52 of module tlcget_level>
-x = 3
 exit 12

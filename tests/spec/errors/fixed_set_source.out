@@ -16,11 +16,15 @@ x = {1, 2, 3}
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-0) line 9, col 31 to line 9, col 42 of module fixed_set_source
+0. Line 9, column 12 to line 9, column 42 in fixed_set_source
+1. Line 9, column 12 to line 9, column 19 in fixed_set_source
+2. Line 9, column 24 to line 9, column 42 in fixed_set_source
+3. Line 9, column 31 to line 9, column 42 in fixed_set_source
 
 Reason:
 Attempted to enumerate a set of the form [D -> R],but the range R:
 Nat
 cannot be enumerated.
 65 states generated, 8 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
 exit 75

@@ -12,4 +12,5 @@ State 3: <Next line 5, col 9 to line 5, col 52 of module assert>
 x = 2
 
 3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
 exit 14

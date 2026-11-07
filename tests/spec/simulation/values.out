@@ -1,6 +1,7 @@
+Finished computing initial states: 4 distinct state generated.
 Error: Invariant Inv is violated.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 64 of module values>
 /\ q = <<>>
 /\ r = [a |-> 2, b |-> "q"]
 /\ s = {}

@@ -1,7 +1,10 @@
+Warning: The invariant Inv is a constant-level formula (i.e., it contains no variables, primes, or temporal operators) and evaluates to TRUE. To assert constant-level formulas in your spec, use ASSUME ConstInv. If you optionally want to give the assumption a name, write ASSUME YourAssumption == ConstInv instead. See https://explain.tlapl.us/assumptions-and-invariants for additional details.
+(Use the -nowarning option to disable this warning.)
 "Should report error for applying model value to arg"  TRUE
 Error: A non-function (a model value) was applied as a function.
 line 15, col 12 to line 15, col 22 of module etest4
 "Should report error for applying model value to arg"  TRUE
 
 0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
 exit 75

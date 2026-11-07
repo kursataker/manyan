@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Unsettled was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -17,4 +17,5 @@ x = 3
 
 State 5: Stuttering
 4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
 exit 13

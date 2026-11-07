@@ -1,5 +1,6 @@
+Finished computing initial states: 2 distinct state generated.
 Error: Deadlock reached.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 20 of module no_next>
 x = 1
 exit 11

@@ -1,10 +1,15 @@
 Finished computing initial states: 1 distinct state generated.
+
 Error: TLC threw an unexpected exception.
 This was probably caused by an error in the spec or model.
 See the User Output or TLC Console for clues to what happened.
 The exception was a java.lang.RuntimeException
 : Attempted to check equality of string "ok" with non-string:
 <<1>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = "ok"
+
 3 states generated, 3 distinct states found, 2 states left on queue.
 The depth of the complete state graph search is 2.
 exit 255

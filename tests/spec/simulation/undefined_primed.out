@@ -1,6 +1,7 @@
+Finished computing initial states: 1 distinct state generated.
 Error: In evaluation, the identifier x is either undefined or not an operator.
 line 7, col 14 to line 7, col 14 of module undefined_primed
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 13 of module undefined_primed>
 x = 0
 exit 151

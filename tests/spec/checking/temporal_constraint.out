@@ -4,4 +4,5 @@ While working on the initial state:
 x = 1
 
 1 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

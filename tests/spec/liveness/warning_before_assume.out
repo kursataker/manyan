@@ -1,4 +1,2 @@
-Warning: Declaring state or action constraints during liveness checking is dangerous: Please read section 14.3.5 on page 247 of Specifying Systems (https://lamport.azurewebsites.net/tla/book.html) and optionally the discussion at https://discuss.tlapl.us/msg00994.html for more details.
-(Use the -nowarning option to disable this warning.)
 Error: Assumption line 10, col 8 to line 10, col 12 of module warning_before_assume is false.
 exit 10

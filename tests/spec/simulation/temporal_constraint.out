@@ -1,6 +1,7 @@
+Finished computing initial states: 1 distinct state generated.
 Error: TLC encountered a temporal formula (a ~> b) when evaluating a predicate or action.
 line 9, col 26 to line 9, col 43 of module temporal_constraint
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 7, col 9 to line 7, col 13 of module temporal_constraint>
 x = 1
 exit 255

@@ -1,10 +1,11 @@
+Finished computing initial states: 1 distinct state generated.
 Error: TLC threw an unexpected exception.
 This was probably caused by an error in the spec or model.
 See the User Output or TLC Console for clues to what happened.
 The exception was a tlc2.tool.EvalException
 : The second argument of \div is 0.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 13 of module next_module_error>
 x = 0
 
 State 2: <Next line 7, col 9 to line 7, col 27 of module next_module_error>

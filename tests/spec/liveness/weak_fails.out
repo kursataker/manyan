@@ -1,5 +1,5 @@
 Finished computing initial states: 1 distinct state generated.
-Error: Temporal properties were violated.
+Error: Temporal property Finished was violated.
 
 Error: The following behavior constitutes a counter-example:
 
@@ -14,4 +14,5 @@ State 2: <Toggle line 6, col 11 to line 6, col 35 of module weak_fails>
 Back to state 1: <Toggle line 6, col 11 to line 6, col 35 of module weak_fails>
 
 6 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
 exit 13

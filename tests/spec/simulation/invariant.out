@@ -1,6 +1,7 @@
+Finished computing initial states: 3 distinct state generated.
 Error: Invariant Inv is violated.
 Error: The behavior up to this point is:
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 27 of module invariant>
 /\ x = 0
 /\ y = 0
 

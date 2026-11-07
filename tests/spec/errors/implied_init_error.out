@@ -1,7 +1,10 @@
+Warning: The formula P is a state-level formula, but it was used as a PROPERTY (or PROPERTIES), where a temporal formula is typically expected. State-level formulas used as PROPERTY or PROPERTIES are only checked in the initial state. To verify that the formula P holds in all states of every behavior, use INVARIANT P instead. Alternatively, applying the "always" temporal operator ([]) to the state-level formula P changes it into a temporal formula, asserting that P holds in all states of every behavior. See https://explain.tlapl.us/invariants-and-properties for additional details.
+(Use the -nowarning option to disable this warning.)
 Error: Attempted to check equality of integer 0 with non-integer:
 {}
 While working on the initial state:
 x = 0
 
 1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75

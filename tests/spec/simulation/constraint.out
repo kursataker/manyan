@@ -1,2 +1,12 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Init line 6, col 9 to line 6, col 13 of module constraint>
+x = 0
 
-exit 0
+State 2: <Next line 7, col 9 to line 7, col 18 of module constraint>
+x = 1
+
+State 3: <Next line 7, col 23 to line 7, col 32 of module constraint>
+x = 3
+exit 11

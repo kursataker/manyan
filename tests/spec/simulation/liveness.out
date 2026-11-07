@@ -1,8 +1,9 @@
-Error: Temporal properties were violated.
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property P was violated.
 
 Error: The following behavior constitutes a counter-example:
 
-State 1: <Initial predicate>
+State 1: <Init line 6, col 9 to line 6, col 13 of module liveness>
 x = 0
 
 State 2: Stuttering

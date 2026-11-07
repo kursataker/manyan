@@ -6,12 +6,15 @@ x = 0
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-2) line 9, col 29 to line 9, col 33 of module compare_source
-1) line 9, col 22 to line 9, col 34 of module compare_source
-0) line 9, col 8 to line 9, col 35 of module compare_source
+0. Line 7, column 9 to line 7, column 13 in compare_source
+1. Line 9, column 8 to line 9, column 40 in compare_source
+2. Line 9, column 8 to line 9, column 35 in compare_source
+3. Line 9, column 22 to line 9, column 34 in compare_source
+4. Line 9, column 29 to line 9, column 33 in compare_source
 
 Reason:
 Attempted to compare string "s" with non-string:
 1
 1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
 exit 75
