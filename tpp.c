@@ -8972,10 +8972,10 @@ static int search(void) {
         print_error_text();
         Value **from = decode_state(expanding);
         print_trace(expanding, NULL, 0);
-        replay_error(from);
         /* TLC goes on to find the state deadlocked, its error already
-           reported, and rebuilds the behavior. */
+           reported, and rebuilds the behavior; then it replays the error. */
         if (succ_count == 0 && check_deadlock) trace_states(expanding, NULL, 0, 0);
+        replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
         if (status == TPP_FAILURE_EVAL && error_module == 1) status = TPP_ERROR;
