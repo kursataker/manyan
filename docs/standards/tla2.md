@@ -549,6 +549,8 @@ the sets in it, so an infinite `S \cup T` or `S \ T` is an error there.
 `Any` is the set of every value; it prints as `ANY`. `TLCSet(i, v)`, for
 a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 `TLCGet(i)` yields it, and is an error when nothing was kept;
+`TLCGet("-Dk")` is Java's system property `k`, the string `"-Dk"` when
+unset, and `TLCSet("-Dk", v)` sets it to `v` as printed;
 `TLCGet("level")` is the depth of the state a predicate is evaluated on
 (of the step's first state in an action, 0 in Init and the assumptions);
 `TLCGet("config")` is the record `[mode |-> "bfs", deadlock |-> b, worker
@@ -579,7 +581,7 @@ a keyword where one is expected, a keyword repeated or followed by nothing, an a
 |---|---|
 | `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
-| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through an instance, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error |
+| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through instances, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
 | `PROPERTY`, `PROPERTIES` | temporal formulas the specification must imply |
 | `CONSTRAINT`, `CONSTRAINTS` | state predicates bounding the explored states |
@@ -671,8 +673,9 @@ state:` and the state, with no counts (exit 13), or an error evaluating it
 as one of an invariant there; `[][A]_v` is checked on
 every transition; other properties are checked over the state graph after
 the search (liveness checking). A property is split into its
-conjuncts, following definitions and a call of an instance's definition
-without parameters (`I!Spec`); a part of several is named in messages by
+conjuncts, following definitions and calls of an instance's definitions
+without parameters (`I!Spec`), through any number of instances
+(`Refinement == M!Spec` seen through `INSTANCE Mid`); a part of several is named in messages by
 its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
 violated.` A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
@@ -697,8 +700,12 @@ conjunct of the property's negation (in disjunctive normal form) is
 without fairness, `... the behavior specification Spec defined at line
 ..., col ... of module M. ...` (its whole definition). A conjunct with an
 action that is neither is TLC's `Error: Temporal formulas containing
-actions must be of forms <>[]A or []<>A.` (exit 255), before the initial
-states are computed. As TLC, `[A]_v` and `<<A>>_v` in a temporal formula
+actions must be of forms <>[]A or []<>A.` (exit 255). TLC builds the
+tableaux as its checker starts, before the assumptions, evaluating the
+constants in them: an error there is `Error: TLC threw an unexpected
+exception.` with `java.lang.RuntimeException` and the message
+(`tlc2.tool.EvalException` for a failed `Assert` and the errors TLC's
+evaluator raises as such), with no counts (exit 255). As TLC, `[A]_v` and `<<A>>_v` in a temporal formula
 test `v` first: a step that leaves `v` unchanged decides them, `A`
 unevaluated.
 
@@ -926,7 +933,7 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | invariant not Boolean | `Error: TLC expected a boolean value, but did not find one. ...` | 75 |
 | constraint defined as a number or string | TLC's `ClassCastException`: `Error: class tla2sany.semantic.OpDefNode cannot be cast to class tlc2.value.impl.Value (...)`, then `While working on the initial state:` and the state | 75 |
 | error evaluating an invariant in an initial state | the evaluation message, then `While working on the initial state:` and the state | 75 |
-| error computing a function constructor in full (§6.6) | the evaluation message (and the trace, in an action), then `Error: TLC was unable to fingerprint.`, a blank line, `Fingerprint Stack Trace:`, TLC's call stack as it evaluates Init or Next again, outermost first, as `0. Line l1, column c1 to line l2, column c2 in M`, then the constructors entered within its innermost expression (without a call stack, the constructors being computed, innermost first, numbered down to `0) line l1, col c1 to line l2, col c2 of module M`), a blank line, `Reason:` and the message again | 75 |
+| error computing a function constructor in full (§6.6) | the evaluation message (and the trace, in an action), then `Error: TLC was unable to fingerprint.`, a blank line, `Fingerprint Stack Trace:`, TLC's call stack as it evaluates Init or Next again, outermost first, as `0. Line l1, column c1 to line l2, column c2 in M` (through an instance that substitutes, the `INSTANCE` statement after the call, the call left out for a part of the `SPECIFICATION`; `UNION {S}` with its set `{S}`), then the constructors entered within its innermost expression (without a call stack, the constructors being computed, innermost first, numbered down to `0) line l1, col c1 to line l2, col c2 of module M`), a blank line, `Reason:` and the message again | 75 |
 | fingerprinting an initial state that holds a function over an infinite domain | `Attempted to compute the number of elements in the overridden value Nat.` (TLC's error counting the domain), then `While working on the initial state:` and the state | 75 |
 | error evaluating a constraint or action constraint on a successor | `Error: TLC threw an unexpected exception.`, the evaluation message, and the trace to the successor | 75 |
 | error fingerprinting a successor | `Error: TLC threw an unexpected exception.`, the message, the trace to the state, then, seeking the successor again by equality, the exception again for a value TLC has no fingerprint for (`Nat`), or TLC's `NullPointerException` for a set it cannot compare | 75 |

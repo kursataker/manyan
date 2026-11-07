@@ -1,0 +1,17 @@
+Error: The second argument of \div is 0.
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0. Line 6, column 9 to line 6, column 14 in fingerprint_instance_call
+1. Line 5, column 1 to line 5, column 29 in fingerprint_instance_call
+2. Line 5, column 9 to line 5, column 30 in FPM
+3. Line 5, column 13 to line 5, column 30 in FPM
+4. Line 5, column 20 to line 5, column 20 in FPM
+5. Line 4, column 6 to line 4, column 30 in FPM
+6. Line 4, column 22 to line 4, column 29 in FPM
+
+Reason:
+The second argument of \div is 0.
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
+exit 75

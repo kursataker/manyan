@@ -4,6 +4,18 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
+## Unreleased
+
+Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
+
+- A property or specification is split through any number of instances
+  (TestGraphs' `Refinement == MCR!Spec` through `INSTANCE TLCMC`).
+- TLC builds its tableaux before the assumptions; a constant in a
+  property that fails there is TLC's unexpected exception.
+- Fingerprint stack traces have the `INSTANCE` an evaluation enters, and
+  the set of `UNION {S}`.
+- `TLCGet("-Dk")` and `TLCSet("-Dk", v)` are Java's system properties.
+
 ## 0.6.0
 
 - TLC 1.8.0 is the oracle, pinned to the pre-release jar built from

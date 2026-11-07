@@ -5504,6 +5504,7 @@ static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
     if (x->kind == X_SETENUM) {
         /* TLC sorts a set's elements only once it must, as Nat and {-1}
            cannot be: UNION {{-1}, Nat} is a set. */
+        if (tracking && !x->made) frame_push(x);   /* TLC evaluates the set */
         s = mk_set(x->n);
         for (int i = 0; i < x->n; i++) s->u.set.elems[i] = eval(x->args[i], c);
         s->u.set.source = source(x);
@@ -5935,9 +5936,17 @@ static const EvalFn eval_kind[K_WHILE + 1] = {
     [K_WHILE] = ev_temporal,
 };
 
+/* e's frame, unless tpp made e, and through an instance that substitutes
+   the INSTANCE's, as TLC enters its substitutions. */
+static void frames_push(Expr *e) {
+    if (!e->made) frame_push(e);
+    if (e->kind == K_INSTCALL && e->def->kind == D_OP)
+        for (int i = 0; i < e->ndefs; i++) if (e->defs[i]->nsubst && e->defs[i]->where) frame_push(e->defs[i]->where);
+}
+
 static Value *eval_tracked(Expr *e, Ctx c) {
     int n = nframes;
-    if (!e->made) frame_push(e);
+    frames_push(e);
     Value *v = eval_kind[e->kind](e, c);
     nframes = n;
     return v;
@@ -6387,11 +6396,25 @@ static int64_t search_counter(const char *key);
 static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for the initial states */
 static Value *search_config(void);
 
+/* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
+   sets: pairs of k and its value, interned. A worker leaves them to tpp. */
+static int *props, nprops;
+static int *prop(const char *key) {
+    if (strncmp(key, "-D", 2)) return NULL;
+    if (in_worker) worker_cannot();
+    for (int i = 0; i < nprops; i += 2) if (!strcmp(S(props[i]), key)) return &props[i + 1];
+    props = xrealloc(props, sizeof(int) * (size_t)(nprops + 2));
+    props[nprops] = intern(key), props[nprops + 1] = props[nprops];   /* unset, it is the key */
+    return &props[(nprops += 2) - 1];
+}
+
 NATIVE(n_tlcget) {
     UNUSED;
     if (starting) fail_module("TLCGet is evaluated before TLC starts checking.");
     if (a[0]->kind == V_STR) {
         const char *key = S(a[0]->u.i);
+        int *p = prop(key);
+        if (p) return mk_str(*p);
         if (!strcmp(key, "level")) return mk_int(cur_level);
         if (!strcmp(key, "config")) return search_config();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
@@ -6413,6 +6436,11 @@ NATIVE(n_tlcset) {
             if (in_worker) worker_cannot();
             exit_requested = 1;
         }
+        return TRUEV;
+    }
+    int *p = a[0]->kind == V_STR ? prop(S(a[0]->u.i)) : NULL;
+    if (p) {
+        *p = intern(pretty(a[1]));
         return TRUEV;
     }
     if (a[0]->kind != V_INT || a[0]->u.i < 0)
@@ -7152,7 +7180,7 @@ static Ctx instance_ctx(Expr *e, Ctx c) {
 static int gen_untracked(Expr *e, Ctx c, Cont *k);
 static int gen_tracked(Expr *e, Ctx c, Cont *k) {
     int n = nframes;
-    if (!e->made) frame_push(e);
+    frames_push(e);
     int found = gen_untracked(e, c, k);
     nframes = n;
     return found;
@@ -9403,10 +9431,10 @@ static void sim_print(States *trace) {
         print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL, trace->a[i + (i + 1 < trace->n)]);
 }
 
-/* TLC's simulator reports an error raised outside its evaluator, and a
-   TLCRuntimeException in a behavior (in_behavior), plainly, any other as
-   unexpected. */
-static void sim_exception(int in_behavior) {
+/* An error TLC catches as an exception: one raised outside its evaluator,
+   and in a simulated behavior (in_behavior) a TLCRuntimeException, is
+   reported plainly, any other as unexpected. */
+static void report_exception(int in_behavior) {
     if (stackless || (in_behavior && error_module == 2)) {
         printf("Error: ");
         print_error_text();
@@ -9510,7 +9538,7 @@ static int simulate(const TPPOptions *o) {
             sim_summary(seed, aril);
             return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
         }
-        sim_exception(trace.n > 0);
+        report_exception(trace.n > 0);
         int status = trace.n && error_module == 2 ? error_status : TPP_ERROR;
         if (trace.n) {
             error_check = NULL;
@@ -9877,6 +9905,24 @@ static Expr *unfold(Expr *e) {
 
 /* part, a subexpression of the body of the instance call's definition,
    as the instance sees it. */
+/* inner, a call in the module call reaches, as one call from call's
+   module: through I!Refinement, its M!Spec is I!M!Spec. */
+static Expr *through(Expr *call, Expr *inner) {
+    if (!call) return inner;
+    Expr *e = NEW(Expr);
+    *e = *inner;
+    e->ndefs = e->nseg = call->ndefs + inner->ndefs;
+    e->defs = NEWN(Def *, e->ndefs);
+    e->segs = NEWN(Seg, e->ndefs);
+    for (int i = 0; i < e->ndefs; i++) {
+        Expr *from = i < call->ndefs ? call : inner;
+        int k = i < call->ndefs ? i : i - call->ndefs;
+        e->defs[i] = from->defs[k];
+        if (k < from->nseg) e->segs[i] = from->segs[k];
+    }
+    return e;
+}
+
 static Expr *in_instance(Expr *call, Expr *part) {
     if (!call) return part;
     Def *d = NEW(Def);
@@ -9888,6 +9934,7 @@ static Expr *in_instance(Expr *call, Expr *part) {
     Expr *e = NEW(Expr);
     *e = *call;
     e->def = d;
+    e->made = 1;   /* TLC enters the instance's substitutions, not the call */
     return e;
 }
 
@@ -9927,8 +9974,8 @@ static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
         eval_depth--;
         return;
     }
-    if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        conjuncts(e->def->body, e, out, n, spec);
+    if (e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        conjuncts(e->def->body, through(call, e), out, n, spec);
         return;
     }
     *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 2));
@@ -9951,7 +9998,8 @@ static Expr *conjoin(Expr **parts, int n) {
 /* The variables in a subscript, as TLC collects them to warn of one
    missing: in tuples and the definitions they call, through instances;
    an operator's parameter stands for its argument, and an instance's
-   variable for what it substitutes. */
+   variable for what it substitutes, which TLC reads as if in the root
+   module: through two instances, it finds the middle one's variables. */
 typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
 static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
     if (depth > 100) return;
@@ -9962,7 +10010,7 @@ static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, c
             for (int j = 0; j < path[k]->nsubst; j++)
                 if (path[k]->subst_decl[j] == e->def) {
                     Args b = {path[k], segs[k].args, NULL};   /* a parameter of the instance stands for its argument */
-                    subscript_vars(path[k]->subst_expr[j], path[k]->nparams ? &b : NULL, path, segs, k, in, depth + 1);
+                    subscript_vars(path[k]->subst_expr[j], path[k]->nparams ? &b : NULL, NULL, NULL, 0, in, depth + 1);
                     return;
                 }
         return;
@@ -10078,8 +10126,8 @@ static void property_parts(Expr *e, Expr *call, int name, Part **out, int *n) {
         }
         return;
     }
-    if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        property_parts(e->def->body, e, name, out, n);
+    if (e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        property_parts(e->def->body, through(call, e), name, out, n);
         return;
     }
     if (e->kind == K_ALWAYS && e->args[0]->kind == K_CALL && e->args[0]->n == 0) name = e->args[0]->def->name;
@@ -11741,13 +11789,17 @@ static int check_temporal_forms(int simulating) {
             printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
             return TPP_ERROR;
         }
-        if (negated && tf_wrong_form(negated)) {
+        if (!negated) {   /* a constant in it fails, which TLC evaluates building its tableau */
+            report_exception(0);
+            return TPP_ERROR;
+        }
+        if (tf_wrong_form(negated)) {
             printf("Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.\n");
             return TPP_ERROR;
         }
         if (expr_level(temporal_props[p].expr) == 3) {   /* a predicate on the initial states is no tautology */
             temporal++;
-            unsatisfiable += negated && tf_false(negated);
+            unsatisfiable += tf_false(negated);
         }
     }
     if (temporal && unsatisfiable == temporal && !simulating) {
@@ -11862,7 +11914,7 @@ int tpp_check(const TPPOptions *o) {
             warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
                     "violations of the stated liveness properties. Please check liveness without symmetry defined.");
     }
-    int status = 0;
+    int status = check_temporal_forms(o->simulate);   /* TLC's tableau, built as its checker starts */
     for (int i = 0; i < nmodules && !status; i++) {
         Module *m = modules[i];
         int used = m == root;
@@ -11907,8 +11959,7 @@ int tpp_check(const TPPOptions *o) {
     }
     /* A simulation is TLC's with one worker; -continue reports in the search's order. */
     nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
-    status = check_temporal_forms(o->simulate);
-    if (!status) status = o->simulate ? simulate(o) : search();
+    status = o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();
     stop_workers();

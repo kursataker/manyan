@@ -1,0 +1,23 @@
+Warning: The subscript of the next-state relation specified by the specification
+does not seem to contain the state variable y
+(Use the -nowarning option to disable this warning.)
+Warning: The subscript of the next-state relation specified by the specification
+does not seem to contain the state variable z
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ y = 0
+/\ z = 0
+
+State 2: <Action line 5, col 1 to line 5, col 12 of module instance_spec_nested>
+/\ y = 1
+/\ z = 0
+
+State 3: <Action line 5, col 1 to line 5, col 12 of module instance_spec_nested>
+/\ y = 2
+/\ z = 0
+
+4 states generated, 4 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
