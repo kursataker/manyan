@@ -5942,7 +5942,11 @@ static Value *eval_tracked(Expr *e, Ctx c) {
     nframes = n;
     return v;
 }
-static inline Value *eval(Expr *e, Ctx c) { return tracking ? eval_tracked(e, c) : eval_kind[e->kind](e, c); }
+/* eval_fns is eval_kind, or while tracking a table of eval_tracked: the
+   hot path tests nothing. */
+static EvalFn eval_tracking[K_WHILE + 1];
+static const EvalFn *eval_fns = eval_kind;
+static inline Value *eval(Expr *e, Ctx c) { return eval_fns[e->kind](e, c); }
 
 
 /* An argument for an operator parameter: an operator. */
@@ -8112,12 +8116,15 @@ static void replay_error(Value **from) {
     sigjmp_buf here, *saved = handler;
     handler = &here;
     tracking = 1;
+    for (int i = 0; i <= K_WHILE; i++) eval_tracking[i] = eval_tracked;
+    eval_fns = eval_tracking;
     nframes = 0;
     if (!sigsetjmp(here, 0)) {
         replay_checks = !from;
         replay(from, NULL, cur_level);
     }
     tracking = 0;
+    eval_fns = eval_kind;
     replay_checks = 0;
     handler = saved;
 }
