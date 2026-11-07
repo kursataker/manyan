@@ -8207,6 +8207,11 @@ static int check_list(Check *list, int n, Value **st) {
     for (int i = 0; i < n && bad < 0; i++) {
         error_check = &list[i];
         error_state = st;
+        /* TLC keeps a constraint's definition where a literal keeps its value. */
+        Expr *body = list[i].def ? list[i].def->body : NULL;
+        if (list == constraints && body && (body->kind == X_NUM || body->kind == X_STR))
+            fail("class tla2sany.semantic.OpDefNode cannot be cast to class tlc2.value.impl.Value "
+                 "(tla2sany.semantic.OpDefNode and tlc2.value.impl.Value are in unnamed module of loader 'app')");
         Value *v = eval(list[i].expr, root_ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
