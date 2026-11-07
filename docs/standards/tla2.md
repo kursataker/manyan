@@ -689,7 +689,18 @@ or action constraints during liveness checking is dangerous: …`, and with a
 checking is dangerous. …`; a simulation does not. Only the first warning of
 a run is followed by `(Use the -nowarning option to disable this
 warning.)`. A counterexample whose cycle is one state, with a step back to
-it by any action, ends `State n: Stuttering`.
+it by any action, ends `State n: Stuttering`; in model checking, when a
+conjunct of the property's negation (in disjunctive normal form) is
+`<>[]A` or `[]<>A` with `A` no temporal formula, or a `<>F` in it has a
+`[]` in `F`, TLC then warns that the stuttering may come of no
+`SPECIFICATION` (with `INIT` and `NEXT`), or of a specification `Spec`
+without fairness, `... the behavior specification Spec defined at line
+..., col ... of module M. ...` (its whole definition). A conjunct with an
+action that is neither is TLC's `Error: Temporal formulas containing
+actions must be of forms <>[]A or []<>A.` (exit 255), before the initial
+states are computed. As TLC, `[A]_v` and `<<A>>_v` in a temporal formula
+test `v` first: a step that leaves `v` unchanged decides them, `A`
+unevaluated.
 
 TLC evaluates the predicates of the temporal properties during the
 search, and an error there is reported then. On each initial state,

@@ -9999,7 +9999,10 @@ static void name_init(Expr *e) {
 }
 
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
+static Def *spec_def;   /* the SPECIFICATION, NULL for INIT and NEXT */
+
 static void use_specification(Expr *spec) {
+    spec_def = spec->def;
     Expr **parts = NULL, **init = NULL;
     int n = 0, ninit = 0, nnext = 0;
     conjuncts(spec->def->body, spec->kind == K_INSTCALL ? spec : NULL, &parts, &n, 1);
@@ -10894,13 +10897,25 @@ static int atom_holds_on(TF *t, int s, Value **next);
 
 /* Whether e holds on the step from cur to next; what it evaluates is
    dropped after, unless the caller's arena is the scratch one. */
+/* As TLC's LNAction, [A]_v or <<A>>_v of a temporal formula tests its
+   subscript first: a step that leaves v unchanged decides it. */
+static int stutters(Expr *e, Ctx c) {
+    if (e->kind != X_SQACT && e->kind != X_ANGLEACT) return 0;
+    Value *now = eval(e->args[1], c);
+    int saved = primed;
+    primed = 1;
+    Value *then = eval(e->args[1], c);
+    primed = saved;
+    return veq(now, then);
+}
+
 static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
     Value **saved_cur = cur_state, **saved_next = next_state;
     Arena *saved_arena = arena;
     cur_state = cur;
     next_state = next;
     arena = &scratch_arena;
-    int v = eval_bool(e, c);
+    int v = next && stutters(e, c) ? e->kind == X_SQACT : eval_bool(e, c);
     cur_state = saved_cur;
     next_state = saved_next;
     arena = saved_arena;
@@ -11335,6 +11350,7 @@ static void print_violated(int *ls, int n, int cyc) {
 
 /* Prints a lasso through the accepted component: the shortest path to it,
    then a cycle that meets each eventuality and fairness condition. */
+static void warn_stuttering(void);
 static void print_counterexample(int *inits, int ninits) {
     List path = {0}, acts = {0};
     /* entry: the accepted node nearest an initial node */
@@ -11428,6 +11444,7 @@ static void print_counterexample(int *inits, int ninits) {
     int entry_number = number;
     if (stutter_only) {
         printf("State %d: Stuttering\n", number + 1);
+        warn_stuttering();
         return;
     }
     for (int i = 0; i + 1 < cyc.n; i++) {
@@ -11452,7 +11469,61 @@ static int tf_tableau(TF *f) {
     }
 }
 
+static TF *live_negated;   /* the negated property being checked */
+
+/* Whether f has a temporal operator, or else an action. */
+static int tf_has(TF *f, int temporal) {
+    if (!f) return 0;
+    if (f->op == TF_ATOM) return !temporal && f->action;
+    return (temporal && (f->op == TF_ALWAYS || f->op == TF_EVENTUALLY)) || tf_has(f->a, temporal) || tf_has(f->b, temporal);
+}
+
+static int tf_box(TF *f) { return f && (f->op == TF_ALWAYS || tf_box(f->a) || tf_box(f->b)); }
+
+/* Whether the negation f is more than a tableau without cycle conditions
+   TLC's way: a conjunct <>[]A or []<>A, or a promise <>F with a [] in F. */
+static int tf_promise_box(TF *f);
+static int tf_conditions(TF *f) {
+    if (f->op == TF_AND || f->op == TF_OR) return tf_conditions(f->a) || tf_conditions(f->b);
+    if ((f->op == TF_EVENTUALLY && f->a->op == TF_ALWAYS) || (f->op == TF_ALWAYS && f->a->op == TF_EVENTUALLY))
+        if (!tf_has(f->a->a, 1)) return 1;
+    return tf_promise_box(f);
+}
+
+static int tf_promise_box(TF *f) {
+    return f && ((f->op == TF_EVENTUALLY && tf_box(f->a)) || tf_promise_box(f->a) || tf_promise_box(f->b));
+}
+
+/* TLC's warning after a counterexample that ends stuttering, that the
+   behavior specification may lack fairness. */
+static void warn_stuttering(void) {
+    if (simulating || !tf_conditions(live_negated)) return;
+    if (!spec_def) {
+        warning("The stuttering counterexample above may be caused by the absence of a behavior specification "
+                "(SPECIFICATION). Only INIT and NEXT have been provided, so TLC permits infinite stuttering. "
+                "To rule out such counterexamples, use SPECIFICATION Spec, with Spec asserting a suitable fairness "
+                "constraint (compare Chapter 8, page 87ff of Specifying Systems at "
+                "https://lamport.azurewebsites.net/tla/book.html).");
+        return;
+    }
+    if (nfairness) return;
+    Buf at = {0}, b = {0};
+    Expr whole = *spec_def->where;   /* the definition, from its name to its body's end */
+    whole.l2 = spec_def->body->l2;
+    whole.c2 = spec_def->body->c2;
+    loc_text(&at, &whole);
+    const char *name = S(spec_def->name);
+    buf_printf(&b, "The stuttering counterexample above may be caused by the absence of a fairness constraint "
+               "in the behavior specification %s defined at %s. To rule out such counterexamples, conjoin a "
+               "suitable fairness constraint to %s (compare Chapter 8, page 87ff of Specifying Systems at "
+               "https://lamport.azurewebsites.net/tla/book.html).", name, at.s, name);
+    warning(b.s);
+    free(at.s);
+    free(b.s);
+}
+
 static int check_property(TF *negated) {
+    live_negated = negated;
     List init = {0};
     TFList todo = {0}, empty = {0};
     tfl_add(&todo, negated);
@@ -11643,6 +11714,16 @@ static TF *negation(Expr *e) {
 }
 
 /* simulating: TLC finds no tautology then. */
+/* Whether a conjunct of the negation, in TLC's disjunctive normal form,
+   is neither <>[]A nor []<>A with A no temporal formula, but has an
+   action: TLC's tableau cannot take one. */
+static int tf_wrong_form(TF *f) {
+    if (f->op == TF_AND || f->op == TF_OR) return tf_wrong_form(f->a) || tf_wrong_form(f->b);
+    if ((f->op == TF_EVENTUALLY && f->a->op == TF_ALWAYS) || (f->op == TF_ALWAYS && f->a->op == TF_EVENTUALLY))
+        if (!tf_has(f->a->a, 1)) return 0;
+    return tf_has(f, 0);
+}
+
 static int check_temporal_forms(int simulating) {
     int temporal = 0, unsatisfiable = 0;
     for (int p = 0; p < ntemporal_props; p++) {
@@ -11651,6 +11732,10 @@ static int check_temporal_forms(int simulating) {
             Buf b = {0};
             loc_text(&b, tf_unhandled);
             printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
+            return TPP_ERROR;
+        }
+        if (negated && tf_wrong_form(negated)) {
+            printf("Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.\n");
             return TPP_ERROR;
         }
         if (expr_level(temporal_props[p].expr) == 3) {   /* a predicate on the initial states is no tautology */

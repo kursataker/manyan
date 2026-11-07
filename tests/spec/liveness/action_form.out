@@ -1,0 +1,2 @@
+Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.
+exit 255
