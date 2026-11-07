@@ -553,7 +553,9 @@ a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 (of the step's first state in an action, 0 in Init and the assumptions);
 `TLCGet("config")` is the record `[mode |-> "bfs", deadlock |-> b, worker
 |-> n, seed |-> s]` of a search, without TLC's fields naming its jar and its
-fingerprint polynomial. TLC implements `TLCGet` by an evaluation method, so
+fingerprint polynomial; of a simulation, with `mode |-> "simulate"`, it
+also has `traces` (-1 without `num=`), `depth`, `aril |-> "0"` and `sched
+|-> "random"`, and its assumptions find the search's counters undefined. TLC implements `TLCGet` by an evaluation method, so
 its errors carry that method's preamble (§11.3). `TLCGet` fails while the
 model is read, before the assumptions are checked, as TLC's does before
 its checker exists: a definition that uses it is not evaluated once as a
@@ -769,7 +771,9 @@ unexpected-exception report, but for an error TLC raises as a
 variable, in a behavior: that prints as `Error:` and its message, then
 the behavior, and exits with status 255 or 151; as the initial states are
 computed it is a `java.lang.RuntimeException` (exit 255). With `-continue` a violation ends its
-behavior and the simulation goes on, ending as if none was found. The
+behavior and the simulation goes on, ending as if none was found.
+`TLCSet("exit", TRUE)` ends the simulation after the step that sets it,
+as if it were done. The
 state counts of a simulation are unspecified (§11.1).
 
 ### 10.9 Postconditions

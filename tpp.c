@@ -6389,7 +6389,7 @@ NATIVE(n_tlcget) {
     if (a[0]->kind == V_STR) {
         const char *key = S(a[0]->u.i);
         if (!strcmp(key, "level")) return mk_int(cur_level);
-        if (!strcmp(key, "config") && !simulating) return search_config();
+        if (!strcmp(key, "config")) return search_config();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
         int64_t n = search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
@@ -8642,15 +8642,20 @@ static int next_emit(void) {
 
 static time_t started;   /* when checking began, for TLCGet("duration") */
 
-/* TLCGet("config") of a search: TLC's fields but those naming its
-   fingerprint polynomial and its jar. */
+static long sim_traces_max = -1, sim_depth = 100;   /* a simulation's -simulate num= and -depth */
+
+/* TLCGet("config") of a search or a simulation: TLC's fields but those
+   naming its fingerprint polynomial and its jar. TLC's aril is "0",
+   whatever -aril says. */
 static Value *search_config(void) {
     char seed[24];
     snprintf(seed, sizeof seed, "%lld", (long long)draw_seed);
-    const char *names[] = {"mode", "deadlock", "worker", "seed"};
-    Value *vals[] = {mk_str(intern("bfs")), BOOLV(check_deadlock), mk_int(nworkers), mk_str(intern(seed))};
+    const char *names[] = {"mode", "deadlock", "worker", "seed", "traces", "depth", "aril", "sched"};
+    Value *vals[] = {mk_str(intern(simulating ? "simulate" : "bfs")), BOOLV(check_deadlock), mk_int(nworkers),
+                     mk_str(intern(seed)), mk_int(sim_traces_max), mk_int(sim_depth), mk_str(intern("0")),
+                     mk_str(intern("random"))};
     List keys = {0}, l = {0};
-    for (int i = 0; i < 4; i++) list_add(&keys, mk_str(intern(names[i]))), list_add(&l, vals[i]);
+    for (int i = 0; i < (simulating ? 8 : 4); i++) list_add(&keys, mk_str(intern(names[i]))), list_add(&l, vals[i]);
     Value *r = mk_fcn_from(&keys, &l);
     r->made = MADE_RECORD;
     return r;
@@ -9363,7 +9368,7 @@ static int sim_succ_emit(void) {
 
 /* The successors of st by one action: TLC picks the first action at
    random, then steps through them by a random prime until one has, or
-   a check fails. */
+   a check fails. Returns how many, 0 if a check failed. */
 static int sim_next(Value **st) {
     sim_found.n = 0;
     sim_failed = 0;
@@ -9376,7 +9381,8 @@ static int sim_next(Value **st) {
         next_state = succ;
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
-        if (sim_found.n || sim_failed) return sim_found.n;
+        if (sim_failed) return 0;
+        if (sim_found.n) return sim_found.n;
         a = (a + p) % nactions;
     }
     return 0;
@@ -9467,7 +9473,7 @@ static int simulate(const TPPOptions *o) {
     for (int64_t i = 0; i < o->aril; i++) rng_index(1);
     int64_t aril = rng_aril;
     rng_seed(jr_long(&rng));
-    long depth = o->depth ? o->depth : 100;
+    long depth = sim_depth;
     nimplied_inits = 0;   /* TLC's simulator ignores the properties that are state predicates */
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
@@ -9507,7 +9513,6 @@ static int simulate(const TPPOptions *o) {
     }
     static Arena init_arena;     /* the initial states, kept for good */
     arena = &init_arena;
-    simulating = 1;
     gen_target = cur_state = NEWN(Value *, nvars);
     next_state = NULL;
     gen_init = 1;
@@ -9558,7 +9563,7 @@ static int simulate(const TPPOptions *o) {
         Value **st = init.a[rng_index(init.n)];
         sim_push(&trace, st, -1);
         int ended = 0;
-        for (long d = 0; d < depth && !ended; d++) {
+        for (long d = 0; d < depth && !ended && !exit_requested; d++) {
             cur_level = d + 1;
             if (!sim_next(st)) {
                 int status = 0;
@@ -9595,6 +9600,7 @@ static int simulate(const TPPOptions *o) {
             int k = rng_index(sim_found.n);
             sim_push(&trace, st = sim_found.a[k], sim_found.act[k]);
         }
+        if (exit_requested) break;   /* TLCSet("exit"): the simulation ends after the step */
         if (ended) continue;
         if (ntemporal_props && sim_violates(sim_behavior(&trace, NULL, 0))) {
             sim_summary(seed, aril);
@@ -11754,6 +11760,11 @@ int tpp_check(const TPPOptions *o) {
     for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);
     starting = 0;
     started = time(NULL);
+    simulating = o->simulate;   /* the assumptions see a simulation's TLCGet */
+    if (o->simulate) {
+        sim_traces_max = o->traces ? o->traces : -1;
+        sim_depth = o->depth ? o->depth : 100;
+    }
     if (!o->simulate && !nowarning && ntemporal_props) {   /* as TLC's checker starts, before the assumptions */
         if (nsymmetry)
             warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
