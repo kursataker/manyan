@@ -5107,9 +5107,11 @@ static Value *bound_set(Bound *b, Ctx c) { return enumerate(bound_value(b, c)); 
    fastest. */
 static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
     if (nb == 1 && bs[0].n == 1 && !bs[0].tuple) {
-        /* x \in S, the common case; an interval, as TLC, one by one. */
+        /* x \in S, the common case; an interval, as TLC, one by one, once
+           TLC has its size. */
         Value *s = bound_value(&bs[0], c);
         if (s->kind == V_INTERVAL) {
+            interval_size(s);
             for (int64_t x = s->u.range.lo; x <= s->u.range.hi; x++)
                 if (fn((Ctx){mk_binding(bs[0].defs[0], mk_int(x), c.env), c.inst}, data)) return 1;
             return 0;
