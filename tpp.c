@@ -8080,6 +8080,25 @@ static void print_numbered(int number, int action, Value **st, Value **prev) {
     printf("\n");
 }
 
+/* TLC's report of a Java exception, up to its message. */
+static void print_exception(const char *cls, const char *then) {
+    printf("Error: TLC threw an unexpected exception.\n"
+           "This was probably caused by an error in the spec or model.\n"
+           "See the User Output or TLC Console for clues to what happened.\n"
+           "The exception was a %s\n%s", cls, then);
+}
+
+/* The message of the error that stopped the search, then where it was. */
+static void print_error_text(void) {
+    printf("%s\n", error_message.s ? error_message.s : "");
+    if (error_expr && error_expr->mod) {
+        Buf b = {0};
+        node_text(&b, error_expr);
+        printf("%s\n", b.s);
+        free(b.s);
+    }
+}
+
 static void print_trace_states(int s1, Value **s2, int action, int print) {
     int n = 0;
     for (int i = s1; i >= 0; i = states[i].parent) n++;
@@ -8104,8 +8123,8 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
 
 /* The behavior from an initial state to state s1, then the state s2
    reached from it by `action` if s2 is not NULL, as TLC prints it. As
-   TLC, an error rebuilding a state ends the behavior there, unreported:
-   returns the exit status of that error, 0 if none. */
+   TLC, an error rebuilding a state ends the behavior there, reported as
+   an exception: returns the exit status of that error, 0 if none. */
 static int trace_states(int s1, Value **s2, int action, int print) {
     EvalState s = eval_save();
     ErrorState e = error_save();
@@ -8113,7 +8132,13 @@ static int trace_states(int s1, Value **s2, int action, int print) {
     sigjmp_buf here;
     handler = &here;
     if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action, print);
-    else failed = eval_failure_status();
+    else {
+        failed = eval_failure_status();
+        if (print) {
+            print_exception("tlc2.tool.EvalException", ": ");
+            print_error_text();
+        }
+    }
     eval_restore(s);
     error_restore(&e);
     return failed;
@@ -8133,14 +8158,6 @@ static void print_counts(int queued) {
     printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates, queued);
     printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
     fflush(stdout);
-}
-
-/* TLC's report of a Java exception, up to its message. */
-static void print_exception(const char *cls, const char *then) {
-    printf("Error: TLC threw an unexpected exception.\n"
-           "This was probably caused by an error in the spec or model.\n"
-           "See the User Output or TLC Console for clues to what happened.\n"
-           "The exception was a %s\n%s", cls, then);
 }
 
 static void print_error_message(void) {
@@ -8835,17 +8852,6 @@ static int merge_level(int lo, int hi) {
     return 0;
 }
 
-/* The message of the error that stopped the search, then where it was. */
-static void print_error_text(void) {
-    printf("%s\n", error_message.s ? error_message.s : "");
-    if (error_expr && error_expr->mod) {
-        Buf b = {0};
-        node_text(&b, error_expr);
-        printf("%s\n", b.s);
-        free(b.s);
-    }
-}
-
 /* After an error, the function constructors that were being computed in
    full, innermost first, which TLC reports it cannot fingerprint (§11.3);
    else a blank line. */
@@ -8948,6 +8954,7 @@ static int search(void) {
             printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
             print_error_text();
             int failed = print_trace(expanding, error_state, cur_action);
+            if (failed) printf("\n");   /* after the call stack TLC prints for it */
             print_counts(nstates - expanded - 1);
             return failed ? failed : TPP_FAILURE_SAFETY_EVAL;
         }

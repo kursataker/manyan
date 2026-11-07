@@ -801,7 +801,9 @@ finds the state, so what they print is printed again as the trace is
 printed. After a deadlock, a violated invariant or action property, or a
 successor not completely specified, it builds the trace once more, for a
 postcondition, before the counts; so too after an error in Next on a state
-with no successor generated before it, when deadlock is checked.
+with no successor generated before it, when deadlock is checked. An error
+building a state ends the trace there, reported as `Error: TLC threw an
+unexpected exception.` with `tlc2.tool.EvalException` and its message.
 
 TLC's order of the variables is the reverse of the order in which SANY's
 context of the root module, a `java.util.Hashtable`, enumerates them. The
