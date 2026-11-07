@@ -8784,10 +8784,10 @@ static int search(void) {
     draw_restart(NULL);
     gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
-    if (live_init_failed) {   /* TLC stops, exiting as if no error */
+    if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
         print_counts(nstates);
-        return TPP_OK;
+        return TPP_ERROR;
     }
     if (violation) return violation;
     if (generated == nstates)
