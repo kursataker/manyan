@@ -1355,7 +1355,7 @@ static Value *union_sets(Value *s) {
 }
 
 /* As TLC's UnionValue once it compares, counts or fingerprints itself:
-   it keeps its elements, which its quantifiers then take in order. */
+   it keeps its elements, which x \in U then takes in order. */
 static Value *union_cache(Value *s) {
     if (s->kind == V_LAZY && s->lazy == L_UNION && !s->u.l.set) {
         Arena *saved = keeping(s->perm);
@@ -1366,9 +1366,10 @@ static Value *union_cache(Value *s) {
     return s;
 }
 
-/* The elements of s as TLC's quantifiers and actions take them: a UNION it
-   keeps, those of each of its sets in turn, duplicates too; another set,
-   in order. Only to iterate: the result is no normalized set. */
+/* The elements of s as TLC's x \in s takes them in Init and Next (its
+   quantifiers take them sorted): a UNION it keeps, those of each of its
+   sets in turn, duplicates too; another set, in order. Only to iterate:
+   the result is no normalized set. */
 static Value *elements(Value *s) {
     if (s->kind != V_LAZY || s->lazy != L_UNION) return enumerate(s);
     if (s->u.l.set) return s->u.l.set;
@@ -5000,7 +5001,7 @@ static Value *bound_value(Bound *b, Ctx c) {
     return s;
 }
 
-static Value *bound_set(Bound *b, Ctx c) { return elements(bound_value(b, c)); }
+static Value *bound_set(Bound *b, Ctx c) { return enumerate(bound_value(b, c)); }
 
 /* As TLC, the sets are enumerated first, and the first variable varies
    fastest. */
@@ -5013,7 +5014,7 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
                 if (fn((Ctx){mk_binding(bs[0].defs[0], mk_int(x), c.env), c.inst}, data)) return 1;
             return 0;
         }
-        s = elements(s);
+        s = enumerate(s);
         for (int i = 0; i < s->n; i++)
             if (fn((Ctx){mk_binding(bs[0].defs[0], s->u.set.elems[i], c.env), c.inst}, data)) return 1;
         return 0;

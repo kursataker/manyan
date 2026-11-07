@@ -1,8 +1,8 @@
 ---- MODULE union_order ----
-\* A UNION TLC keeps is taken by quantifiers and set maps one of its sets
-\* after another, in order, duplicates too; CHOOSE, filters and functions
-\* take it sorted. Once it is counted, or compared with another value, it
-\* keeps its elements, and quantifiers take them sorted.
+\* Quantifiers, set maps, CHOOSE, filters and functions take a UNION TLC
+\* keeps sorted; x \in U in Init and Next takes one of its sets after
+\* another, in order, duplicates too, until U is counted or compared with
+\* another value and keeps its elements.
 EXTENDS Integers, TLC, FiniteSets
 U == UNION {1..2, {4}, {2, 3}}
 ASSUME PrintT(<<CHOOSE y \in U : TRUE, CHOOSE y \in U : y > 1>>)
