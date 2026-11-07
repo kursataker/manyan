@@ -1391,10 +1391,13 @@ static Value *elements(Value *s) {
 
 /* TLC's error counting an infinite set: the first part it cannot count. */
 static _Noreturn void count_infinite(Value *s) {
-    if (user_set(s)) fail("Attempted to compute the number of elements in the overridden value %s.", pretty(s));
-    if (s->lazy == L_SUBSET || s->lazy == L_FCNSET) count_infinite(set_is_infinite(s->u.l.a) ? s->u.l.a : s->u.l.b);
-    if (s->lazy == L_RCDSET || s->lazy == L_TIMES)
-        for (int i = 0; i < s->n; i++) if (set_is_infinite(s->u.l.names[s->n + i])) count_infinite(s->u.l.names[s->n + i]);
+    for (Value *part = s; part; ) {
+        s = part, part = NULL;
+        if (user_set(s)) fail("Attempted to compute the number of elements in the overridden value %s.", pretty(s));
+        if (s->lazy == L_SUBSET || s->lazy == L_FCNSET) part = set_is_infinite(s->u.l.a) ? s->u.l.a : s->u.l.b;
+        if (s->lazy == L_RCDSET || s->lazy == L_TIMES)
+            for (int i = 0; i < s->n && !part; i++) if (set_is_infinite(s->u.l.names[s->n + i])) part = s->u.l.names[s->n + i];
+    }
     enumerate(s);   /* fails, as s is infinite */
     abort();
 }
@@ -6693,7 +6696,7 @@ static Value *try_realize(Value *f) {
     Value *volatile r = f;
     sigjmp_buf here;
     handler = &here;
-    if (!sigsetjmp(here, 0)) r = realize(f);
+    if (!sigsetjmp(here, 0)) r = realize(r);
     eval_restore(s);
     error_restore(&e);
     return r;
@@ -8392,7 +8395,7 @@ static void settle(Claim *c) {
     EvalState s = eval_save();
     sigjmp_buf here;
     handler = &here;
-    int ok = 0;
+    volatile int ok = 0;
     if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0) {
         w_bytes.n = 0;
         for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
@@ -9592,6 +9595,21 @@ static Value *def_value(Def *d) {
     return c;
 }
 
+/* Constant definition d evaluated once, any error ignored. */
+static void evaluate_constant(Def *d) {
+    EvalState s = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (d->kind == D_FCN && !d->self && d->local != 2 && d->level == 0 && !sigsetjmp(here, 0)) {
+        d->cache = def_value(d);   /* TLC keeps a function definition computed in full, if it can be */
+    }
+    if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0) {
+        if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        else d->uncached = 1;
+    }
+    eval_restore(s);
+}
+
 /* TLC evaluates the constant definitions of each module at startup, in
    the order SANY finishes the modules (a module after those it uses): a
    constant replaced by a definition must evaluate as a constant, and every
@@ -9617,61 +9635,49 @@ static void evaluate_constants(Module *m) {
         call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
         handler = NULL;
     }
-    for (int i = 0; i < m->nunits; i++) {
-        Unit *u = &m->units[i];
-        if (u->kind != 0) continue;
-        Def *d = u->def;
-        EvalState s = eval_save();
-        sigjmp_buf here;
-        handler = &here;
-        if (d->kind == D_FCN && !d->self && d->local != 2 && d->level == 0 && !sigsetjmp(here, 0)) {
-            d->cache = def_value(d);   /* TLC keeps a function definition computed in full, if it can be */
-        }
-        if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0) {
-            if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
-            else d->uncached = 1;
-        }
-        eval_restore(s);
-    }
+    for (int i = 0; i < m->nunits; i++) if (m->units[i].kind == 0) evaluate_constant(m->units[i].def);
     arena = saved;
     for (int i = 0; i < m->nnested; i++) evaluate_constants(m->nested[i]);
 }
 
+/* TLC's status for assumption u: 0 if it holds. */
+static int check_assumption(Unit *u) {
+    Arena *saved = arena, made = {0};   /* dropped after, as the value is a Boolean's */
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        handler = NULL;
+        arena = saved;
+        Buf b = {0};
+        loc_text(&b, u->expr);
+        printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
+        if (error_expr && error_expr->mod) {
+            Buf l = {0};
+            node_text(&l, error_expr);
+            printf("\n%s", l.s);
+        }
+        printf("\n");
+        return TPP_VIOLATION_ASSUMPTION;
+    }
+    arena = &made;
+    Value *v = eval(u->expr, root_ctx);
+    arena = saved;
+    handler = NULL;
+    int holds = v->kind == V_BOOL && v->u.i;
+    arena_free(&made);
+    if (!holds) {
+        Buf b = {0};
+        loc_text(&b, u->expr);
+        printf("Error: Assumption %s is false.\n", b.s);
+        return TPP_VIOLATION_ASSUMPTION;
+    }
+    return 0;
+}
+
 static void check_assumptions(Module *m, int *done_status) {
     for (int i = 0; i < m->nunits; i++) {
-        Unit *u = &m->units[i];
-        if (u->kind != 2) continue;
-        Arena *saved = arena, made = {0};   /* dropped after, as the value is a Boolean's */
-        sigjmp_buf here;
-        handler = &here;
-        if (sigsetjmp(here, 0)) {
-            handler = NULL;
-            arena = saved;
-            Buf b = {0};
-            loc_text(&b, u->expr);
-            printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
-            if (error_expr && error_expr->mod) {
-                Buf l = {0};
-                node_text(&l, error_expr);
-                printf("\n%s", l.s);
-            }
-            printf("\n");
-            *done_status = TPP_VIOLATION_ASSUMPTION;
-            return;
-        }
-        arena = &made;
-        Value *v = eval(u->expr, root_ctx);
-        arena = saved;
-        handler = NULL;
-        int holds = v->kind == V_BOOL && v->u.i;
-        arena_free(&made);
-        if (!holds) {
-            Buf b = {0};
-            loc_text(&b, u->expr);
-            printf("Error: Assumption %s is false.\n", b.s);
-            *done_status = TPP_VIOLATION_ASSUMPTION;
-            return;
-        }
+        int status = m->units[i].kind == 2 ? check_assumption(&m->units[i]) : 0;
+        if (status) { *done_status = status; return; }
     }
 }
 
@@ -10994,17 +11000,24 @@ static int tf_false(TF *t) {
     }
 }
 
+/* The tableau of ~e, or NULL if building it fails; tf_unhandled names
+   what TLC cannot handle. */
+static TF *negation(Expr *e) {
+    EvalState s = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    tf_unhandled = NULL;
+    TF *volatile negated = NULL;
+    if (!sigsetjmp(here, 0)) negated = to_tf(e, root_ctx, 1);
+    eval_restore(s);
+    return negated;
+}
+
 /* simulating: TLC finds no tautology then. */
 static int check_temporal_forms(int simulating) {
     int temporal = 0, unsatisfiable = 0;
     for (int p = 0; p < ntemporal_props; p++) {
-        EvalState s = eval_save();
-        sigjmp_buf here;
-        handler = &here;
-        tf_unhandled = NULL;
-        TF *negated = NULL;
-        if (!sigsetjmp(here, 0)) negated = to_tf(temporal_props[p].expr, root_ctx, 1);
-        eval_restore(s);
+        TF *negated = negation(temporal_props[p].expr);
         if (tf_unhandled) {
             Buf b = {0};
             loc_text(&b, tf_unhandled);
