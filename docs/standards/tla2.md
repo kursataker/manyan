@@ -566,7 +566,7 @@ keywords), a keyword repeated or followed by nothing, an assignment without
 |---|---|
 | `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
-| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`; with `INIT` or `NEXT` too, an error |
+| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through an instance, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
 | `PROPERTY`, `PROPERTIES` | temporal formulas the specification must imply |
 | `CONSTRAINT`, `CONSTRAINTS` | state predicates bounding the explored states |

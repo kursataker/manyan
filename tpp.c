@@ -9534,9 +9534,8 @@ static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
         return;
     }
     if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        int plain = 1;
-        for (int i = 0; i < e->ndefs; i++) plain &= e->defs[i]->nparams == 0;
-        if (plain) { conjuncts(e->def->body, e, out, n, spec); return; }
+        conjuncts(e->def->body, e, out, n, spec);
+        return;
     }
     *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 2));
     (*out)[(*n)++] = e;
@@ -9559,36 +9558,40 @@ static Expr *conjoin(Expr **parts, int n) {
    an operator's parameter stands for its argument, and an instance's
    variable for what it substitutes. */
 typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
-static void subscript_vars(Expr *e, Args *a, Def **path, int npath, char *in, int depth) {
+static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
     if (depth > 100) return;
     switch (e->kind) {
     case K_DECL:
         if (e->def->var_index >= 0 && e->def->kind == D_VAR) in[e->def->var_index] = 1;
         for (int k = npath - 1; k >= 0; k--)
             for (int j = 0; j < path[k]->nsubst; j++)
-                if (path[k]->subst_decl[j] == e->def) { subscript_vars(path[k]->subst_expr[j], NULL, path, k, in, depth + 1); return; }
+                if (path[k]->subst_decl[j] == e->def) {
+                    Args b = {path[k], segs[k].args, NULL};   /* a parameter of the instance stands for its argument */
+                    subscript_vars(path[k]->subst_expr[j], path[k]->nparams ? &b : NULL, path, segs, k, in, depth + 1);
+                    return;
+                }
         return;
     case X_TUPLE:
-        for (int i = 0; i < e->n; i++) subscript_vars(e->args[i], a, path, npath, in, depth + 1);
+        for (int i = 0; i < e->n; i++) subscript_vars(e->args[i], a, path, segs, npath, in, depth + 1);
         return;
     case X_LET:
-        subscript_vars(e->args[0], a, path, npath, in, depth + 1);
+        subscript_vars(e->args[0], a, path, segs, npath, in, depth + 1);
         return;
     case K_BOUND:
         for (; a; a = a->up)
             for (int i = 0; i < a->d->nparams; i++)
-                if (a->d->params[i] == e->def) { subscript_vars(a->args[i], a->up, path, npath, in, depth + 1); return; }
+                if (a->d->params[i] == e->def) { subscript_vars(a->args[i], a->up, path, segs, npath, in, depth + 1); return; }
         return;
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->nparams != e->n) return;
         Args b = {d, e->args, a};
-        subscript_vars(d->body, &b, path, npath, in, depth + 1);
+        subscript_vars(d->body, &b, path, segs, npath, in, depth + 1);
         return;
     }
     case K_INSTCALL:
         if (e->def->kind == D_OP && !e->def->native && !e->n && !npath)
-            subscript_vars(e->def->body, NULL, e->defs, e->ndefs, in, depth + 1);
+            subscript_vars(e->def->body, NULL, e->defs, e->segs, e->ndefs, in, depth + 1);
         return;
     default: return;
     }
@@ -9613,7 +9616,7 @@ static void use_specification(Expr *spec) {
             spec_subscript = in_instance(call, sq->args[1]);
             if (!nowarning) {
                 char *in = calloc((size_t)nvars + 1, 1);
-                subscript_vars(spec_subscript, NULL, NULL, 0, in, 0);
+                subscript_vars(spec_subscript, NULL, NULL, NULL, 0, in, 0);
                 for (int v = 0; v < nvars; v++)
                     if (!in[v]) {
                         char text[256];
@@ -9661,9 +9664,8 @@ static void property_parts(Expr *e, Expr *call, int name, Part **out, int *n) {
         return;
     }
     if (!call && e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        int plain = 1;
-        for (int i = 0; i < e->ndefs; i++) plain &= e->defs[i]->nparams == 0;
-        if (plain) { property_parts(e->def->body, e, name, out, n); return; }
+        property_parts(e->def->body, e, name, out, n);
+        return;
     }
     if (e->kind == K_ALWAYS && e->args[0]->kind == K_CALL && e->args[0]->n == 0) name = e->args[0]->def->name;
     *out = xrealloc(*out, sizeof(Part) * (size_t)(*n + 1));
@@ -11353,9 +11355,7 @@ int tpp_check(const TPPOptions *o) {
     if (status) return status;
     if (!init_expr) {
         if (nvars || ninvariants || nimplied_inits || naction_props || ntemporal_props)
-            config_error("The configuration file did not specify the initial state predicate.\n"
-                         "Can also be caused by trying to run TLC on a specification from\n"
-                         "a module imported with a parameterized INSTANCE statement.");
+            config_error("The configuration file did not specify the initial state predicate.");
         if (o->simulate) {   /* TLC's simulator wants an initial state */
             printf("Computed 0 initial states...\n");
             printf("Error: There is no state satisfying the initial state predicate.\n");
