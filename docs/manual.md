@@ -10,13 +10,13 @@ how to run it.
 
 ```sh
 make            # builds ./tpp from tpp.c and tpp.h; needs a C11 compiler
-make release    # builds a faster ./tpp, profile-guided (clang or gcc, python3)
 make install    # installs bin/tpp and include/tpp.h under PREFIX (/usr/local)
 ```
 
-`make release` builds tpp instrumented, runs the conformance suite with it,
-and builds it again with the profile; the result is 10 to 20% faster.
-`make install` after it installs that build.
+`make` builds tpp instrumented, runs the conformance suite with it, and
+builds it again with the profile; the result is 10 to 25% faster than a
+plain `-O2` build. It needs python3 to run the suite and, with clang,
+`llvm-profdata` (Xcode has it); without them, it builds tpp plain.
 
 tpp is one C file with no dependencies beyond the C library and POSIX
 (`fork`, `mmap` for workers).

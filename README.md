@@ -2,7 +2,7 @@
 
 TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
 the same specifications and model configurations as TLC and produces same
-outcome, 1.1 to 27.2 times faster with one worker (`make release`).
+outcome, 1.1 to 27.2 times faster with one worker.
 
 ```
 $ ./tpp examples/DieHard
@@ -53,7 +53,7 @@ report as TLC with one worker.
 | refinement | 30618 | 0.98 | 0.14 | 7.0x | 0.97 | 0.05 | 20.9x |
 | symmetry | 21123 | 1.45 | 1.32 | 1.1x | 0.96 | 0.28 | 3.5x |
 
-`make bench` reproduces these numbers, with the `make release` build, in [docs/benchmark.md](docs/benchmark.md);
+`make bench` reproduces these numbers in [docs/benchmark.md](docs/benchmark.md);
 [docs/optimizations.md](docs/optimizations.md) records how they were reached.
 
 ## Getting started
@@ -66,8 +66,10 @@ make                          # builds ./tpp; needs a C11 compiler
 ./tpp examples/DieHard        # checks examples/DieHard.tla with examples/DieHard.cfg
 ./tpp -workers auto examples/DieHard   # one worker per core
 make install PREFIX=~/.local  # installs ~/.local/bin/tpp
-make release                  # faster ./tpp: profile-guided; needs python3
 ```
+
+With python3, `make` builds tpp profile-guided, trained on the
+conformance suite, which makes it 10 to 25% faster.
 
 See [the manual](docs/manual.md) for the options, the configuration file,
 exit statuses and the C API.

@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       # arm64 profile-guided; x86_64 from the same profile, run under Rosetta.
       - run: |
-          make release
+          make
           mkdir arm64 x86_64
           mv tpp arm64/tpp
           cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c -lm -o x86_64/tpp
@@ -69,7 +69,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - run: make release LDFLAGS=-static
+      - run: make LDFLAGS=-static
       - run: |
           python3 tests/spec_runner.py ./tpp --strict --verbose
           python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose
@@ -98,7 +98,7 @@ jobs:
       - uses: cygwin/cygwin-install-action@v4
         with:
           packages: gcc-core make python3 zip
-      - run: make release
+      - run: make
       - run: |
           python3 tests/spec_runner.py ./tpp --strict --verbose
           python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose

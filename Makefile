@@ -24,35 +24,40 @@ TLA_SHA256 = 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 
-.PHONY: all release test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench install clean
 
 all: tpp
 
-tpp: tpp.c tpp.h
-	$(CC) $(CFLAGS) $(LDFLAGS) tpp.c $(LDLIBS) -o $@
-
-# tpp with profile-guided optimization: the conformance suite is the
-# training run. Clang merges its raw profiles with llvm-profdata.
+# ./tpp is profile-guided: the conformance suite is the training run.
+# Without python3 to run it (or, with clang, llvm-profdata to merge the
+# profile), ./tpp is a plain build.
 PGO = $(abspath $(OBJDIR))/pgo
+PYTHON = $(shell command -v python3)
 ifneq ($(findstring clang,$(shell $(CC) --version 2>/dev/null)),)
 PROFDATA ?= $(shell xcrun -f llvm-profdata 2>/dev/null || command -v llvm-profdata)
+PGO_TOOLS = $(and $(PYTHON),$(PROFDATA))
 PGO_GEN = -fprofile-instr-generate
 PGO_USE = -fprofile-instr-use=$(PGO)/tpp.profdata
 PGO_MERGE = $(PROFDATA) merge -o $(PGO)/tpp.profdata $(PGO)/*.profraw
 else
+PGO_TOOLS = $(PYTHON)
 PGO_GEN = -fprofile-generate=$(PGO)
 PGO_USE = -fprofile-use=$(PGO) -fprofile-partial-training
 PGO_MERGE = true
 endif
 
-release: tpp.c tpp.h
+tpp: tpp.c tpp.h
+ifeq ($(PGO_TOOLS),)
+	$(CC) $(CFLAGS) $(LDFLAGS) tpp.c $(LDLIBS) -o $@
+else
 	rm -rf $(PGO) && mkdir -p $(PGO)
 	$(CC) $(CFLAGS) $(PGO_GEN) -c tpp.c -o $(PGO)/tpp.o
 	$(CC) $(PGO_GEN) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o $(PGO)/tpp
-	LLVM_PROFILE_FILE=$(PGO)/%p.profraw python3 tests/spec_runner.py $(PGO)/tpp > /dev/null
+	LLVM_PROFILE_FILE=$(PGO)/%p.profraw $(PYTHON) tests/spec_runner.py $(PGO)/tpp > /dev/null
 	$(PGO_MERGE)
 	$(CC) $(CFLAGS) $(PGO_USE) -c tpp.c -o $(PGO)/tpp.o
-	$(CC) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o tpp
+	$(CC) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o $@
+endif
 
 test: test-spec
 
@@ -99,7 +104,7 @@ fuzz-oracle: tpp $(TLA_JAR)
 fuzz-sim: tpp $(TLA_JAR)
 	python3 tests/fuzz.py sim ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-bench: release $(TLA_JAR)
+bench: tpp $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"
 
 install: tpp
