@@ -20,8 +20,8 @@ The exception was a java.lang.NullPointerException
 Error: TLC was unable to fingerprint.
 
 Fingerprint Stack Trace:
-1) line 9, col 31 to line 9, col 42 of module fingerprint_successor
-0) line 9, col 30 to line 9, col 43 of module fingerprint_successor
+1) line 10, col 31 to line 10, col 42 of module fingerprint_successor
+0) line 10, col 30 to line 10, col 43 of module fingerprint_successor
 
 Reason:
 Attempted to enumerate S \cup T when S:

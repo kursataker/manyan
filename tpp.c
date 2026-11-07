@@ -284,13 +284,29 @@ static int java_depth;
    fingerprint (§11.3). */
 static Expr *fp_trace[64];
 static int fp_depth;
+static int fp_frames[64];   /* the depth of TLC's call stack each was entered at */
+static int nframes;
 
 static void fp_enter(Expr *where) {
     if (!where) return;
-    if (fp_depth < 64) fp_trace[fp_depth] = where;
+    if (fp_depth < 64) fp_trace[fp_depth] = where, fp_frames[fp_depth] = nframes;
     fp_depth++;
 }
 static void fp_leave(Expr *where) { fp_depth -= where != NULL; }
+
+/* TLC's call stack, as its CallStackTool keeps it replaying an error: the
+   expressions being evaluated and generated, frozen at the first error.
+   An error in a value's method reaches the innermost frame as TLC's
+   FingerprintException, which adds the values with a source it went
+   through. */
+static int tracking;
+static Expr **frames, **frozen;
+static int capframes, nfrozen = -1;
+
+static void frame_push(Expr *e) {
+    if (nframes == capframes) frames = xrealloc(frames, sizeof(Expr *) * (size_t)(capframes = capframes ? 2 * capframes : 256));
+    frames[nframes++] = e;
+}
 
 /* The source of a value made at e: none before the search, as TLC
    computes the definitions of constants without one. */
@@ -309,6 +325,13 @@ static void error_reset(void) {
 }
 
 static _Noreturn void raise_error(void) {
+    if (tracking && nfrozen < 0) {
+        int nfp = fp_depth < 64 ? fp_depth : 64;
+        frozen = xmalloc(sizeof(Expr *) * (size_t)(nframes + nfp + 1));
+        if (nframes) memcpy(frozen, frames, sizeof(Expr *) * (size_t)nframes);
+        nfrozen = nframes;
+        for (int i = 0; i < nfp; i++) if (fp_frames[i] >= nframes) frozen[nfrozen++] = fp_trace[i];
+    }
     if (!handler) {
         fputs(error_message.s ? error_message.s : "error", stdout);
         exit(TPP_ERROR);
@@ -1847,6 +1870,7 @@ typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an 
 struct Expr {
     short kind;
     unsigned char fixed;  /* fixed_expr: 0 not yet known, 1 yes, 2 no */
+    unsigned char made;   /* made by tpp, not written: no frame of TLC's call stack */
     int op;               /* operator or name; field of X_DOT */
     int n;
     Expr **args;
@@ -5244,9 +5268,13 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
 }
 
 static Value *fcndef_value(Def *d, Ctx c) {
-    Value *dom = bounds_domain(d->bounds, d->nb, c);
-    if (d->self || keep_lazy || !bounds_reducible(dom, bounds_total(d->bounds, d->nb))) return mk_lambda(dom, NULL, d, c);
-    return fcn_in_full(dom, NULL, d, c, d->where);
+    int n = nframes;
+    if (tracking) frame_push(d->where);   /* TLC evaluates the definition's constructor */
+    Value *dom = bounds_domain(d->bounds, d->nb, c), *v;
+    if (d->self || keep_lazy || !bounds_reducible(dom, bounds_total(d->bounds, d->nb))) v = mk_lambda(dom, NULL, d, c);
+    else v = fcn_in_full(dom, NULL, d, c, d->where);
+    nframes = n;
+    return v;
 }
 
 static int nowarning;   /* TLC's warnings off (-nowarning) */
@@ -5552,8 +5580,9 @@ static int fixed_expr(Expr *e) {
 /* The set make makes of e: in the search, where e is fixed, once, in the
    permanent arena, naming e as its source as a set made anew would. */
 static Value *ev_fixed(Expr *e, Ctx c, Value *(*make)(Expr *, Ctx)) {
-    if (c.inst || arena != &scratch_arena) return make(e, c);
-    if (e->value) return e->value;
+    if (c.inst) return make(e, c);
+    if (e->value) return e->value;   /* replaying too, in the permanent arena */
+    if (arena != &scratch_arena) return make(e, c);
     if (!fixed_expr(e)) return make(e, c);
     Arena *saved = arena;
     sigjmp_buf *outer = handler, here;
@@ -5905,7 +5934,14 @@ static const EvalFn eval_kind[K_WHILE + 1] = {
     [K_WHILE] = ev_temporal,
 };
 
-static inline Value *eval(Expr *e, Ctx c) { return eval_kind[e->kind](e, c); }
+static Value *eval_tracked(Expr *e, Ctx c) {
+    int n = nframes;
+    if (!e->made) frame_push(e);
+    Value *v = eval_kind[e->kind](e, c);
+    nframes = n;
+    return v;
+}
+static inline Value *eval(Expr *e, Ctx c) { return tracking ? eval_tracked(e, c) : eval_kind[e->kind](e, c); }
 
 
 /* An argument for an operator parameter: an operator. */
@@ -6729,7 +6765,7 @@ typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont; 
 static Value **gen_target;      /* the state being assigned */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 
-static int gen(Expr *e, Ctx c, Cont *k);
+static inline int gen(Expr *e, Ctx c, Cont *k);
 static int gen_unchanged(Expr *e, Ctx c, Cont *k);
 
 static _Noreturn void not_boolean(Expr *e, Value *v);
@@ -6776,12 +6812,12 @@ typedef struct {
     Arena *arena;
     Value **cur_state, **next_state, **gen_target, *at_value;
     int (*gen_emit)(void);
-    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions;
+    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes;
 } EvalState;
 
 static EvalState eval_save(void) {
     return (EvalState){handler, arena, cur_state, next_state, gen_target, at_value, gen_emit,
-                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions};
+                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes};
 }
 
 static void eval_restore(EvalState s) {
@@ -6790,7 +6826,7 @@ static void eval_restore(EvalState s) {
     gen_emit = s.gen_emit;
     primed = s.primed; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
     java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
-    nregions = s.nregions;
+    nregions = s.nregions; nframes = s.nframes;
 }
 
 /* The error being reported, which an evaluation whose own error is
@@ -7056,7 +7092,17 @@ static Ctx instance_ctx(Expr *e, Ctx c) {
     return (Ctx){env, inst};
 }
 
-static int gen(Expr *e, Ctx c, Cont *k) {
+static int gen_untracked(Expr *e, Ctx c, Cont *k);
+static int gen_tracked(Expr *e, Ctx c, Cont *k) {
+    int n = nframes;
+    if (!e->made) frame_push(e);
+    int found = gen_untracked(e, c, k);
+    nframes = n;
+    return found;
+}
+static inline int gen(Expr *e, Ctx c, Cont *k) { return tracking ? gen_tracked(e, c, k) : gen_untracked(e, c, k); }
+
+static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     switch (e->kind) {
     case X_BOOL:
         return e->num ? gen_cont(k) : 0;
@@ -7931,7 +7977,7 @@ static int replay_emit(void) {
         }
     }
     if (replay_checks) {
-        if (ntemporal_props) eval_init_lits(gen_target);
+        if (ntemporal_props && !live_init_failed) eval_init_lits(gen_target);   /* reported */
         check_list(invariants, ninvariants, gen_target);
     }
     return 0;
@@ -7989,10 +8035,13 @@ static int replay(Value **from, Value **to, int64_t level) {
 static void replay_error(Value **from) {
     sigjmp_buf here, *saved = handler;
     handler = &here;
+    tracking = 1;
+    nframes = 0;
     if (!sigsetjmp(here, 0)) {
         replay_checks = !from;
         replay(from, NULL, cur_level);
     }
+    tracking = 0;
     replay_checks = 0;
     handler = saved;
 }
@@ -8795,16 +8844,26 @@ static void print_error_text(void) {
 /* After an error, the function constructors that were being computed in
    full, innermost first, which TLC reports it cannot fingerprint (§11.3);
    else a blank line. */
+/* TLC's fingerprint stack trace: its call stack replaying the error;
+   without one, the values with a source, innermost first. */
 static void print_unfingerprinted(Expr **fps, int n) {
     if (!n) { printf("\n"); return; }
     printf("Error: TLC was unable to fingerprint.\n\nFingerprint Stack Trace:\n");
-    int m = 0;
-    for (int i = 0; i < n; i++) if (!m || fps[m - 1] != fps[i]) fps[m++] = fps[i];
-    for (int i = m - 1; i >= 0; i--) {
-        Buf b = {0};
-        loc_text(&b, fps[i]);
-        printf("%d) %s\n", i, b.s);
-        free(b.s);
+    if (nfrozen > 0) {
+        for (int i = 0, k = 0; i < nfrozen; i++) {
+            if (i && frozen[i] == frozen[i - 1]) continue;
+            Expr *e = frozen[i];
+            printf("%d. Line %d, column %d to line %d, column %d in %s\n", k++, e->l1, e->c1, e->l2, e->c2, S(file_module(e->mod)->name));
+        }
+    } else {
+        int m = 0;
+        for (int i = 0; i < n; i++) if (!m || fps[m - 1] != fps[i]) fps[m++] = fps[i];
+        for (int i = m - 1; i >= 0; i--) {
+            Buf b = {0};
+            loc_text(&b, fps[i]);
+            printf("%d) %s\n", i, b.s);
+            free(b.s);
+        }
     }
     printf("\nReason:\n");
     print_error_text();
@@ -8833,7 +8892,7 @@ static int search(void) {
                 printf("\n");
             }
             /* After an error in a property TLC went on as it replays Init. */
-            if (!live_init_failed) replay_error(NULL);
+            replay_error(NULL);
             if (over != 2) print_unfingerprinted(fps, nfp);
             print_counts(nstates);
             return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
@@ -9498,6 +9557,7 @@ static Expr *config_call(int name, const char *what, int args) {
     Def *d = s->def;
     Expr *e = NEW(Expr);
     e->kind = K_CALL;
+    e->made = 1;
     e->def = d;
     e->mod = d->mod;
     if (d->where) { e->l1 = d->where->l1; e->c1 = d->where->c1; e->l2 = d->where->l2; e->c2 = d->where->c2; }
@@ -9584,6 +9644,7 @@ static Expr *conjoin(Expr **parts, int n) {
     Expr *e = NEW(Expr);
     *e = *parts[0];
     e->kind = K_AND;
+    e->made = 1;
     e->n = n;
     e->args = NEWN(Expr *, n);
     memcpy(e->args, parts, sizeof(Expr *) * (size_t)n);
