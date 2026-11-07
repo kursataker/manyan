@@ -1,6 +1,6 @@
 ---- MODULE constraint_error ----
 \* A constraint that fails to evaluate on a successor: TLC reports an
-\* unexpected exception, without the behavior.
+\* unexpected exception, with the behavior to the successor.
 EXTENDS Naturals
 VARIABLE x
 R == [n \in 0..2 |-> n]

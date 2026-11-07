@@ -835,13 +835,15 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | invariant fails in an initial state | `Error: Invariant Inv is violated by the initial state:` | 12 |
 | invariant fails | `Error: Invariant Inv is violated.` | 12 |
 | action property | `Error: Action property P is violated.` | 13 |
-| temporal property | `Error: Temporal properties were violated.` | 13 |
+| temporal property | `Error: Temporal property P was violated.`, P each PROPERTY the counterexample violates (`Temporal properties P and Q were violated.`) | 13 |
 | `Assert` | `Error: The first argument of Assert evaluated to FALSE; the second argument was:` | 14 |
-| successor not specified | `Error: Successor state is not completely specified by the next-state action. The following variable is not assigned: v.`; with several actions, `by action A of the next-state relation` | 75 |
+| successor not specified | `Error: Successor state is not completely specified by the next-state action. The following variable is not defined: v.`; with several actions, `by action A of the next-state relation` | 75 |
 | invariant not Boolean | `Error: TLC expected a boolean value, but did not find one. ...` | 75 |
 | error evaluating an invariant in an initial state | the evaluation message, then `While working on the initial state:` and the state | 75 |
 | error computing a function constructor in full (§6.6) | the evaluation message (and the trace, in an action), then `Error: TLC was unable to fingerprint.`, a blank line, `Fingerprint Stack Trace:`, the locations of the constructors being computed, innermost first, numbered down to `0)`, a blank line, `Reason:` and the message again | 75 |
 | fingerprinting an initial state that holds a function over an infinite domain | `Attempted to compute the number of elements in the overridden value Nat.` (TLC's error counting the domain), then `While working on the initial state:` and the state | 75 |
+| error evaluating a constraint or action constraint on a successor | `Error: TLC threw an unexpected exception.`, the evaluation message, and the trace to the successor | 75 |
+| error fingerprinting a successor | `Error: TLC threw an unexpected exception.`, the message, the trace to the state, then, seeking the successor again by equality, the exception again for a value TLC has no fingerprint for (`Nat`), or TLC's `NullPointerException` for a set it cannot compare | 75 |
 | error evaluating an invariant in a new state | `Error: Evaluating invariant Inv failed.`, the evaluation message, and the trace to the new state | 76 |
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
 | no next-state action, and no invariant or property | `Finished computing initial states: ...`, then `Error: No next state actions defined to generate successor states from.` | 75 |

@@ -7392,6 +7392,8 @@ static __attribute__((cold, noinline)) uint64_t hash_lambda(Value *v) {
     return value_hash(f);
 }
 
+static int unfingerprintable;   /* a fingerprint failed on a value TLC has no fingerprint for, as Nat */
+
 static uint64_t value_hash(Value *v) {
     uint64_t sum = 0;
     switch (v->kind) {
@@ -7402,7 +7404,7 @@ static uint64_t value_hash(Value *v) {
         return fmix(sum ^ (0x05 | n << 8));
     }
     case V_SET: case V_LAZY: {
-        if (user_set(v)) fail("TLC has found a state in which the value of a variable contains %s", pretty(v));
+        if (user_set(v)) { unfingerprintable = 1; fail("TLC has found a state in which the value of a variable contains %s", pretty(v)); }
         Value *set = enumerate(union_cache(v));
         if (!(sum = set->u.set.hash)) {
             fp_enter(set->u.set.source);
@@ -8844,9 +8846,26 @@ static int search(void) {
         int outside = fingerprinting;
         fingerprinting = 0;
         if (outside || checking(constraints, nconstraints) || checking(action_constraints, naction_constraints)) {
-            /* TLC: an unexpected exception, without the behavior */
-            print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": util.Assert$TLCRuntimeException: ");
+            /* TLC: an unexpected exception, with the behavior to the
+               successor. A successor TLC cannot fingerprint it seeks again
+               among the state's, by equality: it fails again on one it finds,
+               and on one it cannot compare finds none, to its NullPointerException. */
+            print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": ");
             print_error_text();
+            if (outside) {
+                int again = unfingerprintable;
+                print_trace(expanding, NULL, 0);
+                replay_error(decode_state(expanding));
+                if (again) {
+                    print_exception("java.lang.RuntimeException", ": ");
+                    print_error_text();
+                } else {
+                    print_exception("java.lang.NullPointerException", ": ");
+                    printf("Cannot read field \"state\" because \"currentStateInfo\" is null\n");
+                }
+            } else {
+                print_trace(expanding, error_state, cur_action);
+            }
             if (!over) print_unfingerprinted(fps, nfp);
             print_counts(outside ? nstates - expanded : 0);
             return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
