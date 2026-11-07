@@ -22,7 +22,7 @@ from TLC.
   - the random draws in `Init` and `Next`, which need TLC's state
     fingerprints;
   - the order of `Print` output in a simulation that stops early.
-- Follow new TLC releases rather than staying on 2.19. For each one, re-pin
+- Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
 - Model more of tpp's algorithms in `tests/tla`, such as the parallel
   search, liveness checking and symmetry, and fuzz what the models cannot

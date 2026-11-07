@@ -91,7 +91,7 @@ report as TLC with one worker.
 - Model configuration: `CONSTANT` values, model values and `<-`
   substitutions, `INIT`/`NEXT` or `SPECIFICATION`, `INVARIANT`,
   `PROPERTY`, `CONSTRAINT`, `ACTION_CONSTRAINT`, `SYMMETRY`, `VIEW`,
-  `CHECK_DEADLOCK`.
+  `ALIAS`, `POSTCONDITION`, `CHECK_DEADLOCK`.
 - Checking: assumptions, invariants, action properties, deadlock, and
   temporal properties under weak and strong fairness, with TLC's
   counterexamples; random simulation (`-simulate`), drawing the same
@@ -109,9 +109,9 @@ parsed and skipped.
 ## How it is tested
 
 `tpp` follows [the tpp TLA⁺ Standard](docs/standards/tla2.md),
-with TLC 2.19 as the oracle for every choice the language leaves open.
+with TLC 1.8.0 as the oracle for every choice the language leaves open.
 The tests follow it; they need python3, and those that run TLC also need
-Java (they download tla2tools 1.7.4 themselves):
+Java (they download tla2tools 1.8.0 themselves):
 
 - `tests/spec`: over 500 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test

@@ -25,7 +25,7 @@ the model configuration language, the model-checking procedure, and the
 observable results. It follows *Specifying Systems* (Lamport, 2002) and the
 TLA⁺ Version 2 language changes. Where those leave a choice open (the order
 in which values print, which errors are reported, how many states are
-counted), TLC 2.19 (tla2tools 1.7.4) decides.
+counted), TLC 1.8.0 (tla2tools v1.8.0, built from commit d8fb231) decides.
 
 The proof language (§12) is parsed only as far as needed to skip it.
 
@@ -33,7 +33,7 @@ The proof language (§12) is parsed only as far as needed to skip it.
 
 ### 2.1 Oracle
 
-TLC 2.19 is the oracle. A test of this Standard is a module, a model
+TLC 1.8.0 is the oracle. A test of this Standard is a module, a model
 configuration, and the output TLC produces for them. An implementation
 conforms when, for every test, it produces the same normalized output (§11.1)
 and the same exit status (§11.3).

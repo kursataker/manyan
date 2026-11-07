@@ -4,6 +4,32 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
+## Unreleased
+
+- TLC 1.8.0 is the oracle, pinned to the pre-release jar built from
+  commit d8fb231, and every test is blessed by it. tpp follows what
+  changed:
+  - Messages, warnings and exit statuses: a violated temporal property
+    is named, configuration errors and SANY's warnings are 1.8.0's, a
+    record field named like a definition is linted, and the depth counts
+    as 1.8.0 counts it.
+  - A string is not a sequence. `SUBSET`, `UNION` and `DOMAIN` have their
+    documented precedence. Quantifiers take their bounds sorted, and a
+    quantifier over an interval asks its size.
+  - Steps are labeled with their action's constant arguments.
+  - After a reported error the behavior is rebuilt once more. An error
+    rebuilding it is reported as an exception. Fingerprint errors list
+    TLC's call stack.
+  - `TLCGet("level")` in a state predicate is the state's own, and
+    `TLCGet("config")` is a record.
+  - `RandomSubset` draws from TLC's linear congruential generator.
+  - A simulation names its initial states by Init and checks successors
+    as TLC's worker generates them.
+- `ALIAS` prints a trace's states as the alias's value. `POSTCONDITION`s
+  are checked once the search is done, and after an error. The
+  configuration knows `_PERIODIC`, `_RL_REWARD` and `_POSSIBLE`, and
+  rejects them.
+
 ## 0.5.1
 
 - `make` builds `tpp` profile-guided, trained on the conformance suite

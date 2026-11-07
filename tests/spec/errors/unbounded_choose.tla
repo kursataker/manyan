@@ -1,5 +1,5 @@
 ---- MODULE unbounded_choose ----
-\* An unbounded CHOOSE evaluated: TLC 2.19's message.
+\* An unbounded CHOOSE evaluated: TLC's message.
 EXTENDS Naturals
 VARIABLE x
 Init == x = 0

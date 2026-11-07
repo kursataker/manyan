@@ -2,7 +2,7 @@
 
 tpp checks TLA+ specifications the way TLC does: it reads a module and a
 model configuration, explores every reachable state breadth-first, and
-prints what TLC 2.19 prints. What tpp accepts and what it must print are
+prints what TLC 1.8.0 prints. What tpp accepts and what it must print are
 defined by [the tpp TLA+ Standard](standards/tla2.md); this manual covers
 how to run it.
 
@@ -71,6 +71,8 @@ CONSTRAINT Bounded
 ACTION_CONSTRAINT Steps
 SYMMETRY Perms
 VIEW Abstract
+ALIAS Shown                         \* how a trace's states print
+POSTCONDITION Done                  \* checked once the search is done
 CHECK_DEADLOCK FALSE
 ```
 
@@ -156,7 +158,7 @@ Compile `tpp.c` with `-DTPP_NO_MAIN` to link it into another program.
 
 ```sh
 make test              # tests/spec with 1 and with 4 workers
-make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.7.4)
+make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
 make fuzz              # mutated tests/spec models under the sanitizer build
@@ -184,10 +186,11 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 
 ## Limitations
 
-Not supported: the proof language (parsed and skipped); TLC 2.19's
+Not supported: the proof language (parsed and skipped); TLC's
 `-terse`, `-maxSetSize` (tpp does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
-`-generateSpecTE`, checkpoints (`-checkpoint`, `-recover`) and
+`-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
+`_POSSIBLE`, checkpoints (`-checkpoint`, `-recover`) and
 distributed checking. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
