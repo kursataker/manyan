@@ -319,8 +319,12 @@ static _Noreturn void raise_error(void) {
 static void loc_line(Buf *b, Expr *e);
 
 static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va_list ap) {
-    char small[1024];
-    vsnprintf(small, sizeof small, fmt, ap);
+    va_list size;
+    va_copy(size, ap);
+    int n = vsnprintf(NULL, 0, fmt, size);
+    va_end(size);
+    char *small = xmalloc((size_t)n + 1);
+    vsnprintf(small, (size_t)n + 1, fmt, ap);
     error_reset();
     if (!module && java_depth) {
         for (int i = 0; i < java_depth && i < 64; i++)
@@ -333,6 +337,7 @@ static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va
     } else {
         buf_puts(&error_message, small);
     }
+    free(small);
     java_depth = 0;   /* errors are caught outside every standard operator */
     error_expr = e;
     error_module = module;
@@ -377,11 +382,10 @@ enum {
 
 /* How a function was made, which decides TLC's errors applying it: a
    record, or [x \in S |-> e] not yet stored in a state or a constant. */
-/* MADE_LAMBDA: computed by [x \in S |-> e], which TLC keeps until it normalizes it;
-   MADE_PARAMS: the same, of several bounds, which TLC keeps in its order (§6.6);
+/* MADE_LAMBDA: computed by [x \in S |-> e];
    MADE_HELD: a V_SET that TLC keeps as its definition, a UNION or a \cup, \cap
    or \ of such sets, so that a filter or function over it is lazy (§6.5) */
-enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_PARAMS, MADE_HELD };
+enum Made { MADE_PLAIN, MADE_RECORD, MADE_LAMBDA, MADE_HELD };
 
 enum LazyKind {
     L_NAT, L_INT, L_STRING, L_SUBSET, L_FCNSET, L_RCDSET, L_SEQ, L_FILTER, L_TIMES, L_ANY,
@@ -570,8 +574,6 @@ static inline Value *realize(Value *v) { return v->kind == V_LAMBDA ? realize_la
 static Value *try_realize(Value *f);
 static void print_lambda(Buf *b, Value *f);
 static void print_filter(Buf *b, Value *s);
-static Value *print_order(Value *f);
-static int print_normal;   /* printing as TLC does once it normalizes values: Print, PrintT */
 static Value *normalize_set(Value *v);
 static __attribute__((noinline)) int lazy_is_infinite(Value *s);
 static inline int set_is_infinite(Value *s) { return s->kind == V_LAZY && lazy_is_infinite(s); }
@@ -649,7 +651,6 @@ static void print_string(Buf *b, int id) {
 static void print_value(Buf *b, Value *v) {
     if (v->kind == V_LAMBDA) v = try_realize(v);
     if (v->kind == V_LAMBDA) { print_lambda(b, v); return; }
-    if (v->kind == V_FCN && v->made == MADE_PARAMS && !print_normal) v = print_order(v);
     switch (v->kind) {
     case V_BOOL: buf_puts(b, v->u.i ? "TRUE" : "FALSE"); return;
     case V_INT: buf_printf(b, "%lld", (long long)v->u.i); return;
@@ -826,7 +827,6 @@ static void pp_pairs(Buf *b, Value *f, int record, int width, int trailer, const
 
 static void pp_format(Buf *b, Value *v, int width, int trailer, const char *pad) {
     if (v->kind == V_LAMBDA) v = try_realize(v);
-    if (v->kind == V_FCN && v->made == MADE_PARAMS && !print_normal) v = print_order(v);
     if (v->kind == V_LAZY && expandable(v)) v = normalize_set(v);
     char *flat = value_str(v);
     if ((int)strlen(flat) <= width - trailer || pp_plain(v) || v->n == 0) { buf_puts(b, flat); return; }
@@ -4668,18 +4668,6 @@ static int *params_order(Value **keys, int n) {
     return at;
 }
 
-/* A function of several bounds as TLC prints it before normalizing it:
-   its pairs in the order TLC computed them. */
-static Value *print_order(Value *f) {
-    int *at = params_order(f->u.fcn.keys, f->n);
-    Value *g = mk_fcn(f->n);
-    for (int i = 0; i < f->n; i++) {
-        g->u.fcn.keys[i] = f->u.fcn.keys[at[i]];
-        g->u.fcn.vals[i] = f->u.fcn.vals[at[i]];
-    }
-    g->made = MADE_LAMBDA;
-    return g;
-}
 
 /* The domain of [x \in S, <<y, z>> \in T |-> e]: the bound set, or the
    product of one set per variable (a tuple pattern is one). */
@@ -4815,7 +4803,7 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
         g->u.fcn.vals[i] = lambda_apply(f, dom->u.set.elems[i]);
     }
     keep_lazy = keep;
-    g->made = params ? MADE_PARAMS : MADE_LAMBDA;
+    g->made = MADE_LAMBDA;
     if (may_keep(f)) { *f = *g; g = f; }
     arena = saved;
     return g;
@@ -4979,11 +4967,36 @@ static Def *const_operator(Def *d, Ctx c, Ctx *at) {
    order, until it returns nonzero. */
 typedef int (*BindFn)(Ctx c, void *data);
 
+/* TLC's error for a quantifier over s: Nat, Int and Seq(S) explain
+   themselves after the bound's location. */
+static _Noreturn void non_enumerable_bound(Value *s, Expr *bound) {
+    const char *infinite = s->kind != V_LAZY ? NULL : s->lazy == L_NAT ? "Nat" : s->lazy == L_INT ? "Int" : NULL;
+    if (!infinite && !(s->kind == V_LAZY && s->lazy == L_SEQ))
+        fail_at(bound, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+    Buf b = {0};
+    const char *v = pretty(s);
+    buf_printf(&b, "TLC encountered the non-enumerable quantifier bound\n%s", v);
+    loc_line(&b, bound);
+    if (infinite)
+        buf_printf(&b, "\nThe set %s contains infinitely many elements. As a result, TLC cannot evaluate expressions that\n"
+                   "universally (\\A) or existentially (\\E) quantify over %s, because this would require checking an\n"
+                   "infinite number of cases. Note that TLC handles set membership like T \\subseteq %s for any finite set T.",
+                   infinite, v, infinite);
+    else
+        buf_printf(&b, "\nIn TLA+, Seq(S) represents the set of all finite sequences whose elements come from the set S. Even when S\n"
+                   "is a finite set, the number of possible sequences in Seq(S) is unbounded because sequences can have any\n"
+                   "finite length (e.g., length 0, 1, 2, and so on). As a result, TLC cannot evaluate expressions that\n"
+                   "universally (\\A) or existentially (\\E) quantify over %s, because this would require checking an\n"
+                   "infinite number of cases. Note that for a finite set of sequences s, TLC handles s \\subseteq Seq(S).\n"
+                   "See https://explain.tlapl.us/seq-unenumerable for additional details.", v);
+    fail("%s", b.s);
+}
+
 /* The set a bound ranges over, enumerated. */
 static Value *bound_value(Bound *b, Ctx c) {
     if (!b->set) fail("TLC cannot handle the unbounded quantifier or CHOOSE over %s.", S(b->names[0]));
     Value *s = eval(b->set, c);
-    if (!is_set(s) || user_set(s)) fail_at(b->set, "TLC encountered a non-enumerable quantifier bound\n%s.", pretty(s));
+    if (!is_set(s) || user_set(s)) non_enumerable_bound(s, b->set);
     return s;
 }
 
@@ -5121,7 +5134,7 @@ static Value *fcn_in_full(Value *dom, Expr *e, Def *d, Ctx c, Expr *where) {
                              : eval(e->args[0], (Ctx){bind_key(e->bounds, e->nb, k, c.env, e), c.inst});
     }
     fp_leave(where);
-    if (!d) f->made = params ? MADE_PARAMS : MADE_LAMBDA;
+    if (!d) f->made = MADE_LAMBDA;
     return f;
 }
 
@@ -6055,7 +6068,7 @@ NATIVE(n_concat) {
 NATIVE(n_append) {
     UNUSED;
     if (a[0]->kind == V_STR) return str_concat(a[0], a[1]);
-    Value *x = seq_arg(a[0], "Evaluating an expression of the form Append(v, s) when s is not a sequence");
+    Value *x = seq_arg(a[0], "Evaluating an expression of the form Append(s, v) when s is not a sequence");
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     t->u.fcn.vals[x->n] = a[1];
@@ -6174,9 +6187,7 @@ NATIVE(n_print) {
     printable(a[0]), printable(a[1]);
     if (in_worker) worker_cannot();   /* the search prints in order */
     FILE *out = user_file ? user_file : stdout;
-    print_normal = 1;
     if (!reprinting) fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1]));
-    print_normal = 0;
     fflush(out);
     return a[1];
 }
@@ -6185,9 +6196,7 @@ NATIVE(n_printt) {
     UNUSED;
     if (in_worker) worker_cannot();
     FILE *out = user_file ? user_file : stdout;
-    print_normal = 1;
     if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0])));
-    print_normal = 0;
     fflush(out);
     return TRUEV;
 }
@@ -6568,8 +6577,6 @@ static int native_arity(const char *method) {
    names, as TLC loads its classes by the module's name: one the user
    supplies too, where an operator of the native's arity is the native. */
 static void bind_natives(void) {
-    int integers = 0;
-    for (int i = 0; i < nmodules; i++) integers |= strcmp(S(modules[i]->name), "Integers") == 0;
     for (int i = 0; i < nmodules; i++) {
         Module *m = modules[i];
         for (int u = 0; u < m->nunits; u++) {
@@ -6579,8 +6586,9 @@ static void bind_natives(void) {
                 if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0
                     && d->nparams == native_arity(natives[k].method)) {
                     d->native = natives[k].fn;
-                    /* With Integers loaded, TLC takes Naturals' operators from its class too. */
-                    const char *cls = strcmp(natives[k].module, "Naturals") == 0 && integers ? "Integers" : natives[k].module;
+                    /* TLC always loads Integers (its trace modules use it), and takes
+                       Naturals' operators from its class. */
+                    const char *cls = strcmp(natives[k].module, "Naturals") == 0 ? "Integers" : natives[k].module;
                     Buf b = {0};
                     buf_printf(&b, "public static %s tlc2.module.%s.%s", natives[k].ret, cls, natives[k].method);
                     d->java = buf_take(&b);
@@ -6765,6 +6773,10 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Exp
     else snprintf(part, sizeof part, "the argument number %d", argno);
     if (argno > 0) a = a->u.fcn.vals[argno - 1];
     const char *wrong = why == 2 ? "which does not match its formal parameter." : "which is not in its domain.";
+    if (!where && why == 1 && argno > 0) {   /* a part of several outside its set: TLC names the whole domain */
+        const char *dom = pretty(enumerate(f->u.l.a));
+        fail_module("In applying the function\n%s,\n%s is:\n%s\nwhich is not in the function's domain %s.\n", pretty(f), part, pretty(a), dom);
+    }
     if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s", pretty(f), part, pretty(a), wrong);
     /* Computing states, TLC binds the argument itself (Tool.getFcnContext). */
     Buf b = {0};
