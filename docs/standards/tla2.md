@@ -143,8 +143,10 @@ instance: `N(a)!Op(b)` is `Op` of the instance with `x` bound to `a`. A
 ### 4.4 Module resolution
 
 A module named in `EXTENDS` or `INSTANCE` is, in order: a nested module in
-scope, a file `Name.tla` in the directory of the root module, or a
-standard module (§8).
+scope, a file `Name.tla` in the directory of the root module, a
+standard module (§8), or, as SANY reads a monolithic spec, the text of the
+root module's file from a line `---- MODULE Name ----` to the next line
+that starts with `====`, its lines numbered from that `MODULE` line.
 
 ### 4.5 ASSUME
 

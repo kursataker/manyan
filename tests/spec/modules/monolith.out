@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating invariant Inv failed.
+Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 3, col 32 to line 3, col 53 of module Common
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <I!Next line 7, col 1 to line 7, col 33 of module monolith>
+x = 1
+
+State 3: <I!Next line 7, col 1 to line 7, col 33 of module monolith>
+x = 2
+
+State 4: <I!Next line 7, col 1 to line 7, col 33 of module monolith>
+x = 3
+
+State 5: <I!Next line 7, col 1 to line 7, col 33 of module monolith>
+x = 4
+
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 76

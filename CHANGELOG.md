@@ -15,6 +15,8 @@ Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
 - Fingerprint stack traces have the `INSTANCE` an evaluation enters, and
   the set of `UNION {S}`.
 - `TLCGet("-Dk")` and `TLCSet("-Dk", v)` are Java's system properties.
+- A module in no file of its own is read from the root module's file, as
+  SANY reads a monolithic spec (braf's `Common`).
 
 ## 0.6.0
 

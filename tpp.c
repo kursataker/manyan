@@ -3562,6 +3562,40 @@ static void check_file_name(Module *m, const char *name) {
     exit(TPP_ERROR_PARSE);
 }
 
+static const char *root_text;   /* the root module's file */
+
+/* Whether line, up to end, is ----* MODULE name ---- as SANY reads one. */
+static int module_marker(const char *line, const char *end, const char *name) {
+    const char *p = line;
+    while (p < end && *p == '-') p++;
+    if (p - line < 4) return 0;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    size_t n = strlen(name);
+    if (end - p < 6 || strncmp(p, "MODULE", 6)) return 0;
+    const char *q = p += 6;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p == q || end - p < (long)n || strncmp(p, name, n)) return 0;
+    p += n;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    q = p;
+    while (p < end && *p == '-') p++;
+    return p == end && p - q >= 3;
+}
+
+/* Module name from the root module's file, as SANY reads a monolithic
+   spec: from its MODULE line to the next line that starts with ====,
+   numbered from that MODULE line; NULL if it has none. */
+static char *monolith_module(const char *name) {
+    const char *start = NULL;
+    for (const char *line = root_text; *line;) {
+        const char *end = line + strcspn(line, "\n");
+        if (start && !strncmp(line, "====", 4)) return strndup(start, (size_t)(end - start));
+        if (!start && module_marker(line, end > line && end[-1] == '\r' ? end - 1 : end, name)) start = line;
+        line = *end ? end + 1 : end;
+    }
+    return start ? strdup(start) : NULL;
+}
+
 static Module *load_module(int name, Module *from) {
     for (Module *o = from; o; o = o->outer)
         for (int i = 0; i < o->nnested; i++) if (o->nested[i]->name == name) return o->nested[i];
@@ -3577,6 +3611,7 @@ static Module *load_module(int name, Module *from) {
         for (int i = 0; standard_modules[i].name; i++)
             if (strcmp(standard_modules[i].name, S(name)) == 0) { text = standard_modules[i].text; standard = 1; }
         sprintf(path, "%s.tla", S(name));
+        if (!text) text = file = monolith_module(S(name));
     }
     if (!text) {
         printf("Cannot find source file for module %s imported in module %s.\n\n", S(name), S(from->name));
@@ -11874,6 +11909,7 @@ int tpp_check(const TPPOptions *o) {
         return TPP_ERROR;
     }
 
+    root_text = text;
     root = parse_text(text, path);
     char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
     check_file_name(root, base);
