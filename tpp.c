@@ -8180,9 +8180,12 @@ static _Noreturn void not_boolean_check(Check *c) {
     raise_error();
 }
 
+/* The first of the checks that st, a step after the state at cur_level
+   (Init's 0), fails, or -1. */
 static int check_list(Check *list, int n, Value **st) {
     Value **saved = cur_state;
     cur_state = st;
+    cur_level++;
     int bad = -1;
     for (int i = 0; i < n && bad < 0; i++) {
         error_check = &list[i];
@@ -8190,6 +8193,7 @@ static int check_list(Check *list, int n, Value **st) {
         Value *v = eval(list[i].expr, root_ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
+            cur_level--;
             not_boolean_check(&list[i]);
         }
         if (!v->u.i) bad = i;
@@ -8197,6 +8201,7 @@ static int check_list(Check *list, int n, Value **st) {
     error_check = NULL;
     error_state = NULL;
     cur_state = saved;
+    cur_level--;
     return bad;
 }
 
@@ -9279,6 +9284,7 @@ static int simulate(const TPPOptions *o) {
         arena_reset(&scratch_arena);
         trace.n = 0;
         Value **st = current = init.a[rng_index(init.n)];
+        cur_level = 0;
         int in_model = check_list(constraints, nconstraints, st) < 0, ended = 0;
         for (long d = 0; d < depth && !ended; d++) {
             sim_push(&trace, st);
