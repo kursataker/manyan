@@ -1,0 +1,6 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating postcondition Post at line 7, col 9 to line 7, col 26 of module postcondition_not_boolean failed.
+TLC expected a boolean value, but did not find one. line 7, col 9 to line 7, col 26 of module postcondition_not_boolean
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 10

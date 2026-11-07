@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 27 of module postcondition>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 27 of module postcondition>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 27 of module postcondition>
+x = 3
+
+State 5: Stuttering
+Error: Postcondition Post at line 9, col 9 to line 9, col 30 of module postcondition is false.
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

@@ -1,0 +1,17 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 27 of module postcondition_after_violation>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 27 of module postcondition_after_violation>
+x = 2
+
+Error: Evaluating postcondition Post at line 9, col 9 to line 9, col 37 of module postcondition_after_violation failed.
+The second argument of \div is 0.
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

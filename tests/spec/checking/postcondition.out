@@ -1,0 +1,6 @@
+Finished computing initial states: 1 distinct state generated.
+"counted"
+Error: Postcondition Less at line 9, col 9 to line 9, col 48 of module postcondition is false.
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 10

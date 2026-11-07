@@ -8210,12 +8210,74 @@ static int trace_states(int s1, Value **s2, int action, int print) {
 }
 static int print_trace(int s1, Value **s2, int action) { return trace_states(s1, s2, action, 1); }
 
+static int *posts, nposts;   /* the POSTCONDITIONs' names */
+
+/* The postconditions checked as TLC checks them once the search is done,
+   or after an error it reported (after_error), in order: returns the exit
+   status of the first that is false or fails, which it reports, or 0.
+   As TLC, each name is resolved first, and an error resolving one stops
+   the check: reported, but ignored after an error. */
+static int check_posts(int after_error) {
+    Def **d = NEWN(Def *, nposts + 1);
+    for (int i = 0; i < nposts; i++) {
+        Sym *s = module_lookup(root, posts[i]);
+        d[i] = s && s->def->kind == D_OP ? s->def : NULL;
+        const char *why = !d[i] ? "The post condition %s specified in the configuration file\nis not defined in the specification."
+                        : d[i]->cache || d[i]->value ? "The post condition %s cannot be a constant."
+                        : d[i]->nparams ? "TLC requires post condition not to take any argument, but one was given: %s" : NULL;
+        if (!why) continue;
+        if (after_error) return 0;
+        print_exception("java.lang.RuntimeException", ": ");
+        printf(why, S(posts[i]));
+        printf("\n");
+        return TPP_ERROR;
+    }
+    EvalState saved = eval_save();
+    ErrorState error = error_save();
+    int64_t level = cur_level;
+    cur_state = next_state = NULL;
+    cur_level = 0;
+    int status = 0;
+    sigjmp_buf here;
+    handler = &here;
+    for (int i = 0; i < nposts && !status; i++) {
+        Buf b = {0};
+        loc_text(&b, d[i]->body);
+        if (sigsetjmp(here, 0)) {
+            printf("Error: Evaluating postcondition %s at %s failed.\n", S(posts[i]), b.s);
+            print_error_text();
+            free(b.s);
+            status = TPP_VIOLATION_ASSUMPTION;
+            continue;
+        }
+        Value *v = eval(d[i]->body, root_ctx);
+        if (v->kind != V_BOOL) {
+            printf("Error: Evaluating postcondition %s at %s failed.\n"
+                   "TLC expected a boolean value, but did not find one. %s\n", S(posts[i]), b.s, b.s);
+            status = TPP_VIOLATION_ASSUMPTION;
+        } else if (!v->u.i) {
+            printf("Error: Postcondition %s at %s is false.\n", S(posts[i]), b.s);
+            status = TPP_VIOLATION_ASSUMPTION;
+        }
+        free(b.s);
+    }
+    eval_restore(saved);
+    error_restore(&error);
+    cur_level = level;
+    return status;
+}
+
 /* An error TLC reports for a state, or a step from it to s2, is followed
-   by its rebuilding the behavior for a POSTCONDITION, which evaluates Init
-   and Next again. */
+   by its rebuilding the behavior for its POSTCONDITIONs, which evaluates
+   Init and Next again, then checking them. */
+static void rebuild_for_posts(int s1, Value **s2, int action) {
+    trace_states(s1, s2, action, 0);
+    check_posts(1);
+}
+
 static int reported_trace(int s1, Value **s2, int action) {
     int failed = print_trace(s1, s2, action);
-    trace_states(s1, s2, action, 0);
+    rebuild_for_posts(s1, s2, action);
     return failed;
 }
 
@@ -8387,8 +8449,8 @@ static int check_initial(Value **st) {
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
         if (!print_shown(st)) print_state(st);
-        if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
         printf("\n");
+        if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
@@ -9060,7 +9122,7 @@ static int search(void) {
         print_trace(expanding, NULL, 0);
         /* TLC goes on to find the state deadlocked, its error already
            reported, and rebuilds the behavior; then it replays the error. */
-        if (succ_count == 0 && check_deadlock) trace_states(expanding, NULL, 0, 0);
+        if (succ_count == 0 && check_deadlock) rebuild_for_posts(expanding, NULL, 0);
         replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
@@ -9082,7 +9144,10 @@ static int search(void) {
         print_counts(nstates);
         return TPP_ERROR;
     }
-    if (violation) return violation;
+    if (violation) {
+        check_posts(1);
+        return violation;
+    }
     if (generated == nstates)
         printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
     else
@@ -9111,12 +9176,18 @@ static int search(void) {
         handler = &live;
         if (sigsetjmp(live, 0)) return live_error();
         if (live_violated()) {
+            check_posts(1);
             print_counts(exit_requested ? nstates - expanded : 0);
             return TPP_VIOLATION_LIVENESS;
         }
         handler = &here;
     }
     handler = NULL;
+    int post = check_posts(0);
+    if (post) {
+        print_counts(exit_requested ? nstates - expanded : 0);
+        return post;
+    }
     printf("Model checking completed. No error has been found.\n");
     print_counts(exit_requested ? nstates - expanded : 0);
     return TPP_OK;
@@ -9449,8 +9520,9 @@ static int simulate(const TPPOptions *o) {
         if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(&trace, NULL, 0));
     }
     handler = NULL;
+    int post = check_posts(0);
     printf("Progress: %ld states checked.\n", generated);
-    return TPP_OK;
+    return post;
 }
 
 /* ---------------------------------------------------------------- configuration */
@@ -9507,9 +9579,10 @@ static void cfg_space(CfgLexer *L) {
 
 static const char *cfg_keywords[] = {
     "CONSTANT", "CONSTANTS", "INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES", "CONSTRAINT",
-    "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS",          /* lists */
-    "INIT", "NEXT", "SPECIFICATION", "SYMMETRY", "VIEW", "CHECK_DEADLOCK", NULL};
-enum { CFG_LISTS = 10 };
+    "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "POSTCONDITION", "POSTCONDITIONS",
+    "_POSSIBLE",                                                         /* lists */
+    "INIT", "NEXT", "SPECIFICATION", "SYMMETRY", "VIEW", "ALIAS", "_PERIODIC", "_RL_REWARD", "CHECK_DEADLOCK", NULL};
+enum { CFG_LISTS = 13 };
 
 /* The next token: kind 'a' name, 'n' number (cfg_num), 's' string
    (cfg_str, interned unless cfg_scanning), 'p' punctuation, 0 end. Its
@@ -9611,7 +9684,7 @@ static void cfg_add(const char *keyword, int name, int op, Value *v, int target,
    the second, after the modules, makes its statements. */
 static void read_config(const char *text, int scanning) {
     CfgLexer L = {text, 0, 1, 1};
-    int seen[16] = {0};
+    int seen[sizeof cfg_keywords / sizeof *cfg_keywords] = {0};
     cfg_scanning = scanning;
     int kind = cfg_token(&L);
     while (kind) {
@@ -10439,8 +10512,14 @@ static int setup_model(void) {
             symmetry = s->u.set.elems;
             nsymmetry = s->n;
             symmetry_tables();
+        } else if (strncmp(k, "POSTCONDITION", 13) == 0) {
+            posts = xrealloc(posts, sizeof(int) * (size_t)(nposts + 1));
+            posts[nposts++] = it->name;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
+        } else if (k[0] == '_') {
+            fprintf(stderr, "tpp: %s is not supported\n", k);
+            exit(TPP_ERROR);
         }
     }
     }

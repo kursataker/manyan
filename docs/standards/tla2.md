@@ -565,13 +565,12 @@ constant, but each time it is used.
 
 A configuration is a sequence of statements; `\*` and `(* *)` comments as
 in §3.3. The keywords: `CONSTANT` is followed by assignments; `INIT`,
-`NEXT`, `SPECIFICATION`, `SYMMETRY`, `VIEW` and `CHECK_DEADLOCK` by one
-name or value each, and may each appear once; the others by any number of
-names. As in TLC, any token stands where a name is expected, and the
+`NEXT`, `SPECIFICATION`, `SYMMETRY`, `VIEW`, `ALIAS`, `_PERIODIC`,
+`_RL_REWARD` and `CHECK_DEADLOCK` by one name or value each, and may each
+appear once; the others by any number of names. As in TLC, any token stands where a name is expected, and the
 configuration is read before any module, so its errors come first, each
 as TLC's `ConfigFileException` at the line it is found: a word that is not
-a keyword where one is expected (`ALIAS` and `POSTCONDITION` are not TLC's
-keywords), a keyword repeated or followed by nothing, an assignment without
+a keyword where one is expected, a keyword repeated or followed by nothing, an assignment without
 `=` or `<-`, a set without its `}`.
 
 | Statement | Meaning |
@@ -586,6 +585,7 @@ keywords), a keyword repeated or followed by nothing, an assignment without
 | `SYMMETRY` | a set of permutations of model values |
 | `VIEW` | the expression whose value identifies states |
 | `CHECK_DEADLOCK` | `TRUE` (the default) or `FALSE` |
+| `POSTCONDITION`, `POSTCONDITIONS` | constant formulas checked once the states are explored (§10.9) |
 
 ### 9.2 Values
 
@@ -770,6 +770,27 @@ exits with status 255 or 151. With `-continue` a violation ends its
 behavior and the simulation goes on, ending as if none was found. The
 state counts of a simulation are unspecified (§11.1).
 
+### 10.9 Postconditions
+
+A `POSTCONDITION` is checked when the search or the simulation is done,
+after the liveness checking, and after an error is reported: a violated
+invariant, action property, property of an initial state, or temporal
+property, a deadlock, or a successor not completely specified, once its
+trace and the trace built again for it are printed (§11.2). The
+postconditions are checked in order, each evaluated with no state, so
+`TLCGet("level")` is 0 and a variable is undefined: the first that is
+false prints `Error: Postcondition P at line ... of module M is false.`,
+and the first that fails `Error: Evaluating postcondition P at line ... of
+module M failed.` and the error, or that `TLC expected a boolean value,
+but did not find one.` and its location; the rest are not checked. Each
+name is resolved first: one the spec does not define as an operator, a
+constant definition TLC evaluated at startup, or one with parameters, is
+TLC's unexpected `java.lang.RuntimeException`, and no postcondition is
+checked. After an error the exit status is the error's, and an error
+resolving a name is ignored; else a false or failed postcondition replaces
+`Model checking completed. No error has been found.`, before the counts,
+with exit 10, and an error resolving one with exit 255.
+
 ## 11 Output
 
 ### 11.1 Normalized output
@@ -824,7 +845,7 @@ TLC builds a trace by evaluating Init, and Next from each state, until it
 finds the state, so what they print is printed again as the trace is
 printed. After a deadlock, a violated invariant or action property, or a
 successor not completely specified, it builds the trace once more, for a
-postcondition, before the counts; so too after an error in Next on a state
+postconditions (§10.9), before the counts; so too after an error in Next on a state
 with no successor generated before it, when deadlock is checked. An error
 building a state ends the trace there, reported as `Error: TLC threw an
 unexpected exception.` with `tlc2.tool.EvalException` and its message.
@@ -857,6 +878,8 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 |---|---|---|
 | assumption false | `Error: Assumption line l, col c to line l2, col c2 of module M is false.` | 10 |
 | assumption fails to evaluate | `Error: Evaluating assumption line ... of module M failed.` | 10 |
+| postcondition false, after the search | `Error: Postcondition P at line ... of module M is false.` | 10 |
+| postcondition fails to evaluate, after the search | `Error: Evaluating postcondition P at line ... of module M failed.` | 10 |
 | deadlock | `Error: Deadlock reached.` | 11 |
 | invariant fails in an initial state | `Error: Invariant Inv is violated by the initial state:` | 12 |
 | invariant fails | `Error: Invariant Inv is violated.` | 12 |
@@ -931,6 +954,7 @@ Not covered: the proof language (`PROOF`, steps, `USE`, `BY`; skipped,
 except that a `HIDE` may name only theorems, assumptions, and steps, and a
 theorem's statement is kept for §5.7), computing with real numbers and
 with `\AA` and `\EE` (which TLC cannot either; §3.5, §11.3), `-generate`,
+the configuration's `_PERIODIC`, `_RL_REWARD` and `_POSSIBLE` (rejected),
 writing simulated behaviors to files (`-simulate file=`), simulation with
 several workers, the order of `Print` output in a simulation,
 checkpointing, multiple workers' scheduling, distributed TLC, and the

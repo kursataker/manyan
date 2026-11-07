@@ -1,0 +1,5 @@
+Error: Invariant Inv is violated by the initial state:
+x = 0
+
+Error: Postcondition Post at line 8, col 9 to line 8, col 30 of module postcondition_initial is false.
+exit 12
