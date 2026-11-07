@@ -525,9 +525,16 @@ evaluated natively.
   `:>`, `@@`, `Permutations`, `SortSeq`, `RandomElement`, `Any`,
   `ToString`, `TLCEval`.
 
-`RandomElement(S)` is the first element of `S` in the standard order
-(§7.4), so a run is repeatable; TLC draws one at random, so its state
-counts for a spec that uses it vary from run to run.
+`RandomElement(S)` and the Randomization operators draw as TLC does, from
+`java.util.Random` seeded with `-seed`. `RandomSubset(k, S)` takes
+k indices from a linear congruential generator, `x' = (a * x + c) % m`
+skipping those past |S|: m is the least number from max(|S|, 9) on that is
+not divisible by 4 and has a square factor, a is 1 more than the product of
+m's prime factors, x starts at a random index and c is a random one of
+TLC's 1341 primes (§10.8). An index into a set of functions, records or
+tuples is read in the mixed radix of its parts; for one of more than
+2^31 - 1 elements the indices are instead `(i * (2^63 - 25) + l) % |S|`,
+l the absolute value of a random long.
 
 A string is no sequence, but `Len`, `Tail` and `SubSeq` take it as its
 characters, and `\o` joins two strings: `Len("ab") = 2`, and `Tail` and

@@ -6580,10 +6580,50 @@ static Value *random_element(Value *s) {
 
 NATIVE(n_randomelement) { UNUSED; return random_element(a[0]); }
 
-/* k elements of S, as TLC 2.19 draws them: k indices into S apart by a
-   fixed step from a random one. A set of functions or records too large
-   for an int index has 63-bit steps from a random long, and TLC decodes
-   a function's index by powers of doubles. */
+/* The i-th of the 1341 primes from 1277011 on, TLC's RandomGenerator's. */
+static int tlc_prime(int i) {
+    static int primes[1341];
+    if (!primes[0])
+        for (int p = 1277011, k = 0; k < 1341; p += 2) {
+            int prime = 1;
+            for (int d = 3; d * d <= p && prime; d += 2) prime = p % d != 0;
+            if (prime) primes[k++] = p;
+        }
+    return primes[i];
+}
+
+/* The increment of TLC's draws: one of its primes, at random. */
+static int64_t random_prime(JRandom *r) {
+    int i = 1341;
+    while (i == 1341) i = (int)(jr_double(r) * 1341);
+    return tlc_prime(i);
+}
+
+/* The modulus m and multiplier a of TLC's draws from n elements, for a
+   period of m: the least m >= max(n, 9), not divisible by 4, with a square
+   factor; a is 1 more than the product of m's prime factors. */
+static void draw_params(int64_t n, int64_t *m, int64_t *a) {
+    for (n = n < 9 ? 9 : n;; n++) {
+        if (n % 4 == 0) continue;
+        int64_t r = n, product = 1;
+        int square = 0;
+        for (int64_t p = 2; p * p <= r; p++) {
+            if (r % p) continue;
+            product *= p;
+            r /= p;
+            square |= r % p == 0;
+            while (r % p == 0) r /= p;
+        }
+        if (r > 1) product *= r;
+        if (square) { *m = n, *a = product + 1; return; }
+    }
+}
+
+/* k elements of S, as TLC draws them: indices from a linear congruential
+   generator of a random seed and a random prime increment. A set of
+   functions, records or tuples is indexed in the mixed radix of its parts,
+   the last the least significant; one too large for an int index has
+   indices apart by a 63-bit step from a random long. */
 NATIVE(n_randomsubset) {
     UNUSED;
     if (a[0]->kind != V_INT)
@@ -6591,11 +6631,12 @@ NATIVE(n_randomsubset) {
     if (!is_set(a[1]) || set_is_infinite(a[1]))
         fail_module("The second argument of RandomSubset should be a a finite set, but instead it is:\n%s", pretty(a[1]));
     Value *s = a[1], **sets = NULL, *e = NULL;
+    if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
     int n = 0;
     __extension__ typedef __int128 Big;
     const Big huge = (Big)1 << 126;   /* above every index drawn */
     Big size = 1;
-    if (is_product(s) && s->lazy != L_TIMES) {
+    if (is_product(s)) {
         sets = product_parts(s, &n);
         Value **parts = NEWN(Value *, n);
         for (int i = 0; i < n; i++) {
@@ -6608,28 +6649,28 @@ NATIVE(n_randomsubset) {
         size = e->n;
     }
     JRandom *r = draws();
-    int big = size > 2147483647, k = (int)a[0]->u.i;
-    Big x = big ? INT64_MAX - 24 : size < 191 ? 191 : 2147483647, start = 0;
+    int big = size > 2147483647, k = size > 0 ? (int)a[0]->u.i : 0;
+    int64_t m = 0, mult = 0, inc = 0;
+    Big idx = 0, start = 0;
     if (big) {
         int64_t l = jr_long(r);
         start = l < 0 && l != INT64_MIN ? -l : l;
-    } else if (size > 0) start = jr_int(r, (int)size);
-    else k = 0;
+    } else if (size > 0) {
+        draw_params((int64_t)size, &m, &mult);
+        idx = jr_int(r, (int)size);
+        inc = random_prime(r);
+    }
     List l = {0};
     Value **vals = NEWN(Value *, n);
     for (int i = 0; i < k; i++) {
-        Big idx = (x * i + start) % size;
-        if (idx < 0) idx += size;
+        if (big) idx = ((Big)(INT64_MAX - 24) * i + start) % size;
+        else do idx = (mult * idx + inc) % m; while (idx >= size);
         if (e) { list_add(&l, e->u.set.elems[(int64_t)idx]); continue; }
         Big scale = 1;   /* of the last part, the least significant */
-        for (int j = n - 1, p = 0; j >= 0; j--, p++) {
+        for (int j = n - 1; j >= 0; j--) {
             int mod = sets[j]->n;
-            if (big && s->lazy == L_FCNSET) {
-                double d = pow(mod, p);
-                scale = d >= 0x1p63 ? INT64_MAX : (int64_t)d;
-            }
             vals[j] = sets[j]->u.set.elems[(int64_t)(idx / scale % mod)];
-            if (!big || s->lazy != L_FCNSET) scale = scale > huge / (mod + 1) ? huge : scale * mod;
+            scale = scale > huge / (mod + 1) ? huge : scale * mod;
         }
         list_add(&l, product_element(s, vals));
     }
@@ -9076,18 +9117,11 @@ static int rng_index(int n) {
     return (int)(jr_double(&rng) * n);   /* >= 0: truncation is floor */
 }
 
-/* One of the 1341 primes from 1277011 on, TLC's steps through the actions. */
+/* One of TLC's primes, its step through the actions. */
 static int rng_prime(void) {
-    static int primes[1341];
-    if (!primes[0])
-        for (int p = 1277011, k = 0; k < 1341; p += 2) {
-            int prime = 1;
-            for (int d = 3; d * d <= p && prime; d += 2) prime = p % d != 0;
-            if (prime) primes[k++] = p;
-        }
     int i = 1341;
     while (i == 1341) i = rng_index(1341);
-    return primes[i];
+    return tlc_prime(i);
 }
 
 /* States in order, complete or not. A simulation keeps them as values, as
