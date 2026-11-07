@@ -3671,17 +3671,15 @@ static void check_outer(Module *m, Def *d) {
     file->nwarnings++;
 }
 
-/* SANY's warnings so far, printed as each file's module is processed;
-   those of its global context, of definitions two extended modules give
-   a name, before them. */
-static Buf warnings, context_warnings;
-static int nwarnings, ncontext_warnings;
+/* SANY's warnings so far, all of them printed as each file's module is
+   processed. */
+static Buf warnings;
+static int nwarnings;
 
 static void print_warnings(Module *m) {
     buf_add(&warnings, m->warnings.s ? m->warnings.s : "", m->warnings.n);
     nwarnings += m->nwarnings;
-    if (ncontext_warnings) printf("Semantic errors in global context:\n\n\n*** Warnings: %d\n\n%s", ncontext_warnings, context_warnings.s);
-    if (nwarnings) printf("Semantic errors:\n\n*** Warnings: %d\n\n%s\n", nwarnings, warnings.s);
+    if (nwarnings) printf("*** Warnings: %d\n\n%s", nwarnings, warnings.s);
 }
 
 static Sym *own_sym(Module *m, int name) {
@@ -3709,16 +3707,11 @@ static int inherited_conflict(Module *m, Def *d, Def *instance) {
     Expr at = instance && instance->local ? *instance->where : def_span(d), span = def_span(old->def);
     file_loc_text(&here, &at);
     file_loc_text(&there, &span);
-    if (instance) {
-        Module *file = file_module(m);
-        buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
-                   here.s, S(d->name), there.s);
-        file->nwarnings++;
-    } else {
-        buf_printf(&context_warnings, "%s\n\nWarning: the definition of '%s' conflicts with \nits definition at %s.\n\n\n",
-                   here.s, S(d->name), there.s);
-        ncontext_warnings++;
-    }
+    Module *file = file_module(m);
+    buf_printf(&file->warnings, instance ? "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n"
+                                         : "%s\n\nWarning: the definition of '%s' conflicts with \nits definition at %s.\n\n\n",
+               here.s, S(d->name), there.s);
+    file->nwarnings++;
     free(here.s);
     free(there.s);
     return 1;
