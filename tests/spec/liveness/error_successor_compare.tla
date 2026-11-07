@@ -1,10 +1,12 @@
 ---- MODULE error_successor_compare ----
-VARIABLE x
-Init == x = "ok"
-A == x = "ok" /\ x' = <<1>>
-B == x = "ok" /\ x' = "no"
+\* TLC checks the actions of a property on a state's steps before its
+\* state predicates on the successors: here <<A>>_x fails first.
+VARIABLES x, y
+Init == x = "ok" /\ y = 0
+A == y = 0 /\ x' = <<1>> /\ y' = 1
+B == y = 0 /\ x' = "no" /\ y' = 1
 Next == A \/ B
-Spec == Init /\ [][Next]_x /\ WF_x(A)
+Spec == Init /\ [][Next]_<<x, y>> /\ WF_x(A)
 P == <>(x # "ok")
 ====
 SPECIFICATION Spec

@@ -200,16 +200,26 @@ before it, and may not define them again. It may declare again a constant
 or variable they declare, with the same arity; SANY warns of it,
 `Multiple declarations or definitions for symbol C.` and where the first
 is, each location in the module of its file. After processing each
-module of a file, dependencies first, SANY prints every warning so far,
-under `Semantic errors:` and `*** Warnings: N`.
+module of a file, dependencies first, SANY prints every warning so far
+under `*** Warnings: N`.
 
 When two extended modules define one name differently, the first
 definition is the one used, and SANY warns of the other, `Warning: the
-definition of 'R' conflicts with` and where the first is, under `Semantic
-errors in global context:`; a definition an instance brings in gives way
-too, with `Multiple declarations or definitions for symbol R.`, located
-at the definition, or at the statement of a `LOCAL INSTANCE`. A
-definition's location runs from its name to the end of its body.
+definition of 'R' conflicts with` and where the first is; a definition an
+instance brings in gives way too, with `Multiple declarations or
+definitions for symbol R.`, located at the definition, or at the statement
+of a `LOCAL INSTANCE`. A definition's location runs from its name to the
+end of its body; one of a standard module's is where it is in TLC's file.
+
+Once every module is processed, SANY warns, module by module, dependencies
+first, of each field of a record or set of records (`[f |-> e]`, `[f : S]`)
+named as a definition or declaration its module sees: `The field name "f"
+in the record constructor is identical to the existing definition or
+declaration`, with where each is. It does not when a record or set of
+records of the same fields, in the module or one it extends, has a field
+whose expression is built, through the definitions it uses, from a
+constant, a variable, a parameter, a bound identifier, `BOOLEAN`, `Nat` or
+`Int`.
 
 ### 5.7 Labels and subexpressions
 

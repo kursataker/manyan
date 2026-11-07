@@ -8,7 +8,8 @@ The exception was a java.lang.RuntimeException
 <<1>>
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
-x = "ok"
+/\ x = "ok"
+/\ y = 0
 
 3 states generated, 3 distinct states found, 2 states left on queue.
 The depth of the complete state graph search is 2.

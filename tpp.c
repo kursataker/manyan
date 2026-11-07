@@ -1836,7 +1836,7 @@ typedef struct {
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
    !:, !@ and !(x) are sel > 0 or the SEL_ kinds; a name is sel 0. */
-typedef struct { int name; int sel; Expr **args; int n; } Seg;
+typedef struct { int name; int sel; Expr **args; int n; int line, col; } Seg;   /* line, col: a record field's */
 enum { SEL_LL = -1, SEL_GG = -2, SEL_COLON = -3, SEL_AT = -4, SEL_NULL = -5 };
 
 /* lab(x, y) :: e names e, with the bound identifiers x and y, for selectors. */
@@ -1927,6 +1927,8 @@ struct Module {
     int nouter_syms;      /* the enclosing module's symbols visible to it */
     Buf warnings;         /* a file's module: SANY's warnings for it, nested modules' too */
     int nwarnings;
+    Expr **records;       /* its records and sets of records, as resolved */
+    int nrecords;
     int *extends;
     int nextends;
     Sym *syms;
@@ -2757,7 +2759,7 @@ static Expr *parse_primary(void) {
                     int name = expect_ident();
                     for (int i = 0; i < e->nseg; i++)
                         if (e->segs[i].name == name) semantic_error(mk_expr(X_NAME, field), "Non-unique fields in constructor.");
-                    PUSH(e->segs, e->nseg, ((Seg){.name = name}));
+                    PUSH(e->segs, e->nseg, ((Seg){.name = name, .line = field->line, .col = field->col}));
                     expect_op(set ? ":" : "|->");
                     PUSH(e->args, e->n, parse_expr());
                 } while (is_op(peek(), ",") && next());
@@ -3313,24 +3315,24 @@ static Module *parse_module(Module *outer) {
 static const struct { const char *name, *text; } standard_modules[] = {
     {"Naturals",
      "---- MODULE Naturals ----\n"
-     "Nat       == { }\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\nNat       == { }\n"
      "a+b       == {a, b}\n"
-     "a-b       == CHOOSE n : b + n = a\n"
+     "\na-b       == CHOOSE n : b + n = a\n"
      "a*b       == TRUE\n"
      "a^b       == {a, b}\n"
      "a<b       ==  a = b\n"
      "a>b       ==  a = b\n"
      "a \\leq b  ==  a = b\n"
      "a \\geq b  ==  a = b\n"
-     "a % b     ==  {a, b}\n"
+     "\n\n\n\n\n\n\n\n\na % b     ==  {a, b}\n"
      "a \\div b  ==  {a, b}\n"
      "a .. b    ==  {a, b}\n"
      "====\n"},
     {"Integers",
      "---- MODULE Integers ----\n"
-     "EXTENDS Naturals\n"
-     "Int  ==  { }\n"
-     "-. a == 0 - a\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\nEXTENDS Naturals\n"
+     "\nInt  ==  { }\n"
+     "\n\n\n-. a == 0 - a\n"
      "====\n"},
     /* TLC's, which cannot compute with real numbers; its definitions on TLC's lines */
     {"Reals",
@@ -3343,92 +3345,91 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "====\n"},
     {"Sequences",
      "---- MODULE Sequences ----\n"
-     "LOCAL INSTANCE Naturals\n"
-     "Seq(S) == UNION {[1..n -> S] : n \\in Nat}\n"
-     "Len(s) == CHOOSE n \\in Nat : DOMAIN s = 1..n\n"
-     "s \\o t == [i \\in 1..(Len(s) + Len(t)) |-> IF i \\leq Len(s) THEN s[i]\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
+     "\n\n\n\nSeq(S) == UNION {[1..n -> S] : n \\in Nat}\n"
+     "\n\n\n\nLen(s) == CHOOSE n \\in Nat : DOMAIN s = 1..n\n"
+     "\n\n\n\ns \\o t == [i \\in 1..(Len(s) + Len(t)) |-> IF i \\leq Len(s) THEN s[i]\n"
      "                                                           ELSE t[i-Len(s)]]\n"
-     "Append(s, e) == s \\o <<e>>\n"
-     "Head(s) == s[1]\n"
+     "\n\n\n\nAppend(s, e) == s \\o <<e>>\n"
+     "\n\n\n\nHead(s) == s[1]\n"
      "Tail(s) == CASE s # << >> -> [i \\in 1..(Len(s)-1) |-> s[i+1]]\n"
-     "SubSeq(s, m, n) == [i \\in 1..(1+n-m) |-> s[i+m-1]]\n"
-     "SelectSeq(s, Test(_)) ==\n"
-     "  LET F[i \\in 0..Len(s)] ==\n"
-     "        IF i = 0 THEN << >>\n"
+     "\n\n\n\n\nSubSeq(s, m, n) == [i \\in 1..(1+n-m) |-> s[i+m-1]]\n"
+     "\n\n\n\nSelectSeq(s, Test(_)) ==\n"
+     "\n\n\n\n  LET F[i \\in 0..Len(s)] ==\n"
+     "\n\n\n        IF i = 0 THEN << >>\n"
      "                 ELSE IF Test(s[i]) THEN Append(F[i-1], s[i])\n"
      "                                    ELSE F[i-1]\n"
      "  IN F[Len(s)]\n"
      "====\n"},
     {"FiniteSets",
      "---- MODULE FiniteSets ----\n"
-     "LOCAL INSTANCE Naturals\n"
+     "\n\n\n\n\nLOCAL INSTANCE Naturals\n"
      "LOCAL INSTANCE Sequences\n"
-     "IsFiniteSet(S) ==\n"
-     "  \\E seq \\in Seq(S) : \\A s \\in S : \\E n \\in 1..Len(seq) : seq[n] = s\n"
-     "Cardinality(S) ==\n"
-     "  LET CS[T \\in SUBSET S] == IF T = {} THEN 0\n"
+     "\n\n\n\n\nIsFiniteSet(S) ==\n"
+     "\n\n\n\n  \\E seq \\in Seq(S) : \\A s \\in S : \\E n \\in 1..Len(seq) : seq[n] = s\n"
+     "\nCardinality(S) ==\n"
+     "\n\n\n  LET CS[T \\in SUBSET S] == IF T = {} THEN 0\n"
      "                                      ELSE 1 + CS[T \\ {CHOOSE x : x \\in T}]\n"
      "  IN  CS[S]\n"
      "====\n"},
     {"TLC",
      "---- MODULE TLC ----\n"
-     "LOCAL INSTANCE Naturals\n"
+     "\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
      "LOCAL INSTANCE Sequences\n"
      "LOCAL INSTANCE FiniteSets\n"
-     "Print(out, val) == val\n"
+     "\nPrint(out, val) == val\n"
      "PrintT(out) == TRUE\n"
-     "Assert(val, out) == IF val = TRUE THEN TRUE\n"
+     "\n\n\n\n\nAssert(val, out) == IF val = TRUE THEN TRUE\n"
      "                                  ELSE CHOOSE v : TRUE\n"
      "JavaTime == CHOOSE n : n \\in Nat\n"
-     "TLCGet(i) == CHOOSE n : TRUE\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTLCGet(i) == CHOOSE n : TRUE\n"
      "TLCSet(i, v) == TRUE\n"
-     "d :> e == [x \\in {d} |-> e]\n"
+     "\nd :> e == [x \\in {d} |-> e]\n"
      "f @@ g == [x \\in (DOMAIN f) \\cup (DOMAIN g) |->\n"
      "            IF x \\in DOMAIN f THEN f[x] ELSE g[x]]\n"
      "Permutations(S) ==\n"
      "   {f \\in [S -> S] : \\A w \\in S : \\E v \\in S : f[v]=w}\n"
-     "SortSeq(s, Op(_, _)) ==\n"
+     "\n\n\n\n\nSortSeq(s, Op(_, _)) ==\n"
      "    LET Perm == CHOOSE p \\in Permutations(1 .. Len(s)) :\n"
      "                  \\A i, j \\in 1..Len(s) :\n"
      "                     (i < j) => Op(s[p[i]], s[p[j]]) \\/ (s[p[i]] = s[p[j]])\n"
      "    IN  [i \\in 1..Len(s) |-> s[Perm[i]]]\n"
-     "RandomElement(s) == CHOOSE x \\in s : TRUE\n"
-     "Any == CHOOSE x : TRUE\n"
-     "ToString(v) == (CHOOSE x \\in [a : v, b : STRING] : TRUE).b\n"
-     "TLCEval(v) == v\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nRandomElement(s) == CHOOSE x \\in s : TRUE\n"
+     "\n\n\n\n\n\n\n\nAny == CHOOSE x : TRUE\n"
+     "\nToString(v) == (CHOOSE x \\in [a : v, b : STRING] : TRUE).b\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTLCEval(v) == v\n"
      "====\n"},
     {"Bags",
      "---- MODULE Bags ----\n"
-     "EXTENDS TLC\n"
-     "LOCAL INSTANCE Naturals\n"
-     "IsABag(B) ==\n"
-     "  B \\in [DOMAIN B -> {n \\in Nat : n > 0}]\n"
-     "BagToSet(B) == DOMAIN B\n"
-     "SetToBag(S) == [e \\in S |-> 1]\n"
-     "BagIn(e,B) == e \\in BagToSet(B)\n"
-     "EmptyBag == SetToBag({})\n"
-     "B1 (+) B2  ==\n"
-     "  [e \\in (DOMAIN B1) \\cup (DOMAIN B2) |->\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
+     "\nIsABag(B) ==\n"
+     "\n\n\n  B \\in [DOMAIN B -> {n \\in Nat : n > 0}]\n"
+     "\nBagToSet(B) == DOMAIN B\n"
+     "\n\n\n\nSetToBag(S) == [e \\in S |-> 1]\n"
+     "\n\n\n\nBagIn(e,B) == e \\in BagToSet(B)\n"
+     "\n\n\n\nEmptyBag == SetToBag({})\n"
+     "\nB1 (+) B2  ==\n"
+     "\n\n\n  [e \\in (DOMAIN B1) \\cup (DOMAIN B2) |->\n"
      "      (IF e \\in DOMAIN B1 THEN B1[e] ELSE 0)\n"
      "    + (IF e \\in DOMAIN B2 THEN B2[e] ELSE 0) ]\n"
-     "B1 (-) B2  ==\n"
-     "  LET B == [e \\in DOMAIN B1 |-> IF e \\in DOMAIN B2 THEN B1[e] - B2[e]\n"
+     "\nB1 (-) B2  ==\n"
+     "\n\n\n\n\n\n  LET B == [e \\in DOMAIN B1 |-> IF e \\in DOMAIN B2 THEN B1[e] - B2[e]\n"
      "                                                   ELSE B1[e]]\n"
      "  IN  [e \\in {d \\in DOMAIN B : B[d] > 0} |-> B[e]]\n"
-     "LOCAL Sum(f) ==\n"
-     "        LET DSum[S \\in SUBSET DOMAIN f] ==\n"
+     "\nLOCAL Sum(f) ==\n"
+     "\n\n\n\n\n        LET DSum[S \\in SUBSET DOMAIN f] ==\n"
      "               LET elt == CHOOSE e \\in S : TRUE\n"
      "               IN  IF S = {} THEN 0\n"
      "                             ELSE f[elt] + DSum[S \\ {elt}]\n"
      "        IN  DSum[DOMAIN f]\n"
-     "BagUnion(S) ==\n"
-     "  [e \\in UNION {BagToSet(B) : B \\in S} |->\n"
+     "\nBagUnion(S) ==\n"
+     "\n\n\n  [e \\in UNION {BagToSet(B) : B \\in S} |->\n"
      "    Sum( [B \\in S |-> IF BagIn(e, B) THEN B[e] ELSE 0] ) ]\n"
-     "B1 \\sqsubseteq B2  ==\n"
-     "  /\\ (DOMAIN B1) \\subseteq (DOMAIN B2)\n"
+     "\nB1 \\sqsubseteq B2  ==\n"
+     "\n\n\n\n  /\\ (DOMAIN B1) \\subseteq (DOMAIN B2)\n"
      "  /\\ \\A e \\in DOMAIN B1 : B1[e] \\leq B2[e]\n"
-     "SubBag(B) ==\n"
-     "  LET RemoveFromDom(x, f) == [y \\in (DOMAIN f) \\ {x} |-> f[y]]\n"
+     "\nSubBag(B) ==\n"
+     "\n\n\n\n\n\n\n  LET RemoveFromDom(x, f) == [y \\in (DOMAIN f) \\ {x} |-> f[y]]\n"
      "      Combine(x, BagSet) ==\n"
      "         BagSet \\cup\n"
      "          {[y \\in (DOMAIN f) \\cup {x} |-> IF y = x THEN i ELSE f[y]] :\n"
@@ -3442,22 +3443,22 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "                      ELSE LET x == CHOOSE x \\in DOMAIN BB : TRUE\n"
      "                           IN  Combine(x, RSB[RemoveFromDom(x, BB)])\n"
      "  IN RSB[B]\n"
-     "BagOfAll(F(_), B) ==\n"
-     "  [e \\in {F(d) : d \\in BagToSet(B)} |->\n"
+     "\n\n\n\n\n\n\n\n\n\n\nBagOfAll(F(_), B) ==\n"
+     "\n\n\n\n\n\n  [e \\in {F(d) : d \\in BagToSet(B)} |->\n"
      "     Sum( [d \\in BagToSet(B) |-> IF F(d) = e THEN B[d] ELSE 0] ) ]\n"
-     "BagCardinality(B) ==\n"
-     "  Sum(B)\n"
-     "CopiesIn(e, B) ==\n"
-     "  IF BagIn(e, B) THEN B[e] ELSE 0\n"
+     "\nBagCardinality(B) ==\n"
+     "\n\n\n\n\n  Sum(B)\n"
+     "\nCopiesIn(e, B) ==\n"
+     "\n\n\n\n  IF BagIn(e, B) THEN B[e] ELSE 0\n"
      "====\n"},
     {"Randomization",
      "---- MODULE Randomization ----\n"
-     "LOCAL INSTANCE Naturals\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
      "LOCAL INSTANCE FiniteSets\n"
-     "RandomSubset(k, S) == CHOOSE T \\in SUBSET S : Cardinality(T) = T\n"
-     "RandomSetOfSubsets(k, n, S) == CHOOSE T \\in SUBSET SUBSET S :\n"
+     "\n\n\n\n\nRandomSubset(k, S) == CHOOSE T \\in SUBSET S : Cardinality(T) = k\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nRandomSetOfSubsets(k, n, S) == CHOOSE T \\in SUBSET SUBSET S :\n"
      "                                              Cardinality(T) \\leq k\n"
-     "TestRandomSetOfSubsets(k, n, S) ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\nTestRandomSetOfSubsets(k, n, S) ==\n"
      "              [i \\in 1..5 |-> Cardinality(RandomSetOfSubsets(k, n, S))]\n"
      "====\n"},
     {NULL, NULL}};
@@ -4173,6 +4174,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         return;
     default:
         resolve_args(e->args, e->n, sc);
+        if (e->kind == X_RECORD || e->kind == X_RCDSET) PUSH(cur_module->records, cur_module->nrecords, e);
         return;
     }
 }
@@ -4230,6 +4232,94 @@ static void resolve_def(Def *d, Scope *sc) {
     if (open) open_defs[nopen_defs++] = d;
     if (d->body) resolve_expr(d->body, inner);
     nopen_defs -= open;
+}
+
+/* SANY's linter: a warning for a record field named as a definition or
+   declaration of the module, unless a record with the same fields has
+   one built from a declaration, a parameter or a bound identifier. */
+static Buf lint;
+
+static int from_decls(Expr *e, List *seen) {
+    if (!e) return 0;
+    if (e->kind == K_BOUND || e->kind == K_PARAMCALL || e->kind == K_DECL || e->kind == K_BOOLEAN) return 1;
+    if ((e->kind == K_CALL || e->kind == K_INSTCALL) && e->def) {
+        Def *d = e->def;
+        if (d->kind == D_CONST || d->kind == D_VAR || d->kind == D_PARAM) return 1;
+        const char *std = d->mod && d->mod->standard ? S(d->mod->name) : "";
+        if ((!strcmp(std, "Integers") && d->name == intern("Int")) || (!strcmp(std, "Naturals") && d->name == intern("Nat"))) return 1;
+        int visited = 0;
+        for (int i = 0; i < seen->n && !visited; i++) visited = (Def *)seen->v[i] == d;
+        if (!visited) {
+            list_add(seen, (Value *)d);
+            if (from_decls(d->body, seen)) return 1;
+            for (int i = 0; i < d->nb; i++) if (from_decls(d->bounds[i].set, seen)) return 1;
+        }
+    }
+    for (int i = 0; i < e->n; i++) if (from_decls(e->args[i], seen)) return 1;
+    for (int i = 0; i < e->nb; i++) if (from_decls(e->bounds[i].set, seen)) return 1;
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) if (from_decls(e->defs[i]->body, seen)) return 1;
+    if (e->kind == X_LAMBDA && from_decls(e->def->body, seen)) return 1;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (from_decls(e->paths[i].keys[k], seen)) return 1;
+    if (e->kind == K_INSTCALL)
+        for (int i = 0; i < e->nseg; i++)
+            for (int k = 0; k < e->segs[i].n; k++) if (from_decls(e->segs[i].args[k], seen)) return 1;
+    return 0;
+}
+
+static int same_fields(Expr *a, Expr *b) {
+    if (a->nseg != b->nseg) return 0;
+    for (int i = 0; i < a->nseg; i++) {
+        int found = 0;
+        for (int j = 0; j < b->nseg && !found; j++) found = a->segs[i].name == b->segs[j].name;
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+/* m and the modules it extends, transitively. */
+static void extended_set(Module *m, List *out) {
+    for (int i = 0; i < out->n; i++) if ((Module *)out->v[i] == m) return;
+    list_add(out, (Value *)m);
+    for (int i = 0; i < m->nextends; i++) extended_set(load_module(m->extends[i], m), out);
+}
+
+static void lint_records(Module *m) {
+    if (m->standard || !m->nrecords) return;
+    List mods = {0};
+    extended_set(m, &mods);
+    for (int r = 0; r < m->nrecords; r++) {
+        Expr *rec = m->records[r];
+        int understood = 0;
+        for (int k = 0; k < mods.n && !understood; k++) {
+            Module *x = (Module *)mods.v[k];
+            for (int i = 0; i < x->nrecords && !understood; i++)
+                if (same_fields(x->records[i], rec))
+                    for (int f = 0; f < x->records[i]->n && !understood; f++) {
+                        List seen = {0};
+                        understood = from_decls(x->records[i]->args[f], &seen);
+                    }
+        }
+        for (int f = 0; f < rec->nseg && !understood; f++) {
+            Seg *field = &rec->segs[f];
+            Sym *sym = module_lookup(m, field->name);
+            if (!sym) continue;
+            Def *d = sym->def;
+            Expr at = d->kind == D_CONST || d->kind == D_VAR ? *d->where : def_span(d);
+            Buf there = {0};
+            file_loc_text(&there, &at);
+            const char *n = S(field->name);
+            buf_printf(&lint, "line %d, col %d to line %d, col %d of module %s\n\n"
+                       "The field name \"%s\" in the record constructor is identical to the existing definition or declaration\n"
+                       "named %s, located at %s.\n"
+                       "The field in the record will not take the value of the %s definition or declaration.\n"
+                       "In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.\n"
+                       "Therefore, DOMAIN [%s |-> ...] = {\"%s\"} holds true.\n\n\n",
+                       field->line, field->col, field->line, field->col + (int)strlen(n) - 1, S(m->name), n, n, there.s, n, n, n);
+            free(there.s);
+        }
+    }
 }
 
 static void resolve_module(Module *m) {
@@ -4313,7 +4403,7 @@ static void resolve_module(Module *m) {
         else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
         else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
     }
-    if (!m->outer) print_warnings(m);
+    if (!m->outer) { print_warnings(m); lint_records(m); }
     m->resolved = 2;
     cur_module = saved;
 }
@@ -11018,9 +11108,9 @@ static void live_init(Value **st) {
 }
 
 /* An error checking the temporal properties, reported as TLC reports it:
-   TLC evaluates their predicates as it expands each state: ENABLED on
-   the state, other state predicates on each successor, the actions on
-   each step and on stuttering. It reports the first error then, as one
+   TLC evaluates their predicates as it expands each state: the actions
+   on each step and on stuttering, then ENABLED on the state, then other
+   state predicates on each successor. It reports the first error then, as one
    in Next, with the behavior to the state and the counts of that moment. */
 static int live_error(void) {
     natoms = 0;
@@ -11046,17 +11136,17 @@ static int live_error(void) {
         for (int e = 0; e < r->nedges; e++) if (r->edges[2 * e] > seen) seen = r->edges[2 * e];
         for (int e = 0; e <= r->nedges; e++) {
             int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
-            for (int i = 0; i < natoms; i++) {
-                TF *a = atoms[i];
-                int on_s = a->atom->kind == K_ENABLED;
-                if (a->action) holds_in(a->atom, a->c, state_values(s), state_values(t));
-                else if (on_s ? e == r->nedges : e < r->nedges) holds_in(a->atom, a->c, state_values(on_s ? s : t), NULL);
-            }
-            for (int i = 0; i < nfairs; i++) {
-                if (e == r->nedges) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
-                holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
-            }
+            for (int i = 0; i < natoms; i++)
+                if (atoms[i]->action) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), state_values(t));
+            for (int i = 0; i < nfairs; i++) holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
         }
+        for (int i = 0; i < natoms; i++)
+            if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
+        for (int i = 0; i < nfairs; i++) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
+        for (int e = 0; e < r->nedges; e++)
+            for (int i = 0; i < natoms; i++)
+                if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED)
+                    holds_in(atoms[i]->atom, atoms[i]->c, state_values(r->edges[2 * e]), NULL);
     }
     /* Not found so: as it came. */
     handler = NULL;
@@ -11215,6 +11305,7 @@ int tpp_check(const TPPOptions *o) {
     load_references(root);
     finish_module(root);
     resolve_module(root);
+    if (lint.n) printf("%s", lint.s);
     for (int i = 0; i < nfinished; i++) {
         Expr *e = finished[i]->outer ? NULL : odd_literal(finished[i]);
         if (e && e->num < 0) config_error("TLC can't handle real numbers.\n%s", S(e->op));
