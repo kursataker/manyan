@@ -1,10 +1,12 @@
-# tpp
+# TLA⁺⁺
 
-TLA⁺⁺ (TLA Plus Plus) is a model checker for TLA⁺ written in C11. It reads
+TLA⁺⁺ (TLAPlusPlus) is a model checker for TLA⁺ written in C11. It reads
 the same specifications and model configurations as TLC and produces same
 outcome, 1.1 to 27.2 times faster with one worker.
 
 ![logo](docs/logo.png)
+
+\* Write it as `TLA++` when superscript is unavailable.
 
 ## Getting started
 
