@@ -6252,6 +6252,22 @@ static int tlc_finite(Value *s) {
         return 0;
     case L_CUP: return tlc_finite(a) && tlc_finite(b);
     case L_SUBSET: return tlc_finite(a);
+    case L_TIMES: case L_RCDSET: {   /* finite when a part is empty, or all are finite */
+        int all = 1;
+        for (int i = 0; i < s->n; i++) {
+            Value *part = s->u.l.names[s->n + i];
+            if (!tlc_finite(part)) all = 0;
+            else if (set_size(union_cache(part)) == 0) return 1;
+        }
+        return all;
+    }
+    case L_FCNSET: {   /* [S -> T]: also when S or T is empty, or T has one element */
+        int dom = tlc_finite(a);
+        if (dom && set_size(union_cache(a)) == 0) return 1;
+        int range = tlc_finite(b);
+        return range && (dom || set_size(union_cache(b)) <= 1);
+    }
+    case L_SEQ: return tlc_finite(a) && set_size(union_cache(a)) == 0;
     case L_UNION:
         union_sets(s);
         for (int i = 0; i < s->u.l.a->n; i++) if (!tlc_finite(s->u.l.a->u.set.elems[i])) return 0;
