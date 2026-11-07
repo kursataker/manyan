@@ -4,6 +4,14 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
+## 0.5.1
+
+- `make` builds `tpp` profile-guided, trained on the conformance suite
+  (10 to 25% faster); without python3, or with clang but no
+  llvm-profdata, it builds plain. `make release` is gone.
+- Builds without warnings under GCC 15.
+- `examples/DieHard` gives the README a spec to run as written.
+
 ## 0.5.0
 
 - Faster set operations: `S \cap T` and `S \ T` keep `S`'s order instead
