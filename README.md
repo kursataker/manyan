@@ -20,7 +20,7 @@ make                          # builds ./tpp; needs a C11 compiler
 make install PREFIX=~/.local  # installs ~/.local/bin/tpp
 ```
 
-With python3, `make` builds tpp profile-guided, trained on the
+With python3, `make` builds `tpp` profile-guided, trained on the
 conformance suite, which makes it 10 to 25% faster.
 
 See [the manual](docs/manual.md) for the options, the configuration file,
@@ -46,8 +46,8 @@ State 2: <Next line 9, col 12 to line 9, col 37 of module DieHard>
 
 ## Why
 
-TLC is the reference model checker for TLA⁺, and tpp is tested
-against. tpp keeps TLC's semantics and output, so it can stand in for TLC
+TLC is the reference model checker for TLA⁺, and `tpp` is tested
+against. `tpp` keeps TLC's semantics and output, so it can stand in for TLC
 in scripts and CI, and it starts quickly and spends less time on each
 state:
 
@@ -121,10 +121,10 @@ Java (they download tla2tools 1.7.4 themselves):
   `make sanitize` runs it under UndefinedBehaviorSanitizer (with Guard
   Malloc on macOS, AddressSanitizer elsewhere).
 - `make fuzz` runs mutated models of the suite under the sanitizers, to
-  find crashes; `make fuzz-oracle` compares what tpp and TLC print for
+  find crashes; `make fuzz-oracle` compares what `tpp` and TLC print for
   random expressions, and `make fuzz-sim` for random simulations of the
   suite's models, to find differences. What they find becomes a test.
-- `tests/tla` models parts of tpp's algorithms in TLA⁺, for TLC and tpp to
+- `tests/tla` models parts of `tpp`'s algorithms in TLA⁺, for TLC and `tpp` to
   check.
 
 ## Layout
