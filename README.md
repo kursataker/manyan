@@ -30,7 +30,7 @@ exit statuses and the C API.
 
 ```
 $ ./tpp examples/DieHard
-tpp version 0.5.1
+tpp version 0.6.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:

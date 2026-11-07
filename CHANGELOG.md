@@ -4,7 +4,7 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
-## Unreleased
+## 0.6.0
 
 - TLC 1.8.0 is the oracle, pinned to the pre-release jar built from
   commit d8fb231, and every test is blessed by it. tpp follows what
@@ -24,7 +24,13 @@ for it as its notes.
     `TLCGet("config")` is a record.
   - `RandomSubset` draws from TLC's linear congruential generator.
   - A simulation names its initial states by Init and checks successors
-    as TLC's worker generates them.
+    as TLC's worker generates them. A violating successor after the first
+    is reported, an error in Init is an exception, `TLCSet("exit")` ends
+    the run and `TLCGet("config")` is the simulation's.
+  - A step through an instance's specification is named `Action`.
+  - `[A]_v` and `<<A>>_v` compare `v` first. A temporal formula with an
+    action not of the form `<>[]A` or `[]<>A` is an error, and a
+    counterexample ending in stuttering warns of missing fairness.
 - `ALIAS` prints a trace's states as the alias's value. `POSTCONDITION`s
   are checked once the search is done, and after an error. The
   configuration knows `_PERIODIC`, `_RL_REWARD` and `_POSSIBLE`, and
