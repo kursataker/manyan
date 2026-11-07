@@ -10750,6 +10750,53 @@ static void print_live_state(int number, int s, int action, int prev) {
     print_numbered(number, action, state_values(s), prev < 0 ? NULL : state_values(prev));
 }
 
+/* Whether t holds from position pos of the lasso of the n states ls,
+   whose last is followed by the one at cyc. */
+static int holds_on_lasso(TF *t, int *ls, int n, int cyc, int pos) {
+    switch (t->op) {
+    case TF_TRUE: return 1;
+    case TF_FALSE: return 0;
+    case TF_AND: return holds_on_lasso(t->a, ls, n, cyc, pos) && holds_on_lasso(t->b, ls, n, cyc, pos);
+    case TF_OR: return holds_on_lasso(t->a, ls, n, cyc, pos) || holds_on_lasso(t->b, ls, n, cyc, pos);
+    case TF_ATOM:
+        return holds_in(t->atom, t->c, state_values(ls[pos]), t->action ? state_values(ls[pos + 1 < n ? pos + 1 : cyc]) : NULL) != t->neg;
+    default: {   /* from pos on, which in the cycle is all of it */
+        int always = t->op == TF_ALWAYS;
+        for (int i = pos < cyc ? pos : cyc; i < n; i++)
+            if (holds_on_lasso(t->a, ls, n, cyc, i) != always) return !always;
+        return always;
+    }
+    }
+}
+
+/* Prints, as TLC, the properties the lasso violates, each by the name of
+   its PROPERTY; one that fails to evaluate is left out. */
+static void print_violated(int *ls, int n, int cyc) {
+    int saved_atoms = natoms, saved_eventualities = neventualities;
+    int *names = NEWN(int, ntemporal_props + 1), nnames = 0;
+    for (int p = 0; p < ntemporal_props; p++) {
+        EvalState saved = eval_save();
+        sigjmp_buf here;
+        handler = &here;
+        volatile int violated = 0;
+        if (!sigsetjmp(here, 0)) violated = !holds_on_lasso(to_tf(temporal_props[p].expr, root_ctx, 0), ls, n, cyc, 0);
+        eval_restore(saved);
+        int name = temporal_props[p].def->name, seen = 0;
+        for (int i = 0; i < nnames; i++) seen |= names[i] == name;
+        if (violated && !seen) names[nnames++] = name;
+    }
+    natoms = saved_atoms;
+    neventualities = saved_eventualities;
+    if (nnames == 1) printf("Error: Temporal property %s was violated.\n\n", S(names[0]));
+    else if (nnames == 0) printf("Error: Temporal properties were violated.\n\n");
+    else {
+        printf("Error: Temporal properties ");
+        for (int i = 0; i < nnames; i++)
+            printf("%s%s", i == 0 ? "" : i < nnames - 1 ? ", " : nnames == 2 ? " and " : ", and ", S(names[i]));
+        printf(" were violated.\n\n");
+    }
+}
+
 /* Prints a lasso through the accepted component: the shortest path to it,
    then a cycle that meets each eventuality and fairness condition. */
 static void print_counterexample(int *inits, int ninits) {
@@ -10775,15 +10822,6 @@ static void print_counterexample(int *inits, int ninits) {
         free(prev); free(queue);
     }
     product_path(inits, ninits, entry, NULL, 0, &path, &acts);
-    printf("Error: Temporal properties were violated.\n\n");
-    printf("Error: The following behavior constitutes a counter-example:\n\n");
-    int number = 0;
-    for (int i = 0; i < path.n; i++) {
-        int p = (int)path.v[i]->u.i;
-        int act = (int)acts.v[i]->u.i;
-        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state);
-    }
-    int entry_number = number;
     /* The cycle: from the entry through each required node or edge, back. */
     List cyc = {0}, cacts = {0};
     int cur = entry;
@@ -10833,15 +10871,26 @@ static void print_counterexample(int *inits, int ninits) {
                 }
         }
     }
+    if (!stutter_only && cur != entry) {
+        List p = {0}, a = {0};
+        product_path(&cur, 1, entry, accepted, naccepted, &p, &a);
+        for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
+    }
+    int nlasso = path.n + (stutter_only ? 0 : cyc.n - 1);
+    int *lasso = NEWN(int, nlasso + 1);
+    for (int i = 0; i < nlasso; i++) lasso[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;
+    print_violated(lasso, nlasso, stutter_only ? nlasso - 1 : path.n - 1);
+    printf("Error: The following behavior constitutes a counter-example:\n\n");
+    int number = 0;
+    for (int i = 0; i < path.n; i++) {
+        int p = (int)path.v[i]->u.i;
+        int act = (int)acts.v[i]->u.i;
+        print_live_state(++number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state);
+    }
+    int entry_number = number;
     if (stutter_only) {
         printf("State %d: Stuttering\n", number + 1);
         return;
-    }
-    if (cur != entry) {
-        List p = {0}, a = {0};
-        int *allowed = accepted;
-        product_path(&cur, 1, entry, allowed, naccepted, &p, &a);
-        for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
     }
     for (int i = 0; i + 1 < cyc.n; i++) {
         int p = (int)cyc.v[i]->u.i;
