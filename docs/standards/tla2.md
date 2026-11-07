@@ -462,11 +462,9 @@ remainder; a zero divisor is an error.
 Values of different kinds are unequal only when one is a model value or
 when both are sets or both are functions; otherwise comparing them (for
 example `1 = "a"`) is an error. Two sets are equal when they have the same
-elements; two functions when they have the same domain and values. A tuple
-TLC keeps as one (not computed by `[x \in S |-> e]`) compared with a
-string, on its left, is compared with the tuple of the string's
-characters: `<<"a", "b">> = "ab"`. No value is an element of an empty
-interval, such as `1..0`, even one that is not an integer.
+elements; two functions when they have the same domain and values. No
+value is an element of an empty interval, such as `1..0`, even one that is
+not an integer.
 
 ### 7.4 Order
 
@@ -521,11 +519,11 @@ evaluated natively.
 (§7.4), so a run is repeatable; TLC draws one at random, so its state
 counts for a spec that uses it vary from run to run.
 
-The operators of Sequences read a string as the sequence of its
-characters, each a one-character string: `Head("ab") = "a"`, and `Tail`,
-`SubSeq` and `Append` of a string, and `\o` of two strings, are strings;
-`SelectSeq` of a string, and `s \o t` for a sequence `s` and a string `t`,
-are tuples; and a string is in `Seq(S)` when its characters are in `S`.
+A string is no sequence, but `Len`, `Tail` and `SubSeq` take it as its
+characters, and `\o` joins two strings: `Len("ab") = 2`, and `Tail` and
+`SubSeq` of a string, and `"ab" \o "c"`, are strings. The other operators
+of Sequences fail on a string, as does `\o` of a string and a sequence, and
+a string equals no tuple: comparing them is an error (§7.3).
 
 `Print(out, val)` writes `out` and `val` and yields `val`; `PrintT(out)`
 writes `out` and yields `TRUE`; `Assert(c, out)` is `TRUE` when `c` is and

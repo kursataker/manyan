@@ -1,7 +1,8 @@
 ---- MODULE string_sequences ----
-\* The operators of Sequences read a string as its characters.
+\* Len, Tail, SubSeq and \o take a string as its characters; the other
+\* operators of Sequences take no string.
 EXTENDS Naturals, Sequences, TLC
-ASSUME PrintT(<<Len("abc"), Head("ab"), Tail("abc"), Append("ab", "c"), "ab" \o "cd", SubSeq("abcde", 2, 4)>>)
-ASSUME PrintT(<<SelectSeq("abca", LAMBDA c : c = "a"), <<1>> \o "ab", "ab" \in Seq({"a", "b"}), "ac" \in Seq({"a", "b"})>>)
+ASSUME PrintT(<<Len("abc"), Tail("abc"), "ab" \o "cd", SubSeq("abcde", 2, 4)>>)
 ASSUME PrintT(<<Len(""), Tail("a"), SubSeq("abc", 3, 2)>>)
+ASSUME PrintT(Head("ab"))
 ====

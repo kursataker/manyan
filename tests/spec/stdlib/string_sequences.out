@@ -1,4 +1,6 @@
-Error: Evaluating assumption line 4, col 8 to line 4, col 110 of module string_sequences failed.
+<<3, "bc", "abcd", "bcd">>
+<<0, "", "">>
+Error: Evaluating assumption line 7, col 8 to line 7, col 25 of module string_sequences failed.
 The argument of Head should be a sequence, but instead it is:
 "ab"
 exit 10

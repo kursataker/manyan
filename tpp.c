@@ -459,14 +459,6 @@ static Value *mk_tuple(int n) {
     return v;
 }
 
-/* The characters of a string, which TLC's Sequences operators read as a sequence. */
-static Value *str_chars(Value *s) {
-    int n = strs[s->u.i].len;
-    Value *t = mk_tuple(n);
-    for (int i = 0; i < n; i++) t->u.fcn.vals[i] = mk_str(intern_n(strs[s->u.i].s + i, 1));
-    return t;
-}
-
 static Value *substr(Value *s, int from, int len) { return mk_str(intern_n(strs[s->u.i].s + from, len)); }
 
 static Value *mk_fcn(int n) {
@@ -1033,7 +1025,6 @@ static int as_record(Value *f) {
 }
 static int veq(Value *a, Value *b) {
     if (a == b) return 1;
-    if (a->kind == V_TUPLE && b->kind == V_STR) return veq(a, str_chars(b));   /* TLC's tuple takes a string as its characters */
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     if (a->kind == V_MODEL || b->kind == V_MODEL) return a->kind == b->kind && a->u.i == b->u.i;
     Expr *src = value_source(a);   /* named in an error in its parts, as vcmp */
@@ -1517,7 +1508,6 @@ static int set_member(Value *v, Value *s) {
             if (!is_set(v)) fail("Attempted to check if the non-enumerable value\n%s\nis element of\n%s", pretty(v), pretty(s));
             return all_members(v, s->u.l.a);
         case L_SEQ:
-            if (v->kind == V_STR) v = str_chars(v);
             if (!is_fcn(v) || !fcn_is_tuple(v))
                 fail_module("Attempted to check if the value:\n%s\nis an element of %s.", pretty(v), pretty(s));
             for (int i = 0; i < v->n; i++) if (!set_member(v->u.fcn.vals[i], s->u.l.a)) return 0;
@@ -6041,11 +6031,10 @@ NATIVE(n_range) {
     return mk_interval(int_cast(a[0]), int_cast(a[1]));
 }
 
-/* A sequence: a function on 1..n, or a string. */
+/* A sequence: a function on 1..n. */
 static Value *seq_arg(Value *v, const char *error) {
     v = realize(v);
     if (is_fcn(v) && (fcn_is_tuple(v) || v->n == 0)) return v;
-    if (v->kind == V_STR) return str_chars(v);
     fail_module("%s:\n%s", error, pretty(v));
 }
 
@@ -6090,7 +6079,6 @@ NATIVE(n_concat) {
 
 NATIVE(n_append) {
     UNUSED;
-    if (a[0]->kind == V_STR) return str_concat(a[0], a[1]);
     Value *x = seq_arg(a[0], "Evaluating an expression of the form Append(s, v) when s is not a sequence");
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
@@ -6108,9 +6096,11 @@ NATIVE(n_head) {
 
 NATIVE(n_tail) {
     UNUSED;
-    Value *x = seq_arg(a[0], NOT_SEQ("argument", "Tail"));
-    if (x->n == 0) fail_module("Attempted to apply Tail to the empty sequence.");
-    if (a[0]->kind == V_STR) return substr(a[0], 1, x->n - 1);
+    int str = a[0]->kind == V_STR;   /* TLC's Len, Tail, SubSeq and \o take a string as its characters */
+    Value *x = str ? NULL : seq_arg(a[0], NOT_SEQ("argument", "Tail"));
+    int len = str ? strs[a[0]->u.i].len : x->n;
+    if (len == 0) fail_module("Attempted to apply Tail to the empty sequence.");
+    if (str) return substr(a[0], 1, len - 1);
     Value *t = mk_tuple(x->n - 1);
     for (int i = 1; i < x->n; i++) t->u.fcn.vals[i - 1] = x->u.fcn.vals[i];
     return t;
@@ -6118,15 +6108,15 @@ NATIVE(n_tail) {
 
 NATIVE(n_subseq) {
     UNUSED;
-    Value *x = seq_arg(a[0], NOT_SEQ("first argument", "SubSeq"));
+    int str = a[0]->kind == V_STR;
+    Value *x = str ? NULL : seq_arg(a[0], NOT_SEQ("first argument", "SubSeq"));
     for (int i = 1; i < 3; i++)
         if (a[i]->kind != V_INT)
             fail_module("The %s argument of SubSeq should be a natural number, but instead it is:\n%s", i == 1 ? "second" : "third", pretty(a[i]));
-    int64_t m = a[1]->u.i, n = a[2]->u.i;
-    int str = a[0]->kind == V_STR;
+    int64_t m = a[1]->u.i, n = a[2]->u.i, len = str ? strs[a[0]->u.i].len : x->n;
     if (m > n) return str ? substr(a[0], 0, 0) : mk_tuple(0);
-    int second = m < 1 || m > x->n;
-    if (second || n > x->n)
+    int second = m < 1 || m > len;
+    if (second || n > len)
         fail_module("The %s argument of SubSeq must be in the domain of its first argument:\n%s\n, but instead it is\n%lld",
                     second ? "second" : "third", pretty(a[0]), (long long)(second ? m : n));
     if (str) return substr(a[0], (int)m - 1, (int)(n - m + 1));
