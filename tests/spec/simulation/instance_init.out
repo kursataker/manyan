@@ -1,0 +1,12 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 1 to line 7, col 26 of module instance_init>
+t = 0
+
+State 2: <Next line 7, col 1 to line 7, col 26 of module instance_init>
+t = 1
+
+State 3: <Next line 7, col 1 to line 7, col 26 of module instance_init>
+t = 2
+exit 12

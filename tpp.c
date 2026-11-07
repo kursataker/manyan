@@ -1929,6 +1929,7 @@ struct Def {
     Def **subst_decl;
     Expr **subst_expr;
     Expr *where;          /* the definition's location */
+    int part;             /* a copy whose body is part of the original's, as an instance sees it (in_instance) */
 };
 
 static Value *call_native(Def *d, Expr *call, Value **args, Ctx c);
@@ -7381,6 +7382,21 @@ typedef struct { Expr *body; int name; Def *op; } SplitData;
 
 static void split_action(Expr *e, Ctx c, int name, Def *op);
 
+/* A definition seen through instances as TLC names it, I!A, and the first
+   of the instances that substitutes, NULL if none. */
+static int instance_name(Expr *e, Def **in) {
+    Buf b = {0};
+    *in = NULL;
+    for (int i = 0; i < e->ndefs; i++) {
+        if (!*in && e->defs[i]->nsubst) *in = e->defs[i];
+        if (e->defs[i]->name) buf_printf(&b, "%s!", S(e->defs[i]->name));
+    }
+    buf_puts(&b, S(e->def->name));
+    int name = intern(b.s);
+    free(b.s);
+    return name;
+}
+
 static int split_fn(Ctx c, void *data) {
     SplitData *s = data;
     split_action(s->body, c, s->name, s->op);
@@ -7432,15 +7448,10 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
         if (e->def->kind != D_OP || e->def->native) break;
         /* As TLC, a definition seen through an instance that substitutes is
            one action, named I!A and located at the INSTANCE statement. */
-        Buf b = {0};
-        Def *in = NULL;
-        for (int i = 0; i < e->ndefs; i++) {
-            if (!in && e->defs[i]->nsubst) in = e->defs[i];
-            if (e->defs[i]->name) buf_printf(&b, "%s!", S(e->defs[i]->name));
-        }
-        buf_puts(&b, S(e->def->name));
-        int qualified = intern(b.s);
-        free(b.s);
+        /* A part of a specification is no definition: TLC's Action. */
+        Def *in;
+        int qualified = instance_name(e, &in);
+        if (e->def->part) qualified = name;
         if (in) { add_action(e, c, qualified, in->where, NULL); return; }
         split_action(e->def->body, instance_ctx(e, c), qualified, NULL);
         return;
@@ -7672,7 +7683,7 @@ typedef struct { Def *def; Expr *expr; int name; } Check;
 static Expr *init_expr, *next_expr;
 /* The last of the initial predicates, which a simulation names an initial
    state by: a definition's body by the definition, as TLC's Action. */
-static Def *init_def;
+static int init_name;   /* the initial predicate's name in a simulation, 0 if none */
 static Expr *init_where;
 static Ctx root_ctx;
 static Check *invariants, *implied_inits, *constraints, *action_constraints, *action_props, *temporal_props;
@@ -7997,7 +8008,7 @@ static void action_text(Buf *b, int action, const char *unnamed) {
     if (action < 0 && !simulating) { buf_puts(b, "<Initial predicate>"); return; }
     Action *a = action < 0 ? NULL : &actions[action];
     Expr *l = a ? a->loc : init_where;
-    buf_printf(b, "<%s", a ? S(a->name) : init_def ? S(init_def->name) : unnamed);
+    buf_printf(b, "<%s", a ? S(a->name) : init_name ? S(init_name) : unnamed);
     const char *sep = "(";
     for (int i = 0; a && a->op && i < a->op->nparams; i++)
         if (!a->op->params[i]->arity) { buf_printf(b, "%s%s", sep, pretty(force(env_find(a->c.env, a->op->params[i])))); sep = ","; }
@@ -9858,6 +9869,7 @@ static Expr *in_instance(Expr *call, Expr *part) {
     Def *d = NEW(Def);
     *d = *call->def;
     d->body = part;
+    d->part = 1;
     d->level = -1;
     d->cache = NULL;
     Expr *e = NEW(Expr);
@@ -9967,6 +9979,19 @@ static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, c
     }
 }
 
+/* The initial predicate's name and location, as TLC labels its states in
+   a simulation: a definition's, or one seen through an instance's as its
+   action would be (split_action). */
+static void name_init(Expr *e) {
+    Def *d = named_def(e), *in = NULL;
+    init_name = d ? d->name : 0;
+    init_where = d ? d->body : e;
+    if (e->kind == K_INSTCALL && e->def->kind == D_OP && !e->def->native) {
+        init_name = instance_name(e, &in);
+        init_where = in ? in->where : e->def->body;
+    }
+}
+
 /* SPECIFICATION Init /\ [][Next]_v /\ fairness (§9.1). */
 static void use_specification(Expr *spec) {
     Expr **parts = NULL, **init = NULL;
@@ -9975,10 +10000,12 @@ static void use_specification(Expr *spec) {
     for (int i = 0; i < n; i += 2) {
         Expr *e = parts[i], *call = parts[i + 1];
         if (expr_level(e) <= 1) {
-            init_def = named_def(e);
-            init_where = init_def ? init_def->body : e;
+            name_init(e);
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
             init[ninit++] = in_instance(call, init_where);
+            Def *in = NULL;
+            if (call) instance_name(call, &in);
+            if (in) init_where = in->where;   /* TLC locates a part through an instance that substitutes there */
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             if (nnext++)
                 config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
@@ -10601,8 +10628,7 @@ static int setup_model(void) {
     if (spec) use_specification(spec);
     if (init) {
         init_expr = init;
-        init_def = named_def(init);
-        init_where = init_def ? init_def->body : init;
+        name_init(init);
     }
     if (next) next_expr = next;
     return 0;
@@ -11766,7 +11792,10 @@ int tpp_check(const TPPOptions *o) {
         print_error_message();
         return TPP_FAILURE_EVAL;
     }
-    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Action"), NULL);
+    if (next_expr) {
+        int named = (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;
+        split_action(next_expr, root_ctx, named ? next_expr->def->name : intern("Action"), NULL);
+    }
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }

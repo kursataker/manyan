@@ -845,7 +845,11 @@ state as a junction list `/\ v = value` of its variables in TLC's order
 (below), a single variable without the bullet, and a blank line. The action
 is named by the definition the step's disjunct belongs to, with the
 values of its constant arguments, `<Inc(1,2) ...>`, and located by that
-disjunct.
+disjunct. A definition seen through an instance that substitutes, as SANY
+substitutes each declared name it does not, is one action, `I!A`, located
+at the `INSTANCE` statement; a step of a specification's `[][N]_v` that
+is no definition is `Action`, there too through such an instance. In a
+simulation the initial predicate is named and located likewise.
 
 With an `ALIAS`, each state of a trace, a counterexample, a simulated
 behavior, or an initial state that violates an invariant or property is
