@@ -7170,27 +7170,24 @@ static int enabled(Expr *a, Ctx c) {
 /* The next-state action split at its disjunctions, constant existential
    quantifiers, and the definitions it uses; each part is named by the
    definition it belongs to and located by its expression (§11.2). */
-typedef struct { Expr *e; Ctx c; int name; Expr *loc; } Action;
+typedef struct { Expr *e; Ctx c; int name; Expr *loc; Def *op; } Action;   /* op: the definition whose arguments label it */
 
 static Action *actions;
 static int nactions;
 
-static void add_action(Expr *e, Ctx c, int name, Expr *loc) {
+static void add_action(Expr *e, Ctx c, int name, Expr *loc, Def *op) {
     actions = xrealloc(actions, sizeof(Action) * (size_t)(nactions + 1));
-    actions[nactions].e = e;
-    actions[nactions].c = c;
-    actions[nactions].name = name;
-    actions[nactions].loc = loc;
+    actions[nactions] = (Action){e, c, name, loc, op};
     nactions++;
 }
 
-typedef struct { Expr *body; int name; } SplitData;
+typedef struct { Expr *body; int name; Def *op; } SplitData;
 
-static void split_action(Expr *e, Ctx c, int name);
+static void split_action(Expr *e, Ctx c, int name, Def *op);
 
 static int split_fn(Ctx c, void *data) {
     SplitData *s = data;
-    split_action(s->body, c, s->name);
+    split_action(s->body, c, s->name, s->op);
     return 0;
 }
 
@@ -7199,14 +7196,16 @@ static int bounds_constant(Expr *e) {
     return 1;
 }
 
-static void split_action(Expr *e, Ctx c, int name) {
+/* The actions of e, as TLC splits them: each named by the definition it
+   is in, op, and labeled with the values of op's constant arguments. */
+static void split_action(Expr *e, Ctx c, int name, Def *op) {
     switch (e->kind) {
     case K_OR:
-        for (int i = 0; i < e->n; i++) split_action(e->args[i], c, name);
+        for (int i = 0; i < e->n; i++) split_action(e->args[i], c, name, op);
         return;
     case X_EXISTS:
         if (bounds_constant(e)) {
-            SplitData s = {e->args[0], name};
+            SplitData s = {e->args[0], name, op};
             for_bindings(e->bounds, e->nb, c, split_fn, &s);
             return;
         }
@@ -7215,19 +7214,21 @@ static void split_action(Expr *e, Ctx c, int name) {
         Env *env = c.env;
         for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
         for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
-        split_action(e->args[0], (Ctx){env, c.inst}, name);
+        split_action(e->args[0], (Ctx){env, c.inst}, name, op);
         return;
     }
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
         Env *env = NULL;
+        int constant = 1;
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
             else env = mk_arg(d->params[i], e->args[i], c, env);
+            constant &= expr_level(e->args[i]) == 0;
         }
         deeper();
-        split_action(d->body, (Ctx){env, c.inst}, d->name);
+        split_action(d->body, (Ctx){env, c.inst}, d->name, constant ? d : NULL);
         eval_depth--;
         return;
     }
@@ -7244,14 +7245,14 @@ static void split_action(Expr *e, Ctx c, int name) {
         buf_puts(&b, S(e->def->name));
         int qualified = intern(b.s);
         free(b.s);
-        if (in) { add_action(e, c, qualified, in->where); return; }
-        split_action(e->def->body, instance_ctx(e, c), qualified);
+        if (in) { add_action(e, c, qualified, in->where, NULL); return; }
+        split_action(e->def->body, instance_ctx(e, c), qualified, NULL);
         return;
     }
     default:
         break;
     }
-    add_action(e, c, name, e);
+    add_action(e, c, name, e, op);
 }
 
 /* ---------------------------------------------------------------- states */
@@ -7792,7 +7793,12 @@ static void action_label(int action) {
     if (action < 0) { printf("<Initial predicate>"); return; }
     Action *a = &actions[action];
     Expr *l = a->loc;
-    printf("<%s line %d, col %d to line %d, col %d of module %s>", S(a->name), l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
+    printf("<%s", S(a->name));
+    const char *sep = "(";
+    for (int i = 0; a->op && i < a->op->nparams; i++)
+        if (!a->op->params[i]->arity) { printf("%s%s", sep, pretty(force(env_find(a->c.env, a->op->params[i])))); sep = ","; }
+    if (*sep == ',') printf(")");
+    printf(" line %d, col %d to line %d, col %d of module %s>", l->l1, l->c1, l->l2, l->c2, S(l->mod->name));
 }
 
 static int cur_action;
@@ -11271,7 +11277,7 @@ int tpp_check(const TPPOptions *o) {
         print_error_message();
         return TPP_FAILURE_EVAL;
     }
-    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Action"));
+    if (next_expr) split_action(next_expr, root_ctx, next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL ? next_expr->def->name : intern("Action"), NULL);
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
