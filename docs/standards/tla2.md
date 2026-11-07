@@ -792,8 +792,16 @@ Each state of a trace is `State i: <Action line l1, col c1 to line l2, col
 c2 of module M>` (`<Initial predicate>` for the first) followed by the
 state as a junction list `/\ v = value` of its variables in TLC's order
 (below), a single variable without the bullet, and a blank line. The action
-is named by the definition the step's disjunct belongs to, and located by
-that disjunct.
+is named by the definition the step's disjunct belongs to, with the
+values of its constant arguments, `<Inc(1,2) ...>`, and located by that
+disjunct.
+
+TLC builds a trace by evaluating Init, and Next from each state, until it
+finds the state, so what they print is printed again as the trace is
+printed. After a deadlock, a violated invariant or action property, or a
+successor not completely specified, it builds the trace once more, for a
+postcondition, before the counts; so too after an error in Next on a state
+with no successor generated before it, when deadlock is checked.
 
 TLC's order of the variables is the reverse of the order in which SANY's
 context of the root module, a `java.util.Hashtable`, enumerates them. The

@@ -8011,7 +8011,7 @@ static void print_numbered(int number, int action, Value **st, Value **prev) {
     printf("\n");
 }
 
-static void print_trace_states(int s1, Value **s2, int action) {
+static void print_trace_states(int s1, Value **s2, int action, int print) {
     int n = 0;
     for (int i = s1; i >= 0; i = states[i].parent) n++;
     int *path = NEWN(int, n);
@@ -8021,14 +8021,15 @@ static void print_trace_states(int s1, Value **s2, int action) {
     for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
     /* Each state as TLC rebuilds it, from the one before as rebuilt. */
     for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i], i); st[i] = replay_match; }
-    /* The last state is printed whole, as TLC prints it. */
-    printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i + 1 < n; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL);
-    if (n > 1) { replay(st[n - 2], st[n - 1], n - 1); st[n - 1] = replay_match; }
-    print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL);
+    /* The last state is printed whole, as TLC prints it. TLC prints an
+       initial one as it has it, but rebuilds it to rebuild the behavior. */
+    if (print) printf("Error: The behavior up to this point is:\n");
+    for (int i = 0; i + 1 < n && print; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL);
+    if (n > 1 || !print) { replay(n > 1 ? st[n - 2] : NULL, st[n - 1], n - 1); st[n - 1] = replay_match; }
+    if (print) print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL);
     if (s2) {
         replay(st[n - 1], s2, n);
-        print_numbered(n + 1, action, s2, NULL);
+        if (print) print_numbered(n + 1, action, s2, NULL);
     }
 }
 
@@ -8036,16 +8037,26 @@ static void print_trace_states(int s1, Value **s2, int action) {
    reached from it by `action` if s2 is not NULL, as TLC prints it. As
    TLC, an error rebuilding a state ends the behavior there, unreported:
    returns the exit status of that error, 0 if none. */
-static int print_trace(int s1, Value **s2, int action) {
+static int trace_states(int s1, Value **s2, int action, int print) {
     EvalState s = eval_save();
     ErrorState e = error_save();
     int failed = 0;
     sigjmp_buf here;
     handler = &here;
-    if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action);
+    if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action, print);
     else failed = eval_failure_status();
     eval_restore(s);
     error_restore(&e);
+    return failed;
+}
+static int print_trace(int s1, Value **s2, int action) { return trace_states(s1, s2, action, 1); }
+
+/* An error TLC reports for a state, or a step from it to s2, is followed
+   by its rebuilding the behavior for a POSTCONDITION, which evaluates Init
+   and Next again. */
+static int reported_trace(int s1, Value **s2, int action) {
+    int failed = print_trace(s1, s2, action);
+    trace_states(s1, s2, action, 0);
     return failed;
 }
 
@@ -8257,7 +8268,7 @@ static int action_violated(Value **st) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad < 0) return 0;
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
-    print_trace(expanding, st, cur_action);
+    reported_trace(expanding, st, cur_action);
     if (keep_going) return 0;
     violation = TPP_VIOLATION_LIVENESS;
     return 1;
@@ -8278,7 +8289,7 @@ static int next_emit(void) {
         printf(". The following variable%s not defined: ", unassigned == 1 ? " is" : "s are");
         for (int i = 0, k = 0; i < nvars; i++) if (!succ[i]) printf("%s%s", k++ ? ", " : "", S(vars[i]->name));
         printf(".\n\n");
-        print_trace(expanding, succ, cur_action);
+        reported_trace(expanding, succ, cur_action);
         violation = TPP_FAILURE_EVAL;
         return 1;
     }
@@ -8291,7 +8302,7 @@ static int next_emit(void) {
         violation_fresh = 0;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            print_trace(expanding, st, cur_action);
+            reported_trace(expanding, st, cur_action);
             if (!keep_going) {
                 violation = TPP_VIOLATION_SAFETY;
                 return 1;
@@ -8315,7 +8326,7 @@ static int next_emit(void) {
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            print_trace(expanding, st, cur_action);
+            reported_trace(expanding, st, cur_action);
             if (!keep_going) {
                 violation = TPP_VIOLATION_SAFETY;
                 return 1;
@@ -8378,7 +8389,7 @@ static int expand_state(int idx) {
     }
     if (succ_count == 0 && check_deadlock) {
         printf("Error: Deadlock reached.\n");
-        print_trace(idx, NULL, 0);
+        reported_trace(idx, NULL, 0);
         print_counts(nstates - expanded);
         return TPP_VIOLATION_DEADLOCK;
     }
@@ -8849,6 +8860,9 @@ static int search(void) {
         Value **from = decode_state(expanding);
         print_trace(expanding, NULL, 0);
         replay_error(from);
+        /* TLC goes on to find the state deadlocked, its error already
+           reported, and rebuilds the behavior. */
+        if (succ_count == 0 && check_deadlock) trace_states(expanding, NULL, 0, 0);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
         if (status == TPP_FAILURE_EVAL && error_module == 1) status = TPP_ERROR;
