@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+[x     |    0|0=x|true|78|%]
+[y     |  <<0|<<0, "ab">>=y|true|79|%]
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module alias_format>
+[x     |    1|1=x|true|78|%]
+[y     |  <<1|<<1, "ab">>=y|true|79|%]
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module alias_format>
+[x     |    2|2=x|true|78|%]
+[y     |  <<2|<<2, "ab">>=y|true|79|%]
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

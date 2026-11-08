@@ -75,6 +75,9 @@ Edge cases found running TLC's own test models (`test-model`):
 - After a deadlock, a safety-like temporal property violated on the path
   to the deadlocked state is reported too, as TLC adds that state to its
   temporal checks after reporting the deadlock (Github710d).
+- An alias's field `_format` is the Java format each other field is
+  printed with; a conversion Java cannot apply to a string is its
+  exception, ending the trace (PrintTraceException).
 
 ## 0.6.0
 

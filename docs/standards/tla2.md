@@ -926,6 +926,13 @@ prints a state, so an undefined name, a constant, or one with parameters
 is, like an error evaluating it, printed as a variable `_ALIASEvalError`,
 a string of the error's message, after the state's variables.
 
+A record's field `_format`, a string, is the Java format each other field
+is printed with, as `String.format(_format, name, value)` with the value
+as TLC prints it: `%s` and `%S`, with the flag `-`, a width, a precision
+and an argument index `n$`, `%b`, `%h`, `%n` and `%%`. Any other
+conversion, or a third argument, is Java's exception, which ends the
+trace before the state's number as an error building it does (below).
+
 TLC builds a trace by evaluating Init, and Next from each state, until it
 finds the state, so what they print is printed again as the trace is
 printed. After a deadlock, a violated invariant or action property, or a

@@ -273,6 +273,7 @@ static int error_status;   /* the exit status the error implies */
    EvalException of a standard module's operator; 2, a TLCRuntimeException,
    with the exit status of its error code. */
 static int error_module;
+static const char *error_java;   /* the Java exception TLC throws instead, as java.util.IllegalFormatConversionException */
 static int stackless;         /* TLC's error call stack is empty: 1, or 2 for its StackOverflowError */
 /* The Java methods of the standard operators being applied, innermost last.
    TLC wraps any error inside one, but an EvalException, in a preamble. */
@@ -321,6 +322,7 @@ static void error_reset(void) {
     error_expr = NULL;
     error_status = TPP_ERROR;
     error_module = 0;
+    error_java = NULL;
     stackless = 0;
 }
 
@@ -389,6 +391,15 @@ static _Noreturn void fail_module(const char *fmt, ...) {
 }
 
 #define fail(...) fail_at(NULL, __VA_ARGS__)
+
+/* An error TLC meets as Java's exception cls. */
+static _Noreturn void fail_java(const char *cls, const char *msg) {
+    error_reset();
+    buf_puts(&error_message, msg);
+    error_module = 1;
+    error_java = cls;
+    raise_error();
+}
 
 /* A worker gives a state back to the search, which expands it itself. */
 static _Noreturn void worker_cannot(void) { fail("A worker cannot expand this state."); }
@@ -8527,8 +8538,60 @@ static Expr *unfold(Expr *e);
    as the state if it is a record, its fields as variables, in the order a
    record constructor gives them, as TLC prints the record unnormalized; an
    error evaluating it is printed as a variable _ALIASEvalError after st's. */
-static void print_trace_state(Value **st, Value **next, int level) {
-    if (!alias_name) { print_state(st); return; }
+static void state_text(Buf *b, Value **st) {
+    for (int i = 0; i < nvars; i++)
+        buf_printf(b, "%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+}
+
+/* Java's String.format(f, key, value), with TLC's alias field _format as
+   f: %s and %S, with flag -, a width and a precision, %b, %n and %%. Any
+   other conversion of a string is Java's exception. */
+static void java_format(Buf *b, const char *f, const char *key, const char *value) {
+    const char *args[2] = {key, value};
+    int next = 0;
+    for (const char *p = f; *p; p++) {
+        if (*p != '%') { buf_add(b, p, 1); continue; }
+        const char *spec = p++;
+        int index = 0, left = 0, width = 0, prec = -1;
+        const char *q = p;
+        while (isdigit((unsigned char)*q)) index = index * 10 + (*q++ - '0');
+        if (*q == '$' && q > p) p = q + 1;
+        else index = 0;
+        for (; *p && strchr("-#+ 0,(<", *p); p++) left |= *p == '-';
+        while (isdigit((unsigned char)*p)) width = width * 10 + (*p++ - '0');
+        if (*p == '.') for (prec = 0, p++; isdigit((unsigned char)*p); p++) prec = prec * 10 + (*p - '0');
+        char c = *p, msg[64];
+        if (c == '%' || c == 'n') { buf_puts(b, c == '%' ? "%" : "\n"); continue; }
+        if (!c || !strchr("sSbBhHdoxXeEfgGaAcCtT", c)) {
+            snprintf(msg, sizeof msg, "Conversion = '%c'", c ? c : '%');
+            fail_java("java.util.UnknownFormatConversionException", msg);
+        }
+        int i = index ? index - 1 : next++;
+        if (i > 1) {
+            snprintf(msg, sizeof msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
+            fail_java("java.util.MissingFormatArgumentException", msg);
+        }
+        if (!strchr("sSbBhH", c)) {
+            snprintf(msg, sizeof msg, "%c != java.lang.String", tolower((unsigned char)c));
+            fail_java("java.util.IllegalFormatConversionException", msg);
+        }
+        Buf t = {0};
+        if (c == 's' || c == 'S') buf_puts(&t, args[i]);
+        else if (c == 'b' || c == 'B') buf_puts(&t, "true");
+        else {
+            uint32_t h = 0;   /* Java's String.hashCode */
+            for (const char *k = args[i]; *k; k++) h = 31 * h + (unsigned char)*k;
+            buf_printf(&t, "%x", h);
+        }
+        int n = prec >= 0 && (size_t)prec < t.n ? prec : (int)t.n;
+        if (isupper((unsigned char)c)) for (int k = 0; k < n; k++) t.s[k] = (char)toupper((unsigned char)t.s[k]);
+        buf_printf(b, left ? "%-*.*s" : "%*.*s", width, n, t.s ? t.s : "");
+        free(t.s);
+    }
+}
+
+static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
+    if (!alias_name) { state_text(b, st); return; }
     Buf why = {0};
     Def *d = late_def(alias_name, "alias", &why);
     Value *v = NULL;
@@ -8553,33 +8616,52 @@ static void print_trace_state(Value **st, Value **next, int level) {
     }
     if (v && fcn_is_record(v)) {
         Expr *made = unfold(d->body);
+        int fmt = intern("_format");
+        const char *format = NULL;
+        for (int i = 0; i < v->n; i++) {
+            if (v->u.fcn.keys[i]->u.i != fmt) continue;
+            if (v->u.fcn.vals[i]->kind != V_STR) fail_java("java.lang.ClassCastException", "");
+            format = S(v->u.fcn.vals[i]->u.i);
+        }
         for (int i = 0; i < v->n; i++) {
             int k = i;
             for (int j = 0; made->kind == X_RECORD && j < v->n; j++)
                 if (v->u.fcn.keys[j]->u.i == made->segs[i].name) k = j;
-            printf("%s%s = %s\n", v->n == 1 ? "" : "/\\ ", S(v->u.fcn.keys[k]->u.i), pretty(v->u.fcn.vals[k]));
+            if (v->u.fcn.keys[k]->u.i == fmt) continue;
+            const char *key = S(v->u.fcn.keys[k]->u.i), *val = pretty(v->u.fcn.vals[k]);
+            if (format) java_format(b, format, key, val);
+            else buf_printf(b, "%s%s = %s\n", v->n == 1 ? "" : "/\\ ", key, val);
         }
         return;
     }
-    if (v) { print_state(st); return; }
-    for (int i = 0; i < nvars; i++) printf("/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
-    printf("/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
+    if (v) { state_text(b, st); return; }
+    for (int i = 0; i < nvars; i++) buf_printf(b, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    buf_printf(b, "/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
     free(why.s);
 }
 
+static void print_trace_state(Value **st, Value **next, int level) {
+    Buf b = {0};
+    trace_state_text(&b, st, next, level);
+    fputs(b.s ? b.s : "", stdout);
+    free(b.s);
+}
+
 static void print_numbered(int number, int action, Value **st, Value **prev, Value **next) {
+    Buf b = {0};   /* TLC makes the state's text before it prints its number */
+    int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr;
+    if (!diff && !shown) trace_state_text(&b, st, next, number);
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
     if (print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
-    if (diff_trace && prev && !alias_name) {
+    if (diff) {
         for (int i = 0; i < nvars; i++)
             if (!unchanged(prev[i], st[i]))
                 printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
-    } else {
-        print_trace_state(st, next, number);
     }
-    printf("\n");
+    printf("%s\n", b.s ? b.s : "");
+    free(b.s);
 }
 
 /* TLC's report of a Java exception, up to its message. */
@@ -8637,7 +8719,7 @@ static int trace_states(int s1, Value **s2, int action, int print) {
     else {
         failed = eval_failure_status();
         if (print) {
-            print_exception("tlc2.tool.EvalException", ": ");
+            print_exception(error_java ? error_java : "tlc2.tool.EvalException", ": ");
             print_error_text();
         }
     }
