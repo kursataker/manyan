@@ -10630,6 +10630,12 @@ static void use_specification(Expr *spec) {
             Buf b = {0};
             loc_text(&b, e);
             config_error("TLC cannot handle this conjunct of the spec:\n%s", b.s);
+        } else if (e->kind == K_ALWAYS && expr_level(e->args[0]) <= 1 && e->args[0]->kind != X_NUM &&
+                   e->args[0]->kind != X_STR && e->args[0]->kind != X_LET) {
+            Buf b = {0};   /* []S, S an operator applied with no action: SANY's OpApplNode */
+            loc_text(&b, e->args[0]);
+            printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
+            exit(TPP_ERROR);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
             fairness[nfairness++] = in_instance(call, e);
@@ -11165,7 +11171,18 @@ static int setup_model(void) {
     int stray = 0, module_stray = 0, no_module = 0;   /* a name substituted for, or a module, the spec does not have */
     /* TLC takes the constants, then the invariants, then the rest but the
        constraints, then the constraints, then the action constraints. */
-    for (int pass = 0; pass < 5; pass++) {
+    /* As TLC: the constants, the invariants, the specification, its
+       properties, the constraints, the action constraints. */
+    for (int pass = 0; pass < 6; pass++) {
+    if (pass == 3) {
+        if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
+        if (spec) use_specification(spec);
+        if (init) {
+            init_expr = init;
+            name_init(init);
+        }
+        if (next) next_expr = next;
+    }
     if (pass == 1) {
         int n;
         Def **c = tlc_constants(&n);
@@ -11186,8 +11203,8 @@ static int setup_model(void) {
     for (int i = 0; i < ncfg; i++) {
         CfgItem *it = &cfg[i];
         const char *k = it->keyword;
-        if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : strncmp(k, "CONSTRAINT", 10) == 0 ? 3
-                     : strncmp(k, "ACTION_CONSTRAINT", 17) == 0 ? 4 : 2)) continue;
+        if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : strncmp(k, "PROPERT", 7) == 0 ? 3
+                     : strncmp(k, "CONSTRAINT", 10) == 0 ? 4 : strncmp(k, "ACTION_CONSTRAINT", 17) == 0 ? 5 : 2)) continue;
         if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
@@ -11281,13 +11298,6 @@ static int setup_model(void) {
         }
     }
     }
-    if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
-    if (spec) use_specification(spec);
-    if (init) {
-        init_expr = init;
-        name_init(init);
-    }
-    if (next) next_expr = next;
     return 0;
 }
 

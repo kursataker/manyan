@@ -1,0 +1,2 @@
+Error: TLC cannot handle the temporal formula line 9, col 34 to line 9, col 38 of module spec_always_state
+exit 255

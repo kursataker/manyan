@@ -595,11 +595,17 @@ as TLC's `ConfigFileException` at the line it is found: a word that is not
 a keyword where one is expected, a keyword repeated or followed by nothing, an assignment without
 `=` or `<-`, a set without its `}`.
 
+The statements are taken, as TLC takes them, in this order whatever their
+order in the file: the constants, the invariants, the specification (or
+`INIT` and `NEXT`), the properties, the constraints, the action
+constraints; so an error in one is reported before what a later one
+would print.
+
 | Statement | Meaning |
 |---|---|
 | `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated; lines `F(a, b) = v` give the operator `F` the value `v` at the arguments `a, b` (applied elsewhere, an error; lines of different arity, an error before the model is checked), as TLC's `OpRcdValue`, and a later `F = v` replaces them; a constant whose value is no operator, applied, is that value |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
-| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through instances, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error |
+| `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through instances, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error; a conjunct `[]S`, `S` an operator applied of constant or state level (not a number, string or `LET`), is an error naming `S` |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |
 | `PROPERTY`, `PROPERTIES` | temporal formulas the specification must imply |
 | `CONSTRAINT`, `CONSTRAINTS` | state predicates bounding the explored states |

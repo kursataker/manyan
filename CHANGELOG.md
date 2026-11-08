@@ -78,6 +78,9 @@ Edge cases found running TLC's own test models (`test-model`):
 - An alias's field `_format` is the Java format each other field is
   printed with; a conversion Java cannot apply to a string is its
   exception, ending the trace (PrintTraceException).
+- A conjunct `[]S` of the specification, `S` a state predicate, is the
+  temporal formula TLC cannot handle; the specification is taken before
+  the properties, as TLC takes it (Github525).
 
 ## 0.6.0
 
