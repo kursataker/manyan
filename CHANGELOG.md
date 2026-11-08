@@ -114,6 +114,8 @@ Performance:
 - A stored state takes a byte for a small number instead of four: about
   half the memory for states of records (PaxosCommit 2.1 GB to 1.1 GB),
   for 3% more time on counters.
+- Two sets of numbers or strings compare without the general checks
+  (partition with N = 10: 1.25 s to 1.15 s).
 
 ## 0.6.0
 

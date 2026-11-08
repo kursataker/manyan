@@ -995,6 +995,13 @@ static _Noreturn void incomparable(Value *a, Value *b) {
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
+    if (a->kind == V_SET && b->kind == V_SET) {   /* sets of atoms, as the set case below compares them */
+        if (a->n != b->n) return a->n < b->n ? -1 : 1;
+        int i = 0;
+        for (Value *x, *y; i < a->n && (x = a->u.set.elems[i])->kind == (y = b->u.set.elems[i])->kind && x->kind <= V_MODEL; i++)
+            if (x->u.i != y->u.i) return x->u.i < y->u.i ? -1 : 1;
+        if (i == a->n) return 0;
+    }
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     /* Comparing the parts of a value TLC made with a source names it in
        the fingerprint stack trace of an error there. */
