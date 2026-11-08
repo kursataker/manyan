@@ -24,7 +24,7 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::tag $GITHUB_REF_NAME, but tpp.h says $version"; exit 1
           fi
-          grep -qx "## $version" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          grep -q " $version:$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   macos:
@@ -163,5 +163,5 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           (cd dist && sha256sum -- * > SHA256SUMS)
-          awk -v h="## $VERSION" '$0 == h {on = 1; next} /^## / {on = 0} on' CHANGELOG.md > notes.md
+          awk -v v="$VERSION:" '/^[0-9-]+ [0-9.]+:$/ {on = $2 == v; next} on' CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "tpp $VERSION" --notes-file notes.md
