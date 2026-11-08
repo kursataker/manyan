@@ -4,7 +4,7 @@ A release is tagged `vX.Y.Z`, the version `TPP_VERSION` in `tpp.h` names.
 Pushing the tag builds, tests and publishes it, with this file's section
 for it as its notes.
 
-## Unreleased
+## 0.6.1
 
 Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
 

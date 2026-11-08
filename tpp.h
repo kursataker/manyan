@@ -2,7 +2,7 @@
 #ifndef TPP_H
 #define TPP_H
 
-#define TPP_VERSION "0.6.0"
+#define TPP_VERSION "0.6.1"
 
 /* Exit statuses, as TLC reports them (docs/standards/tla2.md, 11.3). */
 enum {
