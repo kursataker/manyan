@@ -4811,16 +4811,19 @@ static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to appl
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
 
+static const char stack_overflow[] =
+    "This was a Java StackOverflowError. It was probably the result\n"
+    "of an incorrect recursive function definition that caused TLC to enter\n"
+    "an infinite loop when trying to compute the function or its application\n"
+    "to an element in its putative domain.";
+
 /* A definition's body is entered: only calls nest without bound. Past
    the bound, TLC's Java stack has overflowed. */
 static void deeper(void) {
     if (++eval_depth <= 5000) return;
     eval_depth = 0;
     error_reset();
-    buf_puts(&error_message, "This was a Java StackOverflowError. It was probably the result\n"
-             "of an incorrect recursive function definition that caused TLC to enter\n"
-             "an infinite loop when trying to compute the function or its application\n"
-             "to an element in its putative domain.");
+    buf_puts(&error_message, stack_overflow);
     stackless = 2;
     raise_error();
 }
@@ -10539,7 +10542,10 @@ static Expr *conjoin(Expr **parts, int n) {
    module: through two instances, it finds the middle one's variables. */
 typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
 static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
-    if (depth > 100) return;
+    if (depth > 1000) {   /* a cycle through substitutions: TLC's stack overflows */
+        printf("Error: %s\n", stack_overflow);
+        exit(TPP_ERROR);
+    }
     switch (e->kind) {
     case K_DECL:
         if (e->def->var_index >= 0 && e->def->kind == D_VAR) in[e->def->var_index] = 1;
@@ -10614,9 +10620,9 @@ static void use_specification(Expr *spec) {
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
             spec_subscript = in_instance(call, sq->args[1]);
+            char *in = calloc((size_t)nvars + 1, 1);
+            subscript_vars(spec_subscript, NULL, NULL, NULL, 0, in, 0);
             if (!nowarning) {
-                char *in = calloc((size_t)nvars + 1, 1);
-                subscript_vars(spec_subscript, NULL, NULL, NULL, 0, in, 0);
                 for (int v = 0; v < nvars; v++)
                     if (!in[v]) {
                         char text[256];
@@ -10624,8 +10630,8 @@ static void use_specification(Expr *spec) {
                                  "does not seem to contain the state variable %s", S(vars[v]->name));
                         warning(text);
                     }
-                free(in);
             }
+            free(in);
         } else if (expr_level(e) == 2) {
             Buf b = {0};
             loc_text(&b, e);

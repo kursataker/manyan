@@ -81,6 +81,9 @@ Edge cases found running TLC's own test models (`test-model`):
 - A conjunct `[]S` of the specification, `S` a state predicate, is the
   temporal formula TLC cannot handle; the specification is taken before
   the properties, as TLC takes it (Github525).
+- A substitution that makes the subscript of `[][Next]_v` refer to itself
+  is TLC's stack overflow, as it collects the subscript's variables even
+  with `-nowarning` (CyclicRedefineVars).
 
 ## 0.6.0
 
