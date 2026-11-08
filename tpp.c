@@ -5560,7 +5560,8 @@ static void warn_except(Expr *e) {
 
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
-    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(where, "Attempted to apply EXCEPT to %s, which is not a function.", pretty(f));
+    if (!is_fcn(f) && f->kind != V_LAMBDA)
+        fail("Attempted to apply EXCEPT construct to the value %s.", pretty(f));
     if (f->kind == V_TUPLE && key->kind != V_INT) fail("Attempted to access tuple at a non integral index: %s", pretty(key));
     if (f->kind == V_FCN && f->made == MADE_RECORD && key->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(key));
     int k = f->kind == V_LAMBDA ? -1 : fcn_index(f, key);
@@ -5831,7 +5832,7 @@ static __attribute__((noinline)) Value *ev_union(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_domain(Expr *e, Ctx c) {
     Value *f = eval(e->args[0], c);
-    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s).", kind_string(f));
+    if (!is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "Attempted to apply the operator DOMAIN to a non-function\n(%s)", kind_string(f));
     return fcn_domain(f);
 }
 
@@ -6831,7 +6832,7 @@ NATIVE(n_permutations) {
 
 NATIVE(n_sortseq) {
     UNUSED;
-    Value *x = seq_of(seq_arg(a[0], NOT_SEQ("first argument", "SortSeq")));
+    Value *x = seq_of(seq_arg(a[0], "The first argument of SortSeq should be a natural number, but instead it is"));   /* sic, as TLC */
     Value *t = mk_tuple(x->n);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     for (int i = 1; i < t->n; i++) {

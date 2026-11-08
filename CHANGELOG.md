@@ -106,6 +106,8 @@ Edge cases found running TLC's own test models (`test-model`):
 - RealTime and Toolbox are built-in standard modules, as TLC ships them.
 - A postcondition reads `TLCGet("generated")`, the states the search
   generated.
+- TLC's messages for `EXCEPT` on a value that is no function (without a
+  location), `DOMAIN` of a non-function, and `SortSeq` of a non-sequence.
 - A function applied outside its domain fails with TLC's message to its
   final newline, which `AssertError` compares (Github696).
 - Enumerating `[D -> R]` names only a domain such as `Nat` or `Seq(S)`;
