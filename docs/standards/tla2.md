@@ -566,16 +566,20 @@ a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
 `TLCGet("-Dk")` is Java's system property `k`, the string `"-Dk"` when
 unset, and `TLCSet("-Dk", v)` sets it to `v` as printed;
 `TLCGet("level")` is the depth of the state a predicate is evaluated on
-(of the step's first state in an action, 0 in Init and the assumptions);
+(of the step's first state in an action, its second's primed, 0 in Init
+and the assumptions);
 `TLCGet("config")` is the record `[mode |-> "bfs", deadlock |-> b, worker
 |-> n, seed |-> s]` of a search, without TLC's fields naming its jar and its
 fingerprint polynomial; of a simulation, with `mode |-> "simulate"`, it
 also has `traces` (-1 without `num=`), `depth`, `aril |-> "0"` and `sched
 |-> "random"`, and its assumptions find the search's counters undefined. TLC implements `TLCGet` by an evaluation method, so
-its errors carry that method's preamble (§11.3). `TLCGet` fails while the
-model is read, before the assumptions are checked, as TLC's does before
-its checker exists: a definition that uses it is not evaluated once as a
-constant, but each time it is used.
+its errors carry that method's preamble (§11.3). That method's level is
+1: a definition that uses `TLCGet` is not evaluated once as a constant,
+but each time it is used, and a substitution `C <- d` of one is
+evaluated as the model is read, an error there being that of a
+non-constant substitution (§9). Before TLC's checker exists, which is
+before the assumptions are checked, `TLCGet("level")` is 0 and the
+search's counters, `"config"` and the registers are undefined.
 
 ## 9 Model configuration
 
