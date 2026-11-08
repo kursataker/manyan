@@ -6019,8 +6019,9 @@ static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
 }
 
 /* The function f[a] applies, evaluated lazily if lazy, and its argument
-   *key; NULL for a function definition, applied without its value. */
-static Value *apply_parts(Expr *e, Ctx c, int lazy, Value **key) {
+   *key; NULL for a function definition, applied without its value. in
+   names what TLC is computing, for its message, NULL in an expression. */
+static Value *apply_parts(Expr *e, Ctx c, int lazy, const char *in, Value **key) {
     Expr *fe = e->args[0];
     Value *f = NULL;
     if (!(lazy && fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
@@ -6034,12 +6035,15 @@ static Value *apply_parts(Expr *e, Ctx c, int lazy, Value **key) {
         *key = mk_tuple(e->n - 1);
         for (int i = 1; i < e->n; i++) (*key)->u.fcn.vals[i - 1] = eval(e->args[i], c);
     }
-    if (f && !is_fcn(f) && f->kind != V_LAMBDA) fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
+    if (f && !is_fcn(f) && f->kind != V_LAMBDA) {
+        if (in) fail_at(e, "In computing %s, a non-function (%s) was applied as a function.", in, kind_string(f));
+        fail_at(e, "A non-function (%s) was applied as a function.", kind_string(f));
+    }
     return f;
 }
 
 static __attribute__((noinline)) Value *ev_apply(Expr *e, Ctx c) {
-    Value *key, *f = apply_parts(e, c, 1, &key);   /* a function to apply stays lazy (§6.6) */
+    Value *key, *f = apply_parts(e, c, 1, NULL, &key);   /* a function to apply stays lazy (§6.6) */
     return f ? fcn_apply(f, key, e) : fcndef_apply(e->args[0]->def, key, c);
 }
 
@@ -7484,15 +7488,16 @@ static inline int gen(Expr *e, Ctx c, Cont *k);
 static int gen_unchanged(Expr *e, Ctx c, Cont *k);
 
 static _Noreturn void not_boolean(Expr *e, Value *v);
+static int enabled_emit(void);
 
 static int gen_cont(Cont *k) {
     if (!k) return gen_emit();
     int assigned = 1;
     for (int i = 0; i < nvars && assigned; i++) assigned = gen_target[i] != NULL;
-    if (!assigned) return k->unchanged ? gen_unchanged(k->e, k->c, k->next) : gen(k->e, k->c, k->next);
+    if (!assigned || gen_emit == enabled_emit) return k->unchanged ? gen_unchanged(k->e, k->c, k->next) : gen(k->e, k->c, k->next);
     /* Once every variable has a value, TLC evaluates the remaining
-       conjuncts as formulas: a disjunction stops at its first true
-       disjunct. */
+       conjuncts as formulas, but not in ENABLED: a disjunction stops at
+       its first true disjunct. */
     for (; k; k = k->next) {
         Value *v = k->unchanged ? BOOLV(kept(k->e, k->c)) : eval(k->e, k->c);
         if (v->kind != V_BOOL) not_boolean(k->e, v);
@@ -7833,9 +7838,20 @@ static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
     return unchanged_now(e, c) ? gen_cont(k) : 0;
 }
 
+/* What TLC is computing, as its messages name it. */
+static const char *gen_what(void) {
+    return gen_init ? "initial states" : gen_emit == enabled_emit ? "ENABLED" : "next states";
+}
+
 static _Noreturn void not_boolean(Expr *e, Value *v) {
-    (void)v;
-    fail_at(e, "TLC expected a boolean value, but did not find one.");
+    fail_at(e, "In computing %s, TLC expected a boolean expression,\nbut instead found %s.", gen_what(), pretty(v));
+}
+
+/* A number or string where TLC expects an action. */
+static _Noreturn void not_relation(Expr *e) {
+    fail_at(e, gen_init ? "The init state relation is not a boolean expression."
+               : gen_emit == enabled_emit ? "Attempted to compute ENABLED on a non-boolean expression."
+               : "The next state relation is not a boolean expression.");
 }
 
 /* The context of the body of an instance call's definition: the chain
@@ -7865,6 +7881,8 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     switch (e->kind) {
     case X_BOOL:
         return e->num ? gen_cont(k) : 0;
+    case X_NUM: case X_STR:
+        not_relation(e);
     case K_AND:
         for (int i = e->n - 1; i >= 1; i--) k = mk_cont(e->args[i], c, k);
         return gen(e->args[0], c, k);
@@ -7886,7 +7904,13 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     }
     case X_IF: {
         Value *v = eval(e->args[0], c);
-        if (v->kind != V_BOOL) not_boolean(e->args[0], v);
+        if (v->kind != V_BOOL) {
+            Buf b = {0};
+            loc_text(&b, e);
+            if (gen_emit == enabled_emit)
+                fail("In computing ENABLED, a non-boolean expression(%s) was used as the guard condition of an IF.\n%s", article_kind(v), b.s);
+            fail("In computing %s, a non-boolean expression (%s) was used as the condition of an IF.%s%s", gen_what(), article_kind(v), gen_init ? "\n" : "", b.s);
+        }
         return gen(e->args[v->u.i ? 1 : 2], c, k);
     }
     case K_IMPLIES: {
@@ -7900,9 +7924,14 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         return v->u.i ? gen(e->args[1], c, k) : gen_cont(k);
     }
     case X_CASE:
-        for (int i = 0; i + 1 < e->n; i += 2)
-            if (!e->args[i] || eval_bool(e->args[i], c)) return gen(e->args[i + 1], c, k);
-        fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
+        for (int i = 0; i + 1 < e->n; i += 2) {
+            Value *v = e->args[i] ? eval(e->args[i], c) : TRUEV;
+            if (v->kind != V_BOOL)
+                fail_at(e->args[i + 1], "In computing %s, a non-boolean expression%s(%s) was used as a guard condition of a CASE.",
+                        gen_what(), gen_emit == enabled_emit ? "" : " ", article_kind(v));
+            if (v->u.i) return gen(e->args[i + 1], c, k);
+        }
+        fail_at(e, "In computing %s, TLC encountered a CASE with no conditions true.", gen_what());
     case X_LET: {
         Env *env = c.env;
         for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
@@ -7912,6 +7941,7 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->nparams != e->n) break;
+        if (def_level(d) == 0 && e->n == 0) break;   /* TLC computes it as a constant */
         if (d->local == 2) {
             Env *b = env_find(c.env, d);
             if (!b) break;
@@ -7922,7 +7952,6 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
             }
             return gen(d->body, (Ctx){env, b->ctx_inst}, k);
         }
-        if (def_level(d) == 0 && e->n == 0) break;
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
@@ -7969,9 +7998,9 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         int var = assignable(e->args[0], c);
         if (var >= 0 && !gen_target[var]) {
             Value *s = eval(e->args[1], c);
-            if (!is_set(s)) fail_at(e, "Attempted to check if a value is an element of the non-set:\n%s", pretty(s));
             /* TLC enumerates any set it can, failing there for an infinite one. */
-            if (user_set(s)) fail_at(e, "In computing %s states, the right side of \\IN is not enumerable.", gen_init ? "initial" : "next");
+            if (!is_set(s) || user_set(s))
+                fail_at(e, gen_emit == enabled_emit ? "The right side of \\IN is not enumerable." : "In computing %s, the right side of \\IN is not enumerable.", gen_what());
             if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
                 Value *base = filter_base(s);
                 for (int i = 0; i < base->n; i++)
@@ -7987,13 +8016,13 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     case X_APPLY: {
         /* As TLC: a lazy function applied is its body, part of the
            action; TLC computes initial states without keeping it lazy. */
-        Value *key, *f = apply_parts(e, c, !gen_init, &key);
+        Value *key, *f = apply_parts(e, c, !gen_init, gen_what(), &key);
         Ctx at = c;
         Expr *body = !f ? fcndef_bind(e->args[0]->def, key, &at, e->args[0])
                    : f->kind == V_LAMBDA && !f->n ? lambda_bind(f, key, &at, e->args[0]) : NULL;
         if (!body) {
             Value *v = fcn_apply(f, key, e);
-            if (v->kind != V_BOOL) not_boolean(e, v);
+            if (v->kind != V_BOOL) fail_at(e, "In computing %s, TLC expected a boolean expression,\nbut didn't find one.", gen_what());
             return v->u.i ? gen_cont(k) : 0;
         }
         Value *saved = at_value;
@@ -8182,6 +8211,8 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
         split_action(e->def->body, instance_ctx(e, c), qualified, NULL);
         return;
     }
+    case X_NUM: case X_STR:
+        not_relation(e);
     default:
         break;
     }
@@ -13065,10 +13096,11 @@ int tpp_check(const TPPOptions *o) {
     arena = &perm_arena;
     sigjmp_buf here;
     handler = &here;
-    if (sigsetjmp(here, 0)) {
+    if (sigsetjmp(here, 0)) {   /* TLC splits the actions as it starts */
         handler = NULL;
-        print_error_message();
-        return TPP_FAILURE_EVAL;
+        print_exception("java.lang.RuntimeException", ": ");
+        print_error_text();
+        return TPP_ERROR;
     }
     if (next_expr) {
         int named = (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;

@@ -1,0 +1,6 @@
+Error: The init state relation is not a boolean expression.
+3
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
+exit 75

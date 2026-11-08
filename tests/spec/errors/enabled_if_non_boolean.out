@@ -1,0 +1,14 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: In computing ENABLED, a non-boolean expression(an integer) was used as the guard condition of an IF.
+line 5, col 18 to line 5, col 43 of module enabled_if_non_boolean
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+1 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 75

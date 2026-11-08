@@ -117,6 +117,12 @@ Edge cases found running TLC's own test models (`test-model`):
 - Enumerating `[D -> R]` names only a domain such as `Nat` or `Seq(S)`;
   another, such as `Nat \ {0}`, fails as TLC enumerates it (Toolbox's
   `_TEPosition`).
+- The initial predicate, the next-state action and `ENABLED` fail with
+  TLC's message for each: an `IF` or `CASE` guard that is no boolean, a
+  `CASE` with no true guard, `x' \in` a non-set, a non-function applied,
+  a conjunct that is no boolean, and a number or string where an action
+  is expected, which in a disjunct of Next fails before the initial
+  states. `ENABLED` evaluates no conjunct as a whole formula, as TLC.
 
 Performance:
 

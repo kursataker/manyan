@@ -1,0 +1,7 @@
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: The next state relation is not a boolean expression.
+3
+exit 255
