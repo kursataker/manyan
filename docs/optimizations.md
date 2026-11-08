@@ -52,6 +52,7 @@ In the order they were made.
 | A native operator reached through an instance takes its arguments as values, without thunks, as `ev_call` does; a root module's call through instances without parameters keeps its `Inst` chain on the expression | Examples' Huang (1 worker) 66 → 46 → 43 |
 | `r.f` keeps on the expression where the field was in the last record, and checks there first | Examples' MCPaxosSmall (1 worker) 20.3 → 18.6, 12% fewer instructions |
 | Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do | Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB |
+| A declaration keeps the index of its substitution by the module last instantiated, not searching the instance's substitutions at each read | instructions: Examples' AllocatorImplementation −3.6%, MCPaxosSmall −1.8% |
 
 ## Tried and dropped
 

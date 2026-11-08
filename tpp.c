@@ -2001,6 +2001,8 @@ struct Def {
     Def **subst_decl;
     Expr **subst_expr;
     char *subst_kept;     /* each substitution: 1 if its value is kept for a state (Inst), 2 if not; 0 unknown */
+    Module *subst_in;     /* a declaration's: the module subst_at was found for (subst_index) */
+    int subst_at;
     Expr *where;          /* the definition's location */
     int part;             /* a copy whose body is part of the original's, as an instance sees it (in_instance) */
 };
@@ -5258,12 +5260,26 @@ static int enabled(Expr *a, Ctx c);
 
 /* The value of a constant or variable, through the substitutions of the
    instances the context is in (§4.3). */
+/* The substitution of instance id for declaration d, -1 if none. An
+   instance substitutes each declaration of its module, so the index is
+   kept by module. */
+static int subst_index(Def *id, Def *d) {
+    if (!id->target) return -1;
+    if (d->subst_in != id->target) {
+        d->subst_in = id->target;
+        d->subst_at = -1;
+        for (int i = 0; i < id->nsubst; i++) if (id->subst_decl[i] == d) d->subst_at = i;
+    }
+    return d->subst_at;
+}
+
 /* The expression an instance substitutes for d, if any; c becomes the
    context it is in. */
 static Expr *substitute(Def *d, Ctx *c) {
-    for (Inst *in = c->inst; in; in = in->parent)
-        for (int i = 0; i < in->def->nsubst; i++)
-            if (in->def->subst_decl[i] == d) { *c = (Ctx){in->env, in->parent}; return in->def->subst_expr[i]; }
+    for (Inst *in = c->inst; in; in = in->parent) {
+        int i = subst_index(in->def, d);
+        if (i >= 0) { *c = (Ctx){in->env, in->parent}; return in->def->subst_expr[i]; }
+    }
     return NULL;
 }
 
@@ -5298,14 +5314,15 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
             fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return next_state[slot];
     }
-    for (Inst *in = c.inst; in; in = in->parent)
-        for (int i = 0; i < in->def->nsubst; i++) {
-            if (in->def->subst_decl[i] != d) continue;
+    for (Inst *in = c.inst; in; in = in->parent) {
+        int i = subst_index(in->def, d);
+        if (i >= 0) {
             Expr *x = in->def->subst_expr[i];
             Ctx outer = {in->env, in->parent};
             if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
             return d->arity ? eval_operator_arg(x, outer) : substitution_value(in, i);
         }
+    }
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
         state_reads++;
@@ -5329,14 +5346,13 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
    it is in; or NULL. */
 static Def *const_operator(Def *d, Ctx c, Ctx *at) {
     for (Inst *in = c.inst; in; in = in->parent) {
-        Def *id = in->def;
-        for (int i = 0; i < id->nsubst; i++)
-            if (id->subst_decl[i] == d) {
-                Expr *x = id->subst_expr[i];
-                *at = (Ctx){in->env, in->parent};
-                if (x->kind != X_OPREF) return NULL;
-                return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
-            }
+        int i = subst_index(in->def, d);
+        if (i >= 0) {
+            Expr *x = in->def->subst_expr[i];
+            *at = (Ctx){in->env, in->parent};
+            if (x->kind != X_OPREF) return NULL;
+            return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
+        }
     }
     return d->replacement;
 }
@@ -7529,7 +7545,7 @@ static int enabled_slot(Def *d) {
 static int enabled_by_name(Def *d, Ctx c) {
     for (Inst *in = c.inst; in; in = in->parent) {
         if (in->def == &enabled_mark) return 1;
-        for (int i = 0; i < in->def->nsubst; i++) if (in->def->subst_decl[i] == d) return 0;
+        if (subst_index(in->def, d) >= 0) return 0;
     }
     return 0;
 }
@@ -7739,8 +7755,8 @@ static int assignable(Expr *lhs, Ctx c) {
             Ctx outer = c;
             for (Inst *in = c.inst; in && !sub; in = in->parent) {
                 if (in->def == &enabled_mark) return d->kind == D_VAR ? enabled_slot(d) : -1;
-                for (int i = 0; i < in->def->nsubst; i++)
-                    if (in->def->subst_decl[i] == d) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; break; }
+                int i = subst_index(in->def, d);
+                if (i >= 0) { sub = in->def->subst_expr[i]; outer = (Ctx){in->env, in->parent}; }
             }
             if (!sub) return d->kind == D_VAR ? d->var_index : -1;
             lhs = sub;
