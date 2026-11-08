@@ -190,7 +190,7 @@ Not supported: the proof language (parsed and skipped); TLC's
 `-terse`, `-maxSetSize` (tpp does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
 `-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
-`_POSSIBLE`, checkpoints (`-checkpoint`, `-recover`) and
+`_POSSIBLE`, TLC's standard modules `TLCExt` and `Json`, checkpoints (`-checkpoint`, `-recover`) and
 distributed checking. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
