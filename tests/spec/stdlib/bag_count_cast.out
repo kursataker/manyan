@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 41 of module bag_count_cast failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.Bags.BagDiff(tlc2.value.impl.Value,tlc2.value.impl.Value),
+but it produced the following error:
+class tlc2.value.impl.StringValue cannot be cast to class tlc2.value.impl.IntValue (tlc2.value.impl.StringValue and tlc2.value.impl.IntValue are in unnamed module of loader 'app')
+exit 10

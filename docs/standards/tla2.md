@@ -521,8 +521,11 @@ evaluated natively.
   `SelectSeq`.
 - **FiniteSets**: `IsFiniteSet`, `Cardinality`.
 - **Bags**: `IsABag`, `BagToSet`, `SetToBag`, `BagIn`, `EmptyBag`, `(+)`,
-  `(-)`, `BagUnion`, `\sqsubseteq`, `SubBag`, `BagOfAll`, `BagCardinality`,
-  `CopiesIn`.
+  `(-)`, `BagUnion`, `\sqsubseteq`, `BagOfAll`, `BagCardinality`,
+  `CopiesIn`, as TLC's Java class: `IsABag` is `FALSE` for any value
+  that is no bag, `CopiesIn` yields the count however small,
+  `BagUnion({B})` is `B`, and a count is cast to an integer, which fails
+  on another value. `SubBag` is its definition.
 - **Reals**: TLC's module of placeholders: `Real` is the string
   `"Reals"`, `a / b` is `CHOOSE m \in Real : m * b = a` (an error), and
   `Infinity` an unbounded `CHOOSE`; their definitions are on TLC's lines.

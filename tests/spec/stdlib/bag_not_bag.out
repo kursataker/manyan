@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 41 of module bag_not_bag failed.
+The second argument of (+) should be a bag, but instead it is:
+<<"a">>
+exit 10

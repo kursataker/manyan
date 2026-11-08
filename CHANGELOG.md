@@ -44,6 +44,9 @@ Edge cases found running TLC's own test models (`test-model`):
   state already expanded, the search stops there with a finite behavior,
   that moment's counts and exit status 12, instead of a lasso at the end
   (Github1161Violated).
+- Bags' operators but `SubBag` are TLC's Java methods, with their
+  results and errors: `IsABag(<<"a">>)` is `FALSE` instead of failing to
+  compare `"a"` with `Nat`, and `CopiesIn(2, 2 :> -1)` is `-1` (BagsTest).
 
 ## 0.6.0
 

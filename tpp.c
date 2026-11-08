@@ -6606,6 +6606,180 @@ NATIVE(n_sortseq) {
     return t;
 }
 
+/* Bags, as TLC's Bags class: a bag is a function its toFcnRcd takes,
+   NULL for another value, whose values it casts to integers. */
+static Value *bag_fcn(Value *b) {
+    b = realize(b);
+    return is_fcn(b) ? b : NULL;
+}
+
+static int64_t bag_count(Value *v) {
+    if (v->kind != V_INT)
+        fail("class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.IntValue (tlc2.value.impl.%s and "
+             "tlc2.value.impl.IntValue are in unnamed module of loader 'app')", java_class(v), java_class(v));
+    return v->u.i;
+}
+
+static int is_bag(Value *f) {
+    for (int i = 0; i < f->n; i++) if (f->u.fcn.vals[i]->kind != V_INT || f->u.fcn.vals[i]->u.i <= 0) return 0;
+    return 1;
+}
+
+/* The elements of a set its toSetEnum takes, NULL for another value. */
+static Value *bag_set(Value *s) { return is_set(s) && !set_is_infinite(s) ? enumerate(s) : NULL; }
+
+static _Noreturn void bag_wrong(const char *op, const char *what, Value *v) {
+    fail_module("Applying %s to the following value,\nwhich is not %s:\n%s", op, what, pretty(v));
+}
+
+/* Adds count n of e to the bag in keys and vals, as TLC merges bags. */
+static void bag_add(List *keys, List *vals, Value *e, Value *n) {
+    for (int j = 0; j < keys->n; j++)
+        if (veq(e, keys->v[j])) {
+            int64_t x = bag_count(vals->v[j]), y = bag_count(n);
+            vals->v[j] = mk_int(check_int(x + y, x, y, "+"));
+            return;
+        }
+    list_add(keys, e);
+    list_add(vals, n);
+}
+
+/* The count of e in bag f, NULL if e is not in its domain. */
+static Value *bag_copies(Value *e, Value *f, const char *op) {
+    for (int i = 0; i < f->n; i++)
+        if (veq(e, fcn_key(f, i))) {
+            Value *n = f->u.fcn.vals[i];
+            if (n->kind != V_INT) fail_module("The second argument of %s should be a bag, but instead it is:\n%s", op, pretty(f));
+            return n;
+        }
+    return NULL;
+}
+
+NATIVE(n_emptybag) { UNUSED; return mk_fcn(0); }
+
+NATIVE(n_isabag) {
+    UNUSED;
+    Value *f = bag_fcn(a[0]);
+    return BOOLV(f && is_bag(f));
+}
+
+NATIVE(n_bagcardinality) {
+    UNUSED;
+    Value *f = bag_fcn(a[0]);
+    if (!f) bag_wrong("BagCardinality", "a function with a finite domain", a[0]);
+    int64_t n = 0;
+    for (int i = 0; i < f->n; i++) {
+        Value *k = f->u.fcn.vals[i];
+        if (k->kind != V_INT || k->u.i <= 0) bag_wrong("BagCardinality", "a bag", a[0]);
+        n = check_int(n + k->u.i, n, k->u.i, "+");
+    }
+    return mk_int(n);
+}
+
+NATIVE(n_bagin) {
+    UNUSED;
+    Value *f = bag_fcn(a[1]);
+    if (!f) fail("Cannot read field \"values\" because \"fcn\" is null");
+    Value *n = bag_copies(a[0], f, "BagIn");
+    return BOOLV(n && n->u.i > 0);
+}
+
+NATIVE(n_copiesin) {
+    UNUSED;
+    Value *f = bag_fcn(a[1]);
+    if (!f) fail("Cannot read field \"values\" because \"fcn\" is null");
+    Value *n = bag_copies(a[0], f, "CopiesIn");
+    return n ? n : mk_int(0);
+}
+
+NATIVE(n_bagcup) {
+    UNUSED;
+    List keys = {0}, vals = {0};
+    for (int k = 0; k < 2; k++) {
+        Value *f = bag_fcn(a[k]);
+        if (!f) fail("Cannot invoke \"tlc2.value.impl.Value.toFcnRcd()\" because \"b\" is null");
+        if (!is_bag(f)) fail_module("The %s argument of (+) should be a bag, but instead it is:\n%s", k ? "second" : "first", pretty(a[k]));
+    }
+    for (int k = 0; k < 2; k++) {
+        Value *f = bag_fcn(a[k]);
+        for (int i = 0; i < f->n; i++) bag_add(&keys, &vals, fcn_key(f, i), f->u.fcn.vals[i]);
+    }
+    return mk_fcn_from(&keys, &vals);
+}
+
+NATIVE(n_bagdiff) {
+    UNUSED;
+    Value *f[2];
+    for (int k = 0; k < 2; k++)
+        if (!(f[k] = bag_fcn(a[k])))
+            fail_module("The %s argument of (-) should be a bag, but instead it is:\n%s", k ? "second" : "first", pretty(a[k]));
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < f[0]->n; i++) {
+        int64_t n = bag_count(f[0]->u.fcn.vals[i]);
+        for (int j = 0; j < f[1]->n; j++)
+            if (veq(fcn_key(f[0], i), fcn_key(f[1], j))) { n -= bag_count(f[1]->u.fcn.vals[j]); break; }
+        if (n > 0) { list_add(&keys, fcn_key(f[0], i)); list_add(&vals, mk_int(n)); }
+    }
+    return mk_fcn_from(&keys, &vals);
+}
+
+NATIVE(n_bagunion) {
+    UNUSED;
+    Value *s = bag_set(a[0]);
+    if (!s) bag_wrong("BagUnion", "a finite enumerable set", a[0]);
+    if (s->n == 0) return mk_fcn(0);
+    if (s->n == 1) return s->u.set.elems[0];
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < s->n; i++) {
+        Value *f = bag_fcn(s->u.set.elems[i]);
+        if (!f) fail_module("Attempted to apply BagUnion to the following set, whose\nelement is not a bag:\n%s", pretty(a[0]));
+        for (int j = 0; j < f->n; j++) bag_add(&keys, &vals, fcn_key(f, j), f->u.fcn.vals[j]);
+    }
+    return mk_fcn_from(&keys, &vals);
+}
+
+NATIVE(n_sqsubseteq) {
+    UNUSED;
+    Value *f[2];
+    for (int k = 0; k < 2; k++)
+        if (!(f[k] = bag_fcn(a[k]))) bag_wrong("\\sqsubseteq", "a function with a finite domain", a[k]);
+    for (int i = 0; i < f[0]->n; i++) {
+        int64_t n = bag_count(f[0]->u.fcn.vals[i]);
+        for (int j = 0; j < f[1]->n; j++)
+            if (veq(fcn_key(f[0], i), fcn_key(f[1], j))) { n -= bag_count(f[1]->u.fcn.vals[j]); break; }
+        if (n > 0) return FALSEV;
+    }
+    return TRUEV;
+}
+
+NATIVE(n_bagofall) {
+    UNUSED;
+    Value *f = bag_fcn(a[1]);
+    if (!f) fail_module("The second argument of BagOfAll should be a function with a finite domain, but instead it is:\n%s", pretty(a[1]));
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < f->n; i++) {
+        Value *d = fcn_key(f, i);
+        bag_add(&keys, &vals, apply_oper(a[0], &d, 1, call), f->u.fcn.vals[i]);
+    }
+    return mk_fcn_from(&keys, &vals);
+}
+
+NATIVE(n_bagtoset) {
+    UNUSED;
+    Value *f = bag_fcn(a[0]);
+    if (!f) bag_wrong("BagToSet", "a function with a finite domain", a[0]);
+    return fcn_domain(f);
+}
+
+NATIVE(n_settobag) {
+    UNUSED;
+    Value *s = bag_set(a[0]);
+    if (!s) bag_wrong("BagToSet", "a function with a finite domain", a[0]);   /* sic */
+    Value *f = mk_fcn(s->n);
+    for (int i = 0; i < s->n; i++) { f->u.fcn.keys[i] = s->u.set.elems[i]; f->u.fcn.vals[i] = mk_int(1); }
+    return f;
+}
+
 /* java.util.Random, the generator TLC draws from. */
 typedef struct { uint64_t s; } JRandom;
 #define JRANDOM(seed) {((uint64_t)(seed) ^ 0x5DEECE66DULL) & ((1ULL << 48) - 1)}
@@ -6865,6 +7039,18 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"Sequences", "SelectSeq", n_selectseq, J_V, "SelectSeq(" J_V "," J_V ")"},
     {"FiniteSets", "IsFiniteSet", n_isfinite, J_B, "IsFiniteSet(" J_V ")"},
     {"FiniteSets", "Cardinality", n_cardinality, J_I, "Cardinality(" J_V ")"},
+    {"Bags", "EmptyBag", n_emptybag, J_V, "EmptyBag()"},
+    {"Bags", "IsABag", n_isabag, J_B, "IsABag(" J_V ")"},
+    {"Bags", "BagCardinality", n_bagcardinality, J_I, "BagCardinality(" J_V ")"},
+    {"Bags", "BagIn", n_bagin, J_B, "BagIn(" J_V "," J_V ")"},
+    {"Bags", "CopiesIn", n_copiesin, J_I, "CopiesIn(" J_V "," J_V ")"},
+    {"Bags", "\\oplus", n_bagcup, J_V, "BagCup(" J_V "," J_V ")"},
+    {"Bags", "\\ominus", n_bagdiff, J_V, "BagDiff(" J_V "," J_V ")"},
+    {"Bags", "BagUnion", n_bagunion, J_V, "BagUnion(" J_V ")"},
+    {"Bags", "\\sqsubseteq", n_sqsubseteq, J_B, "SqSubseteq(" J_V "," J_V ")"},
+    {"Bags", "BagOfAll", n_bagofall, J_V, "BagOfAll(" J_V "," J_V ")"},
+    {"Bags", "BagToSet", n_bagtoset, J_V, "BagToSet(" J_V ")"},
+    {"Bags", "SetToBag", n_settobag, J_V, "SetToBag(" J_V ")"},
     {"TLC", "Print", n_print, J_V, "Print(" J_V "," J_V ")"},
     {"TLC", "PrintT", n_printt, J_V, "PrintT(" J_V ")"},
     {"TLC", "Assert", n_assert, J_V, "Assert(" J_V "," J_V ")"},
