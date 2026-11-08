@@ -15,20 +15,23 @@ built for macOS, Linux and Windows. To build it instead:
 
 ```sh
 make                          # builds ./tpp; needs a C11 compiler
-./tpp examples/DieHard        # checks examples/DieHard.tla with examples/DieHard.cfg
-./tpp -workers auto examples/DieHard   # one worker per core
-make install PREFIX=~/.local  # installs ~/.local/bin/tpp
+make install                  # install to your $PATH (/usr/local/bin)
 ```
 
-With python3, `make` builds `tpp` profile-guided, trained on the
-conformance suite, which makes it 10 to 25% faster.
+To install into your current user workspace, run
+
+```sh
+make install PREFIX=~/.local  # installs ~/.local/bin/tpp
+```
 
 See [the manual](docs/manual.md) for the options, the configuration file,
 exit statuses and the C API.
 
 ## Example Usage
 
-```
+Try it out:
+
+```sh
 $ ./tpp examples/DieHard
 tpp version 0.6.1
 Finished computing initial states: 1 distinct state generated.
@@ -42,6 +45,12 @@ State 2: <Next line 9, col 12 to line 9, col 37 of module DieHard>
 /\ big = 5
 /\ small = 0
 ...
+```
+
+To enable multi-worker mode:
+
+```
+tpp -workers auto examples/DieHard   # one worker per core
 ```
 
 ## Why
