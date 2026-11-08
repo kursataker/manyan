@@ -12410,6 +12410,7 @@ static int live_error(void) {
 }
 
 static void collect_fairnesses(void) {
+    nfairs = 0;
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
 }
 
@@ -12492,27 +12493,59 @@ static int tf_wrong_form(TF *f) {
     return tf_has(f, 0);
 }
 
+/* The number of disjuncts of f in TLC's disjunctive normal form, which
+   does not reach under temporal operators. */
+static double tf_dnf_size(TF *f) {
+    if (f->op == TF_OR) return tf_dnf_size(f->a) + tf_dnf_size(f->b);
+    if (f->op == TF_AND) return tf_dnf_size(f->a) * tf_dnf_size(f->b);
+    return 1;
+}
+
+/* TLC's normal form of the fairness, each SF two disjuncts (a WF is one,
+   []<>(~ENABLED <<A>>_v \/ <<A>>_v)), and the
+   negated properties' disjunction: its size is a Java int. An error in
+   the fairness is left for the check. */
+static int dnf_too_large(TF **negated) {
+    double size = 0;
+    for (int p = 0; p < ntemporal_props; p++) size += tf_dnf_size(negated[p]);
+    EvalState s = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) collect_fairnesses();
+    eval_restore(s);
+    for (int i = 0; i < nfairs; i++) size *= 1 + fairs[i].strong;
+    nfairs = 0;
+    return size > INT32_MAX;
+}
+
 static int check_temporal_forms(int simulating) {
     int temporal = 0, unsatisfiable = 0;
+    TF **negated = NEWN(TF *, ntemporal_props + 1);
     for (int p = 0; p < ntemporal_props; p++) {
-        TF *negated = negation(&temporal_props[p]);
+        negated[p] = negation(&temporal_props[p]);
         if (tf_unhandled) {
             Buf b = {0};
             loc_text(&b, tf_unhandled);
             printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
             return TPP_ERROR;
         }
-        if (!negated) {   /* a constant in it fails, which TLC evaluates building its tableau */
+        if (!negated[p]) {   /* a constant in it fails, which TLC evaluates building its tableau */
             report_exception(0);
             return TPP_ERROR;
         }
-        if (tf_wrong_form(negated)) {
+    }
+    if (ntemporal_props && dnf_too_large(negated)) {
+        printf("Error: TLC cannot handle the temporal formula because it exceeds the maximum supported size in disjunctive normal form.\n");
+        return TPP_ERROR;
+    }
+    for (int p = 0; p < ntemporal_props; p++) {
+        if (tf_wrong_form(negated[p])) {
             printf("Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.\n");
             return TPP_ERROR;
         }
         if (level_in(temporal_props[p].expr, temporal_props[p].ctx) == 3) {   /* a predicate on the initial states is no tautology */
             temporal++;
-            unsatisfiable += tf_false(negated);
+            unsatisfiable += tf_false(negated[p]);
         }
     }
     if (temporal && unsatisfiable == temporal && !simulating) {

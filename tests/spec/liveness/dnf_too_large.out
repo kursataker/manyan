@@ -1,0 +1,2 @@
+Error: TLC cannot handle the temporal formula because it exceeds the maximum supported size in disjunctive normal form.
+exit 255

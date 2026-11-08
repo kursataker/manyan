@@ -996,6 +996,7 @@ loops back to state `i`, or `State n: Stuttering` when it stutters forever.
 | other error evaluating an action | the evaluation message (below), with the trace to the state | 255 |
 | no next-state action, and no invariant or property | `Finished computing initial states: ...`, then `Error: No next state actions defined to generate successor states from.` | 75 |
 | a property part that is an action not under `[]` | `Error: The formula P at L is an action-level formula (i.e., it contains no temporal operators). ...`, the part named as properties are (§10.5), advising `[]` for `[A]_v`, `[]<>` for `<<A>>_v`, `[][A]_v` otherwise | 151 |
+| the fairness and the negated properties' disjunction with more than 2^31 - 1 disjuncts in TLC's disjunctive normal form, which does not reach under temporal operators, an `SF` two and a `WF` one | `Error: TLC cannot handle the temporal formula because it exceeds the maximum supported size in disjunctive normal form.`, before checking | 255 |
 | every temporal property's negation FALSE by its constants alone (`<>P \/ (1 = 1)`), `FALSE` folded through `/\`, `\/` and `<>` but not `[]`, in model checking | `Error: Temporal formula is a tautology (its negation is unsatisfiable).`, before checking | 77 |
 | constant not assigned | `Error: The constant parameter K is not assigned a value by the configuration file.` | 151 |
 | an invariant with primes or temporal operators, checked before the configuration's other names | `Error: The invariant Inv is not a state predicate (one with no primes or temporal operators).` | 76 |

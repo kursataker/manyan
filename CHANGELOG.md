@@ -84,6 +84,8 @@ Edge cases found running TLC's own test models (`test-model`):
 - A substitution that makes the subscript of `[][Next]_v` refer to itself
   is TLC's stack overflow, as it collects the subscript's variables even
   with `-nowarning` (CyclicRedefineVars).
+- Fairness and properties whose disjunctive normal form TLC cannot count
+  in an int, such as 36 `SF`s, are its error before the check (Github742).
 
 ## 0.6.0
 
