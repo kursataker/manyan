@@ -6715,6 +6715,7 @@ static Buf *registers;
 static int nregisters;
 static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
 static int64_t search_counter(const char *key);
+static int checking_posts;   /* the search is over: its count of states generated is TLC's */
 static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for the initial states */
 static Value *search_config(void);
 
@@ -9107,6 +9108,7 @@ static int check_posts(int after_error) {
     int status = 0;
     sigjmp_buf here;
     handler = &here;
+    checking_posts = 1;
     for (int i = 0; i < nposts && !status; i++) {
         Buf b = {0};
         loc_text(&b, d[i]->body);
@@ -9128,6 +9130,7 @@ static int check_posts(int after_error) {
         }
         free(b.s);
     }
+    checking_posts = 0;
     eval_restore(saved);
     error_restore(&error);
     cur_level = level;
@@ -9463,10 +9466,11 @@ static Value *search_config(void) {
    the time. */
 static int64_t search_counter(const char *key) {
     if (!strcmp(key, "duration")) return time(NULL) - started;
-    int which = !strcmp(key, "distinct") ? 1 : !strcmp(key, "queue") ? 2 : !strcmp(key, "diameter") ? 3 : 0;
+    int which = !strcmp(key, "distinct") ? 1 : !strcmp(key, "queue") ? 2 : !strcmp(key, "diameter") ? 3
+              : !strcmp(key, "generated") && checking_posts ? 4 : 0;
     if (!which || simulating) return -1;
     if (in_worker) worker_cannot();   /* the counts are the search's, not a worker's */
-    return which == 1 ? nstates : which == 2 ? nstates - expanded - violation_fresh : max_depth;
+    return which == 1 ? nstates : which == 2 ? nstates - expanded - violation_fresh : which == 3 ? max_depth : generated;
 }
 
 static void collect_fairnesses(void);

@@ -588,7 +588,11 @@ and the assumptions);
 |-> n, seed |-> s]` of a search, without TLC's fields naming its jar and its
 fingerprint polynomial; of a simulation, with `mode |-> "simulate"`, it
 also has `traces` (-1 without `num=`), `depth`, `aril |-> "0"` and `sched
-|-> "random"`, and its assumptions find the search's counters undefined. TLC implements `TLCGet` by an evaluation method, so
+|-> "random"`, and its assumptions find the search's counters undefined.
+`TLCGet("distinct")`, `"queue"` and `"diameter"` are the search's counts
+of states found, queued and the depth reached; `TLCGet("generated")`, of
+states generated, only in a postcondition: during the search TLC counts
+an action's states before it checks them, tpp as it checks each. TLC implements `TLCGet` by an evaluation method, so
 its errors carry that method's preamble (§11.3). That method's level is
 1: a definition that uses `TLCGet` is not evaluated once as a constant,
 but each time it is used, and a substitution `C <- d` of one is

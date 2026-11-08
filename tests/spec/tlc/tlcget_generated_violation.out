@@ -1,0 +1,16 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 12 to line 8, col 27 of module tlcget_generated_violation>
+x = 2
+
+State 3: <Next line 9, col 12 to line 9, col 27 of module tlcget_generated_violation>
+x = 5
+
+<<"generated", 11, 6>>
+11 states generated, 6 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
