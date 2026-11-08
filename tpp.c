@@ -9039,6 +9039,7 @@ static int64_t search_counter(const char *key) {
 
 static void collect_fairnesses(void);
 static int live_violated(void);
+static int live_cut_violated(void);
 static int live_error(void);
 /* The states generated when each state had been expanded, with temporal
    properties: TLC reports an error in them with these counts. */
@@ -9052,6 +9053,20 @@ static void note_expanded(int idx) {
         gen_after = xrealloc(gen_after, sizeof(long) * (size_t)ngen_after);
     }
     gen_after[idx] = generated;
+}
+
+/* TLC adds a deadlocked state to its temporal checks after reporting it:
+   a finite counterexample ending there is reported too. */
+static void live_after_deadlock(int idx) {
+    note_expanded(idx);
+    Arena *saved = arena;
+    arena = &perm_arena;
+    collect_fairnesses();
+    sigjmp_buf live;
+    handler = &live;
+    if (!sigsetjmp(live, 0)) live_cut_violated();
+    handler = NULL;
+    arena = saved;
 }
 
 /* The counts TLC reports when it stops in its temporal checks, once
@@ -9088,6 +9103,7 @@ static int expand_state(int idx) {
     if (succ_count == 0 && check_deadlock) {
         printf("Error: Deadlock reached.\n");
         reported_trace(idx, NULL, 0);
+        if (ntemporal_props) live_after_deadlock(idx);
         print_counts(nstates - expanded);
         return TPP_VIOLATION_DEADLOCK;
     }
@@ -12314,8 +12330,8 @@ static TF *live_setup(int p) {
 
 /* Whether a temporal property fails on the state graph; if so, its
    counterexample is printed and the exit status returned. TLC stops
-   first at the earliest finite counterexample. */
-static int live_violated(void) {
+   first at the earliest finite counterexample (live_cut_violated). */
+static int live_cut_violated(void) {
     free(decoded);
     decoded = calloc((size_t)nstates, sizeof(Value **));
     free(real_succ);
@@ -12325,11 +12341,15 @@ static int live_violated(void) {
         int node, s = live_cut_at(live_setup(p), &node);
         if (s >= 0 && (first < 0 || s <= live_cut)) { first = p; live_cut = s; at = node; }
     }
-    if (first >= 0) {
-        if (first) live_cut_at(live_setup(first), &at);
-        print_cut(at);
-        return TPP_VIOLATION_SAFETY;
-    }
+    if (first < 0) return 0;
+    if (first) live_cut_at(live_setup(first), &at);
+    print_cut(at);
+    return TPP_VIOLATION_SAFETY;
+}
+
+static int live_violated(void) {
+    int cut = live_cut_violated();
+    if (cut) return cut;
     for (int p = 0; p < ntemporal_props; p++)
         if (check_property(p ? live_setup(p) : live_negated)) return TPP_VIOLATION_LIVENESS;
     return 0;

@@ -775,7 +775,9 @@ left to require, TLC stops the search there and reports the shortest path
 to it, without its finite stuttering, as it reports an invariant
 violation: the behavior ends at its last state, the counts are those of
 that moment, and the exit status is 12. A path that ends at a state not
-yet expanded is found when the search ends, as a lasso that stutters.
+yet expanded is found when the search ends, as a lasso that stutters. A
+deadlocked state is added after the deadlock is reported: a path ending
+there is reported next, and the exit status is the deadlock's.
 
 When several lassos qualify, TLC's choice is not specified (it can differ
 between runs), so a conforming test admits exactly one.

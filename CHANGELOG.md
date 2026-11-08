@@ -72,6 +72,9 @@ Edge cases found running TLC's own test models (`test-model`):
 - An error in a temporal property on an initial state exits with the
   error's status, such as 151 for an undefined identifier
   (InitialLivenessEvaluationError).
+- After a deadlock, a safety-like temporal property violated on the path
+  to the deadlocked state is reported too, as TLC adds that state to its
+  temporal checks after reporting the deadlock (Github710d).
 
 ## 0.6.0
 
