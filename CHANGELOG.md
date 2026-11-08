@@ -123,6 +123,12 @@ Edge cases found running TLC's own test models (`test-model`):
   a conjunct that is no boolean, and a number or string where an action
   is expected, which in a disjunct of Next fails before the initial
   states. `ENABLED` evaluates no conjunct as a whole formula, as TLC.
+- A temporal property's constant that is no boolean fails as TLC builds
+  its tableau, naming the constant (`x ~> 1`); `[]1`, checked as an
+  invariant, names `1`. A temporal `\A` or `\E` whose bound TLC cannot
+  enumerate is a formula it cannot handle, `\A` saying why. A property
+  split over `\A` whose part is the bound value fails as TLC's
+  configuration does: not a boolean, or trivially false.
 
 Performance:
 

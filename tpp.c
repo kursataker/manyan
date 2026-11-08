@@ -9252,15 +9252,22 @@ static Value **error_state;
 static int checking(Check *list, int n) { return error_check && n && error_check >= list && error_check < list + n; }
 static int checking_invariant(void) { return checking(invariants, ninvariants); }
 
-/* A check that is no boolean, an error TLC raises outside its evaluator. */
-static _Noreturn void not_boolean_check(Check *c) {
-    Expr *body = c->def && c->def->body ? c->def->body : c->expr;
+/* Whether the error is TLC's EvalException, not one of its own
+   TLCRuntimeExceptions, which some of its callers catch. */
+static int eval_exception(void) { return error_status == TPP_VIOLATION_ASSERT || error_module == 1; }
+
+/* A formula that is no boolean, an error TLC raises outside its evaluator. */
+static _Noreturn void not_boolean_formula(Expr *e) {
     error_reset();
     buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
-    node_text(&error_message, body);
+    node_text(&error_message, e);
     error_status = TPP_FAILURE_EVAL;
     stackless = 1;
     raise_error();
+}
+
+static _Noreturn void not_boolean_check(Check *c) {
+    not_boolean_formula(c->def && c->def->body && c->expr->kind == K_CALL && c->expr->def == c->def ? c->def->body : c->expr);
 }
 
 /* The first of the checks that st, a step after the state at cur_level
@@ -10339,7 +10346,7 @@ static void report_exception(int in_behavior) {
         print_error_text();
         return;
     }
-    print_exception(error_status == TPP_VIOLATION_ASSERT || error_module == 1 ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
+    print_exception(eval_exception() ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
     print_error_text();
 }
 
@@ -11098,6 +11105,11 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
     switch (eval_depth < 5000 ? e->kind : -1) {
     case K_BOUND: {   /* a parameter of a call: its argument, where it was written */
         Env *p = env_find(c.env, e->def);
+        if (p && !p->e && p->v) {   /* a value bound by \A, as TLC looks it up */
+            if (p->v->kind != V_BOOL) config_error("The operator %s, which equals %s,\ncannot be used as a property", S(e->def->name), pretty(p->v));
+            if (!p->v->u.i) config_error("The spec is trivially false because %s is false.", S(e->def->name));
+            return;
+        }
         if (!p || !p->e) break;
         property_parts(p->e, call, (Ctx){p->ctx_env, p->ctx_inst}, name, out, n);
         return;
@@ -11797,7 +11809,20 @@ static Expr *synth(int kind, Expr *at, int n, Expr *a, Expr *b) {
 }
 
 static TF *to_tf(Expr *e, Ctx c, int neg);
-static Expr *tf_unhandled;   /* the formula to_tf failed on as one it cannot handle */
+
+/* TLC's error for a temporal formula it cannot handle, with why, if
+   known: raised as it builds its tableau, without a stack. */
+static _Noreturn void cannot_handle(Expr *e, const char *why) {
+    Buf b = {0};
+    buf_puts(&b, "TLC cannot handle the temporal formula ");
+    loc_text(&b, e);
+    if (why) buf_printf(&b, ":\n%s", why);
+    error_reset();
+    buf_puts(&error_message, b.s);
+    free(b.s);
+    stackless = 1;
+    raise_error();
+}
 
 typedef struct { Expr *body; TF *acc; int op; } TfData;
 
@@ -11831,7 +11856,8 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
     if (level <= 2) {
         if (level == 0) {   /* as TLC, a constant is its value */
             Value *v = eval(e, c);
-            if (v->kind == V_BOOL) return tf_new((v->u.i != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
+            if (v->kind != V_BOOL) not_boolean_formula(e);
+            return tf_new((v->u.i != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
         }
         return tf_atom(e, c, neg);
     }
@@ -11905,13 +11931,26 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         Expr *body = e->args[0];
         if (neg) body = synth(K_NOT, e, 1, body, NULL);
         d.body = body;
+        /* As TLC, its own error in the bindings or the body is one it
+           cannot handle, saying why for \A. */
+        EvalState es = eval_save();
+        sigjmp_buf here;
+        handler = &here;
+        if (sigsetjmp(here, 0)) {
+            eval_restore(es);
+            if (eval_exception()) raise_error();
+            Buf why = {0};
+            buf_puts(&why, error_message.s ? error_message.s : "");
+            loc_line(&why, error_expr);
+            cannot_handle(e, e->kind == X_FORALL ? why.s : NULL);
+        }
         for_bindings(e->bounds, e->nb, c, tf_bound_fn, &d);
+        eval_restore(es);
         return d.acc ? d.acc : tf_new(d.op == TF_AND ? TF_TRUE : TF_FALSE, NULL, NULL);
     }
     default: break;
     }
-    tf_unhandled = e;
-    fail_at(e, "TLC cannot handle this temporal formula.");
+    cannot_handle(e, NULL);
 }
 
 /* A tableau node: the literals that hold now, the formulas that must hold
@@ -12892,13 +12931,11 @@ static int tf_false(TF *t) {
     }
 }
 
-/* The tableau of ~e, or NULL if building it fails; tf_unhandled names
-   what TLC cannot handle. */
+/* The tableau of ~e, or NULL if building it fails. */
 static TF *negation(Check *p) {
     EvalState s = eval_save();
     sigjmp_buf here;
     handler = &here;
-    tf_unhandled = NULL;
     TF *volatile negated = NULL;
     if (!sigsetjmp(here, 0)) negated = to_tf(p->expr, p->ctx, 1);
     eval_restore(s);
@@ -12946,13 +12983,7 @@ static int check_temporal_forms(int simulating) {
     TF **negated = NEWN(TF *, ntemporal_props + 1);
     for (int p = 0; p < ntemporal_props; p++) {
         negated[p] = negation(&temporal_props[p]);
-        if (tf_unhandled) {
-            Buf b = {0};
-            loc_text(&b, tf_unhandled);
-            printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
-            return TPP_ERROR;
-        }
-        if (!negated[p]) {   /* a constant in it fails, which TLC evaluates building its tableau */
+        if (!negated[p]) {   /* TLC fails building its tableau, evaluating its constants */
             report_exception(0);
             return TPP_ERROR;
         }

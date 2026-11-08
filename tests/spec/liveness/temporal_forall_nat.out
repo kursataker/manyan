@@ -1,0 +1,8 @@
+Error: TLC cannot handle the temporal formula line 7, col 6 to line 7, col 30 of module temporal_forall_nat:
+TLC encountered the non-enumerable quantifier bound
+Nat
+line 7, col 15 to line 7, col 17 of module temporal_forall_nat
+The set Nat contains infinitely many elements. As a result, TLC cannot evaluate expressions that
+universally (\A) or existentially (\E) quantify over Nat, because this would require checking an
+infinite number of cases. Note that TLC handles set membership like T \subseteq Nat for any finite set T.
+exit 255
