@@ -1,0 +1,8 @@
+Error: In evaluation, the identifier x is either undefined or not an operator.
+line 9, col 21 to line 9, col 21 of module error_initial_status
+While working on the initial state:
+x = 0
+
+1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
+exit 151

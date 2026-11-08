@@ -4660,6 +4660,7 @@ static Def *level_probe;
 /* Levels as TLC bounds them to decide what to evaluate once: every
    argument of a call counts, used or not. */
 static int every_argument;
+static Value *n_tlcget(Expr *call, Value **a, Ctx c);
 
 static int def_level(Def *d) {
     if (every_argument ? d->level_bound > 0 : d->level >= 0 && (d->local != 2 || d->level_probe == level_probe))
@@ -4667,7 +4668,7 @@ static int def_level(Def *d) {
     if (d->level_busy) return 0;
     d->level_busy = 1;
     int l = 0;
-    if (d->kind == D_VAR) l = 1;
+    if (d->kind == D_VAR || (every_argument && d->native == n_tlcget)) l = 1;   /* TLCGet's minLevel */
     else if (d->kind == D_OP || d->kind == D_FCN) {
         if (d->body) l = expr_level(d->body);
         for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_level(d->bounds[i].set); if (b > l) l = b; }
@@ -6536,21 +6537,20 @@ static int *prop(const char *key) {
 
 NATIVE(n_tlcget) {
     UNUSED;
-    if (starting) fail_module("TLCGet is evaluated before TLC starts checking.");
     if (a[0]->kind == V_STR) {
         const char *key = S(a[0]->u.i);
         int *p = prop(key);
         if (p) return mk_str(*p);
-        if (!strcmp(key, "level")) return mk_int(cur_level);
-        if (!strcmp(key, "config")) return search_config();
+        if (!strcmp(key, "level")) return mk_int(cur_level + primed);   /* primed, the next state's */
+        if (!strcmp(key, "config") && !starting) return search_config();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
-        int64_t n = search_counter(key);
+        int64_t n = starting ? -1 : search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
         return mk_int(n);
     }
     if (a[0]->kind != V_INT || a[0]->u.i < 0)
         fail("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
-    if (a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail("TLCGet(%s) was undefined.", pretty(a[0]));
+    if (starting || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail("TLCGet(%s) was undefined.", pretty(a[0]));
     const char *p = registers[a[0]->u.i].s;
     return decode(&p);
 }
@@ -8402,7 +8402,7 @@ static int check_list(Check *list, int n, Value **st);
 static void live_init_lits(void);
 static void live_init(Value **st);
 static void eval_init_lits(Value **st);
-static int live_init_failed;   /* an error in a property on an initial state */
+static int live_init_failed;   /* an error in a property on an initial state: its exit status */
 
 static int replay_emit(void) {
     if (!replay_found) {
@@ -9627,7 +9627,7 @@ static int search(void) {
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
         print_counts(nstates);
-        return TPP_ERROR;
+        return live_init_failed;
     }
     if (violation) {
         check_posts(1);
@@ -10376,11 +10376,15 @@ static Expr *in_instance(Expr *call, Expr *part) {
 /* The value of a call of a constant definition; NULL if it is no constant
    or fails. TLC computes those but a literal's before reading the
    configuration (literal_def). */
-static Value *constant_value(Expr *e) {
+static int level_bound(Expr *e) {
     every_argument = 1;
     int level = expr_level(e);
     every_argument = 0;
-    if (level) return NULL;
+    return level;
+}
+
+static Value *constant_value(Expr *e) {
+    if (level_bound(e)) return NULL;
     sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); fp_depth = 0; return NULL; }
@@ -10707,7 +10711,8 @@ static void evaluate_constant(Def *d) {
         d->cache = def_value(d);   /* TLC keeps a function definition computed in full, if it can be */
     }
     if (d->kind == D_OP && !d->nparams && !d->native && !d->cache && def_level(d) == 0) {
-        if (!sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
+        /* TLCGet's is evaluated each time, as one that fails */
+        if (!level_bound(d->body) && !sigsetjmp(here, 0)) call_def(d, NULL, 0, (Ctx){NULL, NULL}, NULL);
         else d->uncached = 1;
     }
     eval_restore(s);
@@ -10730,7 +10735,7 @@ static void evaluate_constants(Module *m) {
         if (sigsetjmp(here, 0)) {
             handler = NULL;
             /* A constant definition that fails is reported as the model is checked. */
-            if (expr_level(c->replacement->body) == 0) continue;
+            if (level_bound(c->replacement->body) == 0) continue;
             Buf b = {0};
             node_text(&b, error_expr);
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
@@ -12232,6 +12237,7 @@ static void live_init(Value **st) {
     sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) {
+        live_init_failed = error_status;
         eval_restore(saved);
         print_error_message();
         if (error_module != 1) {   /* as for Init: not for a standard module's operator */
@@ -12239,7 +12245,6 @@ static void live_init(Value **st) {
             print_state(st);
             printf("\n");
         }
-        live_init_failed = 1;
         return;
     }
     eval_init_lits(st);

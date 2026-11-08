@@ -63,6 +63,15 @@ Edge cases found running TLC's own test models (`test-model`):
   instead of overflowing the stack (Github1389).
 - A configuration string that a line end or the file's end interrupts is
   JavaCC's lexical error, as TLC reports it (Github1455).
+- `TLCGet` is no constant to TLC, as its Java method's level is 1: a
+  definition using it is not evaluated at startup, and a substitution
+  `A <- d` of one that fails there is the error of a non-constant
+  substitution. At startup `TLCGet("level")` is 0 and the search's
+  counters are undefined (TLCGetNamedUndefined). `TLCGet("level")'` is
+  the next state's level (TLCGetLevel).
+- An error in a temporal property on an initial state exits with the
+  error's status, such as 151 for an undefined identifier
+  (InitialLivenessEvaluationError).
 
 ## 0.6.0
 
