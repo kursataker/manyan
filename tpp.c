@@ -7484,10 +7484,18 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
         return;
     case X_EXISTS:
         if (bounds_constant(e)) {
+            /* As TLC, \E x \in S : A is one action if S is empty or fails. */
             SplitData s = {e->args[0], name, op};
             int n = nactions;
-            for_bindings(e->bounds, e->nb, c, split_fn, &s);
-            if (nactions > n) return;   /* \E x \in {} : A is one action, as TLC */
+            EvalState es = eval_save();
+            ErrorState er = error_save();
+            sigjmp_buf here;
+            handler = &here;
+            if (!sigsetjmp(here, 0)) for_bindings(e->bounds, e->nb, c, split_fn, &s);
+            else nactions = n;
+            eval_restore(es);
+            error_restore(&er);
+            if (nactions > n) return;
         }
         break;
     case X_LET: {
