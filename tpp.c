@@ -1301,11 +1301,13 @@ static Value *enumerate_lazy(Value *s) {
     }
     case L_FCNSET: {
         fp_enter(s->u.l.expr);
-        for (int i = 0; i < 2; i++)
-            if (set_is_infinite(i ? s->u.l.b : s->u.l.a))
-                fail("Attempted to enumerate a set of the form [D -> R],but the %s:\n%s\ncannot be enumerated.",
-                     i ? "range R" : "domain D", pretty(i ? s->u.l.b : s->u.l.a));
+        /* As TLC: a domain it cannot hold as its elements, Nat or Seq(S), is
+           named; another fails as it enumerates it. */
+        if (user_set(s->u.l.a))
+            fail("Attempted to enumerate a set of the form [D -> R],but the domain D:\n%s\ncannot be enumerated.", pretty(s->u.l.a));
         Value *dom = enumerate(s->u.l.a);
+        if (set_is_infinite(s->u.l.b))
+            fail("Attempted to enumerate a set of the form [D -> R],but the range R:\n%s\ncannot be enumerated.", pretty(s->u.l.b));
         Value *out = enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, s->u.l.a->kind == V_INTERVAL);
         fp_leave(s->u.l.expr);
         return out;
@@ -3432,6 +3434,24 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "a / b == CHOOSE m \\in Real : m * b = a\n"
      "Infinity == CHOOSE i : (i \\notin Real) /\\ (\\A r \\in Real : i > r)\n"
      "====\n"},
+    {"RealTime",
+     "---- MODULE RealTime ----\n"
+     "\n\n\n\n\nEXTENDS Reals\n"
+     "VARIABLE now\n"
+     "\nRTBound(A, v, D, E) ==\n"
+     "  LET TNext(t)  ==  t' = IF <<A>>_v \\/ ~(ENABLED <<A>>_v)'\n"
+     "                           THEN 0\n"
+     "                           ELSE t + (now'-now)\n"
+     "\n      Timer(t) == (t=0)  /\\  [][TNext(t)]_<<t, v, now>>\n"
+     "\n      MaxTime(t) == [](t \\leq E)\n"
+     "\n      MinTime(t) == [][A => t \\geq D]_v\n"
+     "  IN \\EE t : Timer(t) /\\ MaxTime(t) /\\ MinTime(t)\n"
+     "\nRTnow(v) == LET NowNext == /\\ now' \\in {r \\in Real : r > now}\n"
+     "                           /\\ UNCHANGED v\n"
+     "            IN  /\\ now \\in Real\n"
+     "                /\\ [][NowNext]_now\n"
+     "                /\\ \\A r \\in Real : WF_now(NowNext /\\ (now'>r))\n"
+     "====\n"},
     {"Sequences",
      "---- MODULE Sequences ----\n"
      "\n\n\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
@@ -3592,6 +3612,19 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "\n\n\n\n\n  CHOOSE i \\in Int: TRUE\n"
      "\n\n\nTLCEvalDefinition(definitionName) ==\n"
      "\n\n\n\n  TRUE\n"
+     "\n====\n"},
+    {"Toolbox",
+     "---- MODULE Toolbox ----\n"
+     "\n\n\nLOCAL INSTANCE Naturals\n"
+     "LOCAL INSTANCE FiniteSets\n"
+     "LOCAL INSTANCE TLC\n"
+     "\n\n\n\n\n_TETrace ==\n"
+     "    CHOOSE f \\in [ (Nat \\ {0}) -> STRING ] : TRUE\n"
+     "\nLOCAL _TETraceLength == Cardinality(DOMAIN _TETrace)\n"
+     "\n\n\n\n\n_TEPosition ==\n"
+     "    IF TLCGet(\"level\") >= _TETraceLength\n"
+     "       THEN _TETraceLength\n"
+     "       ELSE IF TLCGet(\"level\") = 0 THEN 1 ELSE TLCGet(\"level\")\n"
      "\n====\n"},
     {NULL, NULL}};
 
@@ -7625,7 +7658,7 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Exp
         const char *dom = pretty(enumerate(f->u.l.a));
         fail_module("In applying the function\n%s,\n%s is:\n%s\nwhich is not in the function's domain %s.\n", pretty(f), part, pretty(a), dom);
     }
-    if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s", pretty(f), part, pretty(a), wrong);
+    if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s\n", pretty(f), part, pretty(a), wrong);
     /* Computing states, TLC binds the argument itself (Tool.getFcnContext). */
     Buf b = {0};
     loc_text(&b, where);

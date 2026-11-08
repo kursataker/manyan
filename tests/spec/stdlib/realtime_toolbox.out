@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ now = 0
+/\ x = 0
+/\ _ALIASEvalError = "Attempted to enumerate S \\ T when S:\nNat\nis not enumerable."
+
+State 2: <Next line 7, col 9 to line 7, col 32 of module realtime_toolbox>
+/\ now = 0
+/\ x = 1
+/\ _ALIASEvalError = "Attempted to enumerate S \\ T when S:\nNat\nis not enumerable."
+
+State 3: <Next line 7, col 9 to line 7, col 32 of module realtime_toolbox>
+/\ now = 0
+/\ x = 2
+/\ _ALIASEvalError = "Attempted to enumerate S \\ T when S:\nNat\nis not enumerable."
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

@@ -103,6 +103,12 @@ Edge cases found running TLC's own test models (`test-model`):
   thread keeps one generator (RandomSubset's trace); RandomElement and
   RandomSubset index an interval among a product's parts without making
   it, so Init stays small.
+- RealTime and Toolbox are built-in standard modules, as TLC ships them.
+- A function applied outside its domain fails with TLC's message to its
+  final newline, which `AssertError` compares (Github696).
+- Enumerating `[D -> R]` names only a domain such as `Nat` or `Seq(S)`;
+  another, such as `Nat \ {0}`, fails as TLC enumerates it (Toolbox's
+  `_TEPosition`).
 
 Performance:
 

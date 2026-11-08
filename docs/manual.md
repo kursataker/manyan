@@ -30,8 +30,8 @@ tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] 
 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
 instantiates are read from the same directory; the standard modules
-(Naturals, Integers, Sequences, FiniteSets, TLC, Bags, Randomization) are
-built in.
+(Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
+Randomization, RealTime, Toolbox, TLCExt) are built in.
 
 | option | meaning |
 |---|---|
