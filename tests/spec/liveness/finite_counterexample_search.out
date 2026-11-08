@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal properties Stable and Small were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 7, col 12 to line 7, col 37 of module finite_counterexample_search>
+/\ x = 1
+/\ y = 0
+
+State 3: <Next line 7, col 12 to line 7, col 37 of module finite_counterexample_search>
+/\ x = 2
+/\ y = 0
+
+State 4: <Next line 7, col 12 to line 7, col 37 of module finite_counterexample_search>
+/\ x = 0
+/\ y = 0
+
+9 states generated, 7 distinct states found, 3 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12

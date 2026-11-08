@@ -39,6 +39,11 @@ Edge cases found running TLC's own test models (`test-model`):
   constant set; a parameter has its argument's level, so
   `Prop(a) == [](a < 2)` checks `Prop(s)` as an invariant `Prop`
   instead of failing to evaluate `s` without a state.
+- A safety-like temporal property, such as `[](x = 2 => [](x >= 2))`,
+  checked without fairness, fails as TLC finds it: on a path back to a
+  state already expanded, the search stops there with a finite behavior,
+  that moment's counts and exit status 12, instead of a lasso at the end
+  (Github1161Violated).
 
 ## 0.6.0
 

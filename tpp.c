@@ -8811,6 +8811,7 @@ static int live_error(void);
    properties: TLC reports an error in them with these counts. */
 static long *gen_after;
 static int ngen_after;
+static int live_cut = -1;   /* the state TLC stopped expanding at in its temporal checks */
 static void note_expanded(int idx) {
     if (!ntemporal_props) return;
     if (idx >= ngen_after) {
@@ -8818,6 +8819,17 @@ static void note_expanded(int idx) {
         gen_after = xrealloc(gen_after, sizeof(long) * (size_t)ngen_after);
     }
     gen_after[idx] = generated;
+}
+
+/* The counts TLC reports when it stops in its temporal checks, once
+   state s had been expanded. */
+static void print_counts_after(int s) {
+    int seen = 0;
+    while (seen + 1 < nstates && states[seen + 1].parent == -1) seen++;
+    for (int i = 0; i <= s; i++)
+        for (int e = 0; e < states[i].nedges; e++) if (states[i].edges[2 * e] > seen) seen = states[i].edges[2 * e];
+    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
+    printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
 }
 
 /* Expands state idx: its successors join the search. Returns the exit
@@ -9384,10 +9396,12 @@ static int search(void) {
         sigjmp_buf live;
         handler = &live;
         if (sigsetjmp(live, 0)) return live_error();
-        if (live_violated()) {
+        int violated = live_violated();
+        if (violated) {
             check_posts(1);
-            print_counts(exit_requested ? nstates - expanded : 0);
-            return TPP_VIOLATION_LIVENESS;
+            if (violated == TPP_VIOLATION_SAFETY) print_counts_after(live_cut);
+            else print_counts(exit_requested ? nstates - expanded : 0);
+            return violated;
         }
         handler = &here;
     }
@@ -11731,28 +11745,93 @@ static void warn_stuttering(void) {
     free(b.s);
 }
 
-static int check_property(TF *negated) {
-    live_negated = negated;
+/* The product nodes of the initial states, as TLC adds them. */
+static int live_roots(TF *negated, int **roots) {
     List init = {0};
     TFList todo = {0}, empty = {0};
     tfl_add(&todo, negated);
     expand(todo, empty, empty, 0, &init);
-    List roots = {0};
+    int n = 0;
+    *roots = NULL;
     for (int s = 0; s < nstates; s++) {
         if (states[s].parent != -1) continue;
         for (int i = 0; i < init.n; i++) {
             int t = (int)init.v[i]->u.i;
-            if (tnode_admits(t, s)) list_add(&roots, mk_int(pnode_find(s, t, 1)));
+            if (tnode_admits(t, s)) PUSH(*roots, n, pnode_find(s, t, 1));
         }
     }
-    int *r = xmalloc(sizeof(int) * (size_t)(roots.n + 1));
-    for (int i = 0; i < roots.n; i++) r[i] = (int)roots.v[i]->u.i;
+    return n;
+}
+
+static int check_property(TF *negated) {
+    live_negated = negated;
+    int *r, n = live_roots(negated, &r);
     if (sim_n && tf_tableau(negated)) sim_product();
-    if (scc_search(r, roots.n, 0) >= 0) {
-        print_counterexample(r, roots.n);
+    if (scc_search(r, n, 0) >= 0) {
+        print_counterexample(r, n);
         return 1;
     }
     return 0;
+}
+
+/* Whether a disjunct of f, in TLC's disjunctive normal form, has no
+   conjunct <>[]A or []<>A with A no temporal formula. */
+static int tf_cycle_free(TF *f) {
+    if (f->op == TF_OR) return tf_cycle_free(f->a) || tf_cycle_free(f->b);
+    if (f->op == TF_AND) return tf_cycle_free(f->a) && tf_cycle_free(f->b);
+    return !((f->op == TF_EVENTUALLY && f->a->op == TF_ALWAYS) || (f->op == TF_ALWAYS && f->a->op == TF_EVENTUALLY)) ||
+           tf_has(f->a->a, 1);
+}
+
+/* TLC builds the product as it expands each state: the edges of the
+   state's nodes, then those of each node new to it whose state is
+   expanded already. When such a node's tableau node has nothing left to
+   do, a negation with a disjunct free of cycle conditions, and no
+   fairness, is met by any continuation of the path to it, and TLC stops
+   there (§10.7). Returns the state being expanded then, or -1; *at is
+   the node. */
+static int live_cut_at(TF *negated, int *at) {
+    if (sim_n || nfairs || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
+    int *stack = NULL, n = 0, *roots;
+    live_roots(negated, &roots);   /* the graph starts with them */
+    for (int s0 = 0; s0 < expanded; s0++)
+        for (int i = 0; i < pnodes_of[s0].n; i++) {
+            if (pnodes[pnodes_of[s0].v[i].node].succ) continue;
+            PUSH(stack, n, pnodes_of[s0].v[i].node);
+            while (n) {
+                int v = stack[--n];
+                if (pnodes[v].succ) continue;
+                pnode_successors(v);
+                for (int k = 0; k < pnodes[v].nsucc; k++) {
+                    int w = pnodes[v].succ[k];
+                    if (!pnodes[w].succ && pnodes[w].state <= s0 && !tnodes[pnodes[w].tnode].nnext) { *at = w; return s0; }
+                }
+                for (int k = pnodes[v].nsucc - 1; k >= 0; k--) {
+                    int w = pnodes[v].succ[k];
+                    if (!pnodes[w].succ && pnodes[w].state <= s0) PUSH(stack, n, w);
+                }
+            }
+        }
+    return -1;
+}
+
+/* Prints, as TLC, the path to node `at` as a finite counterexample, its
+   last state stuttering forever; the graph is as built so far. */
+static void print_cut(int at) {
+    int *r, nr = live_roots(live_negated, &r);
+    for (int p = 0; p < npnodes; p++) if (!pnodes[p].succ) pnode_steps(p, NULL, 0, 0);
+    List path = {0}, acts = {0};
+    product_path(r, nr, at, NULL, 0, &path, &acts);
+    int *ls = NEWN(int, path.n), *act = NEWN(int, path.n), n = 0;
+    for (int i = 0; i < path.n; i++) {   /* without its finite stuttering */
+        int s = pnodes[path.v[i]->u.i].state;
+        if (n && ls[n - 1] == s) continue;
+        ls[n] = s;
+        act[n++] = (int)acts.v[i]->u.i;
+    }
+    print_violated(ls, n, n - 1);
+    printf("Error: The following behavior constitutes a counter-example:\n\n");
+    for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
 }
 
 /* What TLC evaluates of the properties on each initial state, before its
@@ -11830,7 +11909,7 @@ static int live_error(void) {
     natoms = 0;
     neventualities = 0;
     for (int p = 0; p < ntemporal_props; p++) to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
-    static int s, seen;   /* static: read after an error jumps back */
+    static int s;   /* static: read after an error jumps back */
     sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) {
@@ -11840,14 +11919,11 @@ static int live_error(void) {
         else printf("Error: ");
         print_error_text();
         print_trace(s, NULL, 0);
-        printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
-        printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
+        print_counts_after(s);
         return TPP_ERROR;
     }
-    seen = 0;
     for (s = 0; s < nstates; s++) {
         StateRec *r = &states[s];
-        for (int e = 0; e < r->nedges; e++) if (r->edges[2 * e] > seen) seen = r->edges[2 * e];
         for (int e = 0; e <= r->nedges; e++) {
             int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
             for (int i = 0; i < natoms; i++)
@@ -11872,25 +11948,39 @@ static void collect_fairnesses(void) {
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
 }
 
+static TF *live_setup(int p) {
+    neventualities = 0;
+    natoms = 0;
+    ntnodes = 0;
+    npnodes = 0;
+    free(pnodes_of);
+    pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
+    TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+    free(state_atom_cache);
+    state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
+    return live_negated = neg;
+}
+
 /* Whether a temporal property fails on the state graph; if so, its
-   counterexample is printed. */
+   counterexample is printed and the exit status returned. TLC stops
+   first at the earliest finite counterexample. */
 static int live_violated(void) {
     free(decoded);
     decoded = calloc((size_t)nstates, sizeof(Value **));
     free(real_succ);
     real_succ = calloc((size_t)nstates, sizeof(Successors));
-    for (int p = 0; p < ntemporal_props; p++) {
-        neventualities = 0;
-        natoms = 0;
-        ntnodes = 0;
-        npnodes = 0;
-        free(pnodes_of);
-        pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
-        TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
-        free(state_atom_cache);
-        state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
-        if (check_property(neg)) return 1;
+    int first = -1, at = -1;   /* the last set up is the first property, whose product the check takes on */
+    for (int p = ntemporal_props - 1; p >= 0; p--) {
+        int node, s = live_cut_at(live_setup(p), &node);
+        if (s >= 0 && (first < 0 || s <= live_cut)) { first = p; live_cut = s; at = node; }
     }
+    if (first >= 0) {
+        if (first) live_cut_at(live_setup(first), &at);
+        print_cut(at);
+        return TPP_VIOLATION_SAFETY;
+    }
+    for (int p = 0; p < ntemporal_props; p++)
+        if (check_property(p ? live_setup(p) : live_negated)) return TPP_VIOLATION_LIVENESS;
     return 0;
 }
 
