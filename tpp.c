@@ -1675,10 +1675,13 @@ static Value *held(Value *s) {
 }
 
 /* TLC's error making S \cup T of elements that do not compare: it looks
-   for each of T's in S, comparing for equality. */
+   for each of T's in S, an interval by its bounds, another comparing for
+   equality. */
 static _Noreturn void cup_error(Value *a, Value *b) {
-    for (int j = 0; j < b->n; j++)
-        for (int i = 0; i < a->n; i++) veq(a->u.set.elems[i], b->u.set.elems[j]);
+    for (int j = 0; j < b->n; j++) {
+        if (a->kind == V_INTERVAL) set_member(b->u.set.elems[j], a);
+        else for (int i = 0; i < a->n; i++) veq(a->u.set.elems[i], b->u.set.elems[j]);
+    }
     abort();
 }
 
@@ -1725,11 +1728,12 @@ static int kinds_differ(Value *a, Value *b) {
 }
 
 /* S \cup T of two finite sets, enumerated. */
-static Value *cup_merge(Value *a, Value *b) {
-    a = enumerate(a); b = enumerate(b);
+static Value *cup_merge(Value *s, Value *b) {
+    Value *a = enumerate(s);
+    b = enumerate(b);
     if (!b->n) return a;
     if (!a->n) return b;
-    if (kinds_differ(a, b)) cup_error(a, b);
+    if (kinds_differ(a, b)) cup_error(s->kind == V_INTERVAL ? s : a, b);
     /* Both are sorted: merge them. */
     Value *r = mk_set(a->n + b->n);
     Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
@@ -1813,6 +1817,7 @@ static int fcn_index(Value *f, Value *a) {
 static Value *fcn_apply(Value *f, Value *a, Expr *where) {
     if (f->kind == V_LAMBDA) return lambda_apply(f, a);
     if (!is_fcn(f)) fail_at(where, "A non-function (%s) was applied as a function.", kind_string(f));
+    if (f->made == MADE_RECORD && a->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(a));
     int i = fcn_index(f, a);
     if (i >= 0) return f->u.fcn.vals[i];
     if (f->kind == V_TUPLE) {
@@ -1820,10 +1825,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
         if (a->kind != V_INT) fail("Attempted to access tuple at a non integral index: %s", pretty(a));
         fail("Attempted to access index %lld of tuple\n%s\nwhich is out of bounds.", (long long)a->u.i, pretty(f));
     }
-    if (f->made == MADE_RECORD) {
-        if (a->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(a));
-        fail("Attempted to access nonexistent field '%s' of record\n%s", S(a->u.i), pretty(f));
-    }
+    if (f->made == MADE_RECORD) fail("Attempted to access nonexistent field '%s' of record\n%s", S(a->u.i), pretty(f));
     if (f->made >= MADE_LAMBDA)
         fail("In applying the function\n%s,\nthe first argument is:\n%s\nwhich is not in its domain.\n", pretty(f), pretty(a));
     fail("Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
@@ -5417,7 +5419,7 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
             Value *v = sets[k]->u.set.elems[index[k]];
             if (!b->tuple) { env = mk_binding(b->defs[slot[k]], v, env); continue; }
             if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != b->n)
-                fail("A tuple pattern <<...>> \\in S was matched with %s.", pretty(v));
+                fail("Argument mismatch in operator application.%%1");   /* sic: TLC's message leaves its parameter out */
             for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], v->u.fcn.vals[j], env);
         }
         if (fn((Ctx){env, c.inst}, data)) return 1;
@@ -5428,23 +5430,34 @@ static int for_bindings(Bound *bs, int nb, Ctx c, BindFn fn, void *data) {
 
 typedef struct { Expr *body; int value; Expr *where; } QuantData;
 
-/* e in c, dropping what computing it made where that is allowed. */
-static int eval_bool_dropping(Expr *e, Ctx c) {
+/* v, the body of the quantifier or CHOOSE e: TLC's error unless boolean. */
+static int expected_bool(Value *v, Expr *e) {
+    if (v->kind != V_BOOL) {
+        Buf b = {0};
+        node_text(&b, e);
+        fail("TLC expected a boolean value, but did not find one. %s", b.s);
+    }
+    return (int)v->u.i;
+}
+
+/* The body of quantifier q in c, dropping what computing it made where
+   that is allowed. */
+static int quant_holds(QuantData *q, Ctx c) {
     Region *r = region_open();
-    int holds = eval_bool(e, c);
+    int holds = expected_bool(eval(q->body, c), q->where);
     region_close(r);
     return holds;
 }
 
 static int forall_fn(Ctx c, void *data) {
     QuantData *q = data;
-    if (!eval_bool_dropping(q->body, c)) { q->value = 0; return 1; }
+    if (!quant_holds(q, c)) { q->value = 0; return 1; }
     return 0;
 }
 
 static int exists_fn(Ctx c, void *data) {
     QuantData *q = data;
-    if (eval_bool_dropping(q->body, c)) { q->value = 1; return 1; }
+    if (quant_holds(q, c)) { q->value = 1; return 1; }
     return 0;
 }
 
@@ -5470,10 +5483,12 @@ static Value *filter_member_test(Value *s, Value *v) {
     Ctx c = {env, s->u.l.inst};
     Value **cur = cur_state, **next = next_state;
     if (s->u.l.made_in) cur_state = s->u.l.made_in[0], next_state = s->u.l.made_in[1];
-    int holds = eval_bool(e->args[0], c);
+    Value *holds = eval(e->args[0], c);
+    if (holds->kind != V_BOOL)
+        fail_at(e->args[0], "Attempted to evaluate an expression of form {x \\in S : P(x)} when P was %s.", kind_string(holds));
     cur_state = cur;
     next_state = next;
-    return BOOLV(holds);
+    return holds;
 }
 
 /* A function definition f[x \in S] == e: its body, x given a in *c. */
@@ -5707,7 +5722,7 @@ static __attribute__((noinline)) Value *ev_paramcall(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_not(Expr *e, Ctx c) {
     Value *v = eval(e->args[0], c);
-    if (v->kind != V_BOOL) fail_at(e, "Attempted to apply the operator ~ to a non-boolean\n(%s).", pretty(v));
+    if (v->kind != V_BOOL) fail_at(e, "Attempted to apply the operator ~ to a non-boolean\n(%s)", kind_string(v));
     return BOOLV(!v->u.i);
 }
 
@@ -6102,7 +6117,7 @@ static __attribute__((noinline)) Value *ev_choose(Expr *e, Ctx c) {
                            "CHOOSE <<x1, ... , xN>> \\in S: P, but S was not a set\nof N-tuples.");
             for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], x->u.fcn.vals[j], env);
         }
-        if (eval_bool(e->args[0], (Ctx){env, c.inst})) return x;
+        if (expected_bool(eval(e->args[0], (Ctx){env, c.inst}), e)) return x;
     }
     fail_at(e, "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.");
 }
@@ -6116,7 +6131,13 @@ static __attribute__((noinline)) Value *ev_if(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_case(Expr *e, Ctx c) {
     for (int i = 0; i + 1 < e->n; i += 2) {
         if (!e->args[i]) return eval(e->args[i + 1], c);
-        if (eval_bool(e->args[i], c)) return eval(e->args[i + 1], c);
+        Value *v = eval(e->args[i], c);
+        if (v->kind != V_BOOL) {
+            Buf b = {0};
+            node_text(&b, e->args[i]);
+            fail("A non-boolean expression (%s) was used as a condition of a CASE. %s", kind_string(v), b.s);
+        }
+        if (v->u.i) return eval(e->args[i + 1], c);
     }
     fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
 }

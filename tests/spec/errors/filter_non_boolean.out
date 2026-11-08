@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 32 of module filter_non_boolean failed.
+Attempted to evaluate an expression of form {x \in S : P(x)} when P was a string.
+line 4, col 28 to line 4, col 30 of module filter_non_boolean
+exit 10

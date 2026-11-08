@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 20 of module not_non_boolean failed.
+Attempted to apply the operator ~ to a non-boolean
+(a set of the form {e1, ... ,eN})
+line 4, col 15 to line 4, col 19 of module not_non_boolean
+exit 10
