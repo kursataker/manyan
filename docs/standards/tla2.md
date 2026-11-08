@@ -702,7 +702,8 @@ its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
 violated.`, the body of `\A` likewise, and a call's parts by the
 definition called. A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
-B` is `(p /\ A) \/ (~p /\ B)`. As TLC checks the negation of a property,
+B` is `A` or `B` when `p` evaluates to a Boolean with no state (so a
+`RECURSIVE` property can end), else `(p /\ A) \/ (~p /\ B)`. As TLC checks the negation of a property,
 a constant in it is folded through `/\` and `\/`; `[]<>c` and `<>[]c`
 joined at its top by them are checked with `c`'s value, but a constant
 under any other `[]` or `<>` is in TLC's tableau, which never evaluates

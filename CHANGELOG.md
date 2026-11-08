@@ -58,6 +58,9 @@ Edge cases found running TLC's own test models (`test-model`):
   SUBSET inside in the fingerprint stack; a successor TLC finds again,
   comparing SUBSETs by their bases, fails again rather than with its
   NullPointerException (FingerprintExceptionInit, FingerprintExceptionNext).
+- A temporal `IF` whose guard evaluates with no state is its chosen
+  branch, as TLC 1.8 translates it, so a `RECURSIVE` property ends
+  instead of overflowing the stack (Github1389).
 
 ## 0.6.0
 

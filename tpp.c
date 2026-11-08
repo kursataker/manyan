@@ -11234,6 +11234,23 @@ static int tf_bound_fn(Ctx c, void *data) {
     return 0;
 }
 
+/* e's value with no state, NULL if evaluating it fails. */
+static Value *stateless_value(Expr *e, Ctx c) {
+    EvalState s = eval_save();
+    ErrorState er = error_save();
+    Value **cur = cur_state, **next = next_state;
+    cur_state = next_state = NULL;
+    Value *volatile v = NULL;
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) v = eval(e, c);
+    eval_restore(s);
+    error_restore(&er);
+    cur_state = cur;
+    next_state = next;
+    return v;
+}
+
 /* The formula e (negated when neg) in negation normal form. */
 static TF *to_tf(Expr *e, Ctx c, int neg) {
     int level = level_in(e, c);
@@ -11268,7 +11285,11 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
     }
     case K_NOT: return to_tf(e->args[0], c, !neg);
     case X_IF: {
-        /* IF p THEN A ELSE B is (p /\ A) \/ (~p /\ B), negated in A and B. */
+        /* As TLC, a guard that evaluates without a state chooses its branch,
+           which ends a recursion; else IF p THEN A ELSE B is
+           (p /\ A) \/ (~p /\ B), negated in A and B. */
+        Value *g = stateless_value(e->args[0], c);
+        if (g && g->kind == V_BOOL) return to_tf(e->args[g->u.i ? 1 : 2], c, neg);
         TF *then = tf_new(TF_AND, to_tf(e->args[0], c, 0), to_tf(e->args[1], c, neg));
         TF *other = tf_new(TF_AND, to_tf(e->args[0], c, 1), to_tf(e->args[2], c, neg));
         return tf_new(TF_OR, then, other);
