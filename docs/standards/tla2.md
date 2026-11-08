@@ -780,17 +780,17 @@ unevaluated.
 TLC evaluates the predicates of the temporal properties during the
 search, and an error there is reported then. On each initial state,
 before its invariants, it evaluates the literals of each initial node of
-a property's tableau, up to a false one, in the formula's order, or,
-for a property without a tableau, each state predicate but `ENABLED`.
-The first error is printed with `While working on the initial state:`
+a property's tableau, up to a false one, in the formula's order; it
+evaluates nothing of a property without a tableau there. The first error is printed with `While working on the initial state:`
 and the state, and the initial states are computed on; a second error
 ends the search with its trace of positions (exit 75); without one, the
 run stops once they are computed, without `Finished computing initial
 states`, with the counts and exit 0, even after an invariant violation.
-As it expands a state, it evaluates `ENABLED` predicates and fairness's
-enabledness on the state, other state predicates on each successor, and
-action predicates and fairness's steps on each step to a successor and
-on the stuttering step. An error there is an unexpected exception, with
+As it expands a state, it evaluates action predicates and fairness's
+steps on each step to a successor and on the stuttering step, then
+`ENABLED` predicates, fairness's enabledness and, for a property without
+a tableau, the other state predicates on the state, then a tableau's
+state predicates on each successor. An error there is an unexpected exception, with
 the counts as the state is expanded and the depth (exit 255).
 
 ### 10.6 Fairness

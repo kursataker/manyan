@@ -129,6 +129,9 @@ Edge cases found running TLC's own test models (`test-model`):
   enumerate is a formula it cannot handle, `\A` saying why. A property
   split over `\A` whose part is the bound value fails as TLC's
   configuration does: not a boolean, or trivially false.
+- A state predicate of a property without a tableau is evaluated on the
+  state TLC expands, not on an initial state as it is found nor on the
+  successors, so an error in it names that state (UserModuleOverrideAnnotation).
 
 Performance:
 

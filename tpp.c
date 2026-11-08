@@ -12763,7 +12763,7 @@ static void print_cut(int at) {
 
 /* What TLC evaluates of the properties on each initial state, before its
    invariants: the literals of each initial node of a tableau, up to a
-   false one; without a tableau, each state predicate but ENABLED. */
+   false one. */
 static TFList *init_lits;
 static int ninit_lits;
 
@@ -12780,11 +12780,7 @@ static void live_init_lits(void) {
         neventualities = 0;
         ntnodes = 0;
         TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
-        if (!tf_tableau(neg)) {
-            for (int i = 0; i < natoms; i++)
-                if (atoms[i]->atom->kind != K_ENABLED) add_init_lits(&atoms[i], 1);
-            continue;
-        }
+        if (!tf_tableau(neg)) continue;
         List init = {0};
         TFList todo = {0}, empty = {0};
         tfl_add(&todo, neg);
@@ -12829,13 +12825,20 @@ static void live_init(Value **st) {
 
 /* An error checking the temporal properties, reported as TLC reports it:
    TLC evaluates their predicates as it expands each state: the actions
-   on each step and on stuttering, then ENABLED on the state, then other
-   state predicates on each successor. It reports the first error then, as one
-   in Next, with the behavior to the state and the counts of that moment. */
+   on each step and on stuttering, then ENABLED and, without a tableau,
+   the other state predicates on the state, then a tableau's on each
+   successor. It reports the first error then, as one in Next, with the
+   behavior to the state and the counts of that moment. */
 static int live_error(void) {
     natoms = 0;
     neventualities = 0;
-    for (int p = 0; p < ntemporal_props; p++) to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+    static char *on_state;   /* each atom: of a property without a tableau */
+    for (int p = 0; p < ntemporal_props; p++) {
+        int from = natoms;
+        int flat = !tf_tableau(to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1));
+        on_state = xrealloc(on_state, (size_t)natoms + 1);
+        memset(on_state + from, flat, (size_t)(natoms - from));
+    }
     static int s;   /* static: read after an error jumps back */
     sigjmp_buf here;
     handler = &here;
@@ -12860,9 +12863,12 @@ static int live_error(void) {
         for (int i = 0; i < natoms; i++)
             if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
         for (int i = 0; i < nfairs; i++) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
+        for (int i = 0; i < natoms; i++)
+            if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && on_state[i])
+                holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
         for (int e = 0; e < r->nedges; e++)
             for (int i = 0; i < natoms; i++)
-                if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED)
+                if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !on_state[i])
                     holds_in(atoms[i]->atom, atoms[i]->c, state_values(r->edges[2 * e]), NULL);
     }
     /* Not found so: as it came. */
