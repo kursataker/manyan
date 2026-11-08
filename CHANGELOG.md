@@ -99,6 +99,10 @@ Edge cases found running TLC's own test models (`test-model`):
 - `RandomSubset(k, a..b)` takes its elements without making the interval,
   so it draws from up to 2^31 - 1 numbers; a negative `k` is Java's
   NegativeArraySizeException.
+- Init draws on from where the assumptions' draws stopped, as TLC's main
+  thread keeps one generator (RandomSubset's trace); RandomElement and
+  RandomSubset index an interval among a product's parts without making
+  it, so Init stays small.
 
 Performance:
 

@@ -1,0 +1,15 @@
+{4, 9}
+Finished computing initial states: 3 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 24528764
+/\ y = 0
+
+State 2: <Next line 10, col 9 to line 10, col 28 of module random_startup_draws>
+/\ x = 24528764
+/\ y = 1
+
+4 states generated, 4 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

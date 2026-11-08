@@ -550,7 +550,11 @@ evaluated natively.
   support the one evaluated.
 
 `RandomElement(S)` and the Randomization operators draw as TLC does, from
-`java.util.Random` seeded with `-seed`. `RandomSubset(k, S)` takes
+`java.util.Random` seeded with `-seed`: the model, the assumptions and
+Init in sequence from one generator, as TLC's main thread keeps the one
+its first draw made; a state's successors from one seeded with `-seed`
+xor the state's fingerprint, which tpp's fingerprints, not TLC's, make
+other draws than TLC's. `RandomSubset(k, S)` takes
 k indices from a linear congruential generator, `x' = (a * x + c) % m`
 skipping those past |S|: m is the least number from max(|S|, 9) on that is
 not divisible by 4 and has a square factor, a is 1 more than the product of

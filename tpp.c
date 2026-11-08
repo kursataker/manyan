@@ -6965,7 +6965,17 @@ static Value **draw_from;   /* the state expanded, NULL for Init */
 static int draw_due;        /* to seed at the next draw */
 static uint64_t fingerprint(Value **st);
 
-static void draw_restart(Value **from) { draw_from = from; draw_due = 1; }
+/* The generator as Init begins. TLC's main thread generates Init from the
+   generator it made at its first draw, which a draw at startup made before
+   the checker that would seed it for each state: Init goes on from the
+   startup's draws. */
+static JRandom init_draws;
+
+static void draw_restart(Value **from) {
+    draw_from = from;
+    draw_due = from != NULL;
+    if (!from) draw_model = init_draws;
+}
 
 static JRandom *draws(void) {
     if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? fingerprint(draw_from) : 0));
@@ -6999,6 +7009,15 @@ static Value *product_element(Value *s, Value **vals) {
     return t;
 }
 
+/* A set to draw by index from: an interval as it is, as its i-th element
+   lo + i need not be made; another enumerated. */
+static Value *indexed(Value *s) {
+    if (s->kind != V_INTERVAL) return enumerate(s);
+    interval_size(s);
+    return s;
+}
+static Value *element_at(Value *s, int64_t i) { return s->kind == V_INTERVAL ? mk_int(s->u.range.lo + i) : s->u.set.elems[i]; }
+
 static Value *random_element(Value *s) {
     if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
     if (is_product(s) && !(s->lazy == L_FCNSET && set_is_infinite(s->u.l.a))) {
@@ -7007,9 +7026,9 @@ static Value *random_element(Value *s) {
         for (int i = 0; i < n; i++) vals[i] = random_element(sets[i]);
         return product_element(s, vals);
     }
-    Value *e = enumerate(s);
+    Value *e = indexed(s);
     if (!e->n) fail_module("Attempted to compute RandomElement of the empty set.");
-    return e->u.set.elems[(int)(jr_double(draws()) * e->n)];
+    return element_at(e, (int)(jr_double(draws()) * e->n));
 }
 
 NATIVE(n_randomelement) { UNUSED; return random_element(a[0]); }
@@ -7075,14 +7094,12 @@ NATIVE(n_randomsubset) {
         sets = product_parts(s, &n);
         Value **parts = NEWN(Value *, n);
         for (int i = 0; i < n; i++) {
-            parts[i] = enumerate(sets[i]);
+            parts[i] = indexed(sets[i]);
             size = size > huge / (parts[i]->n + 1) ? huge : size * parts[i]->n;
         }
         sets = parts;
-    } else if (s->kind == V_INTERVAL) {
-        size = interval_size(s);   /* its i-th element is lo + i: up to 2^31 of them are not made */
     } else {
-        e = enumerate(s);
+        e = indexed(s);
         size = e->n;
     }
     JRandom *r = draws();
@@ -7102,12 +7119,11 @@ NATIVE(n_randomsubset) {
     for (int i = 0; i < k; i++) {
         if (big) idx = ((Big)(INT64_MAX - 24) * i + start) % size;
         else do idx = (mult * idx + inc) % m; while (idx >= size);
-        if (e) { list_add(&l, e->u.set.elems[(int64_t)idx]); continue; }
-        if (!sets) { list_add(&l, mk_int(s->u.range.lo + (int64_t)idx)); continue; }
+        if (e) { list_add(&l, element_at(e, (int64_t)idx)); continue; }
         Big scale = 1;   /* of the last part, the least significant */
         for (int j = n - 1; j >= 0; j--) {
             int mod = sets[j]->n;
-            vals[j] = sets[j]->u.set.elems[(int64_t)(idx / scale % mod)];
+            vals[j] = element_at(sets[j], (int64_t)(idx / scale % mod));
             scale = scale > huge / (mod + 1) ? huge : scale * mod;
         }
         list_add(&l, product_element(s, vals));
@@ -9930,6 +9946,7 @@ static int search(void) {
     gen_emit = init_emit;
     if (ntemporal_props) live_init_lits();
     arena = &scratch_arena;
+    init_draws = draw_model;
     draw_restart(NULL);
     gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
