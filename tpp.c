@@ -10092,6 +10092,37 @@ static const char *cfg_text;
 static int cfg_len, cfg_str, cfg_scanning;
 static int64_t cfg_num;
 
+/* Java's escapes of the characters, as JavaCC prints them. */
+static void java_escaped(Buf *b, const char *s, int n) {
+    for (int i = 0; i < n; i++) {
+        const char *esc = strchr("\b\t\n\f\r\"'\\", s[i]);
+        if (s[i] && esc) buf_printf(b, "\\%c", "btnfr\"'\\"[esc - "\b\t\n\f\r\"'\\"]);
+        else if ((unsigned char)s[i] < 0x20 || s[i] == 0x7f) buf_printf(b, "\\u%04x", (unsigned char)s[i]);
+        else buf_add(b, s + i, 1);
+    }
+}
+
+/* A string the n characters from its quote that a line end breaks:
+   JavaCC's error, on the configuration as TLC reads it, a newline ended. */
+static _Noreturn void cfg_string_error(CfgLexer *L, int n) {
+    const char *s = L->s + L->pos, *start = s;
+    while (start > L->s && start[-1] != '\n') start--;
+    int col = 0;
+    for (const char *p = start; p <= s + n; p++) col = *p == '\t' ? (col / 8 + 1) * 8 : col + 1;
+    Buf b = {0};
+    if (s[n]) {
+        java_escaped(&b, s, n);
+        printf("Error: TLC found an error in the configuration file:\nLexical error at line %d, column %d.  "
+               "Encountered: \"\\%c\" (%d), after : \"%s\"\n", L->line, col, s[n] == '\n' ? 'n' : 'r', s[n], b.s ? b.s : "");
+    } else {
+        java_escaped(&b, s, n);
+        java_escaped(&b, "\n", 1);
+        printf("Error: TLC found an error in the configuration file:\nLexical error at line %d, column 0.  "
+               "Encountered: <EOF> after : \"%s\"\n", L->line + 1, b.s);
+    }
+    exit(TPP_ERROR_CONFIG);
+}
+
 static int cfg_token(CfgLexer *L) {
     cfg_space(L);
     const char *s = L->s + L->pos;
@@ -10108,7 +10139,8 @@ static int cfg_token(CfgLexer *L) {
     if (*s == '"') {
         int n = 1;
         Buf b = {0};
-        while (s[n] && s[n] != '"') {
+        while (s[n] != '"') {
+            if (!s[n] || s[n] == '\n' || s[n] == '\r') cfg_string_error(L, n);
             if (s[n] == '\\' && s[n + 1]) n++;
             buf_add(&b, s + n, 1);
             n++;

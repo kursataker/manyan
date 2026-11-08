@@ -61,6 +61,8 @@ Edge cases found running TLC's own test models (`test-model`):
 - A temporal `IF` whose guard evaluates with no state is its chosen
   branch, as TLC 1.8 translates it, so a `RECURSIVE` property ends
   instead of overflowing the stack (Github1389).
+- A configuration string that a line end or the file's end interrupts is
+  JavaCC's lexical error, as TLC reports it (Github1455).
 
 ## 0.6.0
 
