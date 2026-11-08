@@ -60,6 +60,7 @@ In the order they were made.
 | Fingerprint table split into fingerprints and states | no gain |
 | A wrapper evaluating leaves without the dispatch | slower |
 | `-fno-stack-protector` | about 2%, not worth a build flag |
+| `veq` comparing two atoms of one kind first, as `vcmp` does | 2% fewer instructions on MCPaxosSmall, but 1% slower with the profile-guided build |
 | `eval` as a switch calling one noinline function per kind | 2%; the table above does better |
 | A tuple's value array in the same allocation as the tuple | no measurable gain |
 | Prefetching fingerprint slots, successors queued 8 deep | none, slightly slower: the out-of-order core already overlaps the miss |
