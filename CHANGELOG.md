@@ -21,6 +21,9 @@ Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
   splits it, so a random behavior draws the same actions (EWD687a_anim,
   whose leaves have no out-edges); one whose `S` fails is one action
   too, failing in the search rather than before it.
+- A call `Op(a)` in the next-state action whose argument is not
+  constant, or fails, is one action named `Op` and located at the call,
+  as TLC splits it.
 
 ## 0.6.0
 

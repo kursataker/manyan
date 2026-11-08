@@ -7508,15 +7508,24 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
-        Env *env = NULL;
-        int constant = 1;
-        for (int i = 0; i < e->n; i++) {
-            if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
-            else env = mk_arg(d->params[i], e->args[i], c, env);
-            constant &= expr_level(e->args[i]) == 0;
-        }
+        /* As TLC, a call is one action, named by the definition and located
+           at the call, if an argument is not constant or fails. */
+        for (int i = 0; i < e->n; i++)
+            if (expr_level(e->args[i]) > 0) { add_action(e, c, e->def->name, e, NULL); return; }
+        Env *volatile env = NULL;
+        EvalState es = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        int failed = sigsetjmp(here, 0);
+        if (!failed)
+            for (int i = 0; i < e->n; i++)
+                env = mk_binding(d->params[i], d->params[i]->arity ? eval_operator_arg(e->args[i], c) : eval(e->args[i], c), env);
+        eval_restore(es);
+        error_restore(&er);
+        if (failed) { add_action(e, c, e->def->name, e, NULL); return; }
         deeper();
-        split_action(d->body, (Ctx){env, c.inst}, d->name, constant ? d : NULL);
+        split_action(d->body, (Ctx){env, c.inst}, d->name, d);
         eval_depth--;
         return;
     }

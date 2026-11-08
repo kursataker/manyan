@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Go line 9, col 9 to line 9, col 34 of module split_call_error>
+x = 1
+
+State 3: <Go line 9, col 9 to line 9, col 34 of module split_call_error>
+x = 3
+
+5 states generated, 4 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
