@@ -1003,6 +1003,7 @@ theorem's statement is kept for §5.7), computing with real numbers and
 with `\AA` and `\EE` (which TLC cannot either; §3.5, §11.3), `-generate`,
 the configuration's `_PERIODIC`, `_RL_REWARD` and `_POSSIBLE` (rejected),
 writing simulated behaviors to files (`-simulate file=`), simulation with
-several workers, the order of `Print` output in a simulation,
-checkpointing, multiple workers' scheduling, distributed TLC, and the
+several workers, the order of `Print` output in a simulation, the order
+of a record's fields in a simulated behavior (TLC's constructor order
+until it compares or fingerprints the record), checkpointing, multiple workers' scheduling, distributed TLC, and the
 TLA⁺ Toolbox outputs (`-tool`).

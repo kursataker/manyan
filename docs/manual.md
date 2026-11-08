@@ -196,7 +196,10 @@ that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
 may come between the states; tpp stops at the error. There a temporal
 property is checked on the whole graph of each behavior, where TLC may
-miss a counterexample of a property such as `P ~> Q`, or report another. Real numbers
+miss a counterexample of a property such as `P ~> Q`, or report another.
+A simulated behavior prints each record with its fields in the standard
+order; TLC prints a record in its constructor's order until it first
+compares or fingerprints it, which it does as it goes. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
 check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
