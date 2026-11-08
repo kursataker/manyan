@@ -13,8 +13,8 @@ Every other goal relies on people trusting a result from tpp as much as one
 from TLC.
 
 - Run the specs of [tlaplus/Examples](https://github.com/tlaplus/Examples)
-  in CI against TLC's cached results (`make test-examples`), and publish how
-  many give identical output. Each spec that differs becomes a test in
+  against TLC (`make full-bench`), and publish how many give identical
+  output ([full benchmark](fullbench.md)). Each spec that differs becomes a test in
   `tests/spec` and then a fix. The goal is all of them.
 - Add TLC 1.8.0's standard modules `TLCExt` (`Trace`, `CounterExample`,
   `AssertError`, `TLCDefer`, ...) and `Json` (`JsonSerialize`,

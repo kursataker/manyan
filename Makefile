@@ -26,7 +26,7 @@ TLA_SHA256 = e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
 
-.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench full-bench install clean
 
 all: tpp
 
@@ -108,6 +108,40 @@ fuzz-sim: tpp $(TLA_JAR)
 
 bench: tpp $(TLA_JAR)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"
+
+# tlaplus/Examples, pinned, with the modules its CI puts on TLC's class
+# path: CommunityModules and TLAPS. Move a pin with its date in the commit.
+EXAMPLES_REV = ca168055339d5cbcee95b7eefcb97c1ee59f9914
+TLAPM_REV = c8ddc44a80b621989f96a9ee2c371301c52b109f
+COMMUNITY_REV = 202611060952
+COMMUNITY_SHA256 = a3b27c40f1fb5085f30c6ead37e918457f8cfc62c1e50a1dc668ef592ad2b5fb
+EXAMPLES = $(OBJDIR)/Examples-$(EXAMPLES_REV)
+TLAPM = $(OBJDIR)/tlapm-$(TLAPM_REV)
+COMMUNITY = $(OBJDIR)/CommunityModules-$(COMMUNITY_REV)
+FULL_TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)):$(abspath $(COMMUNITY)/modules.jar):$(abspath $(TLAPM)/library) tlc2.TLC
+
+# ONLY=PATTERN picks models; MAX_RUNTIME=hh:mm:ss caps the manifest's runtime.
+full-bench: tpp $(TLA_JAR) $(EXAMPLES) $(TLAPM) $(COMMUNITY)
+	python3 bench/examples.py ./tpp --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
+		--library $(COMMUNITY) --library $(TLAPM)/library \
+		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME))
+
+$(OBJDIR)/Examples-%:
+	rm -rf $@.tmp && git init -q $@.tmp
+	git -C $@.tmp fetch -q --depth 1 https://github.com/tlaplus/Examples $*
+	git -C $@.tmp checkout -q FETCH_HEAD && mv $@.tmp $@
+
+$(OBJDIR)/tlapm-%:
+	rm -rf $@.tmp && git init -q $@.tmp
+	git -C $@.tmp fetch -q --depth 1 https://github.com/tlaplus/tlapm $*
+	git -C $@.tmp checkout -q FETCH_HEAD && mv $@.tmp $@
+
+$(COMMUNITY):
+	rm -rf $@.tmp && mkdir -p $@.tmp
+	curl -fsSL -o $@.tmp/modules.jar https://github.com/tlaplus/CommunityModules/releases/download/$(COMMUNITY_REV)/CommunityModules-deps.jar
+	echo "$(COMMUNITY_SHA256)  $@.tmp/modules.jar" | shasum -a 256 -c -
+	cd $@.tmp && unzip -q modules.jar '*.tla'
+	mv $@.tmp $@
 
 install: tpp
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/include
