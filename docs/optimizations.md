@@ -48,7 +48,7 @@ In the order they were made.
 | An instance's substitution of state level, but a variable, is computed once per state, as TLC keeps a LazyValue | refinement with K = 8 2.09 → 1.55, counters (no instance) +1% |
 | `<<x, y>> \in S`, of atoms and an enumerated S, probes S with the components, not a tuple made of them | closure 0.48 → 0.46 |
 | A stored state's words are zigzag varints, a small number one byte | memory: PaxosCommit 2067 → 1140 MB, counters 188 → 145 MB; time: counters +3%, others under 1% |
-| Two enumerated sets compare their atoms first, before `vcmp`'s checks for other kinds | partition with N = 10 1.25 → 1.15 |
+| Two enumerated sets or tuples compare their atoms first, before `vcmp`'s checks for other kinds | partition with N = 10 1.25 → 1.15; tuples too: Examples' TLCSailfish1 9.95 → 9.65 |
 | A native operator reached through an instance takes its arguments as values, without thunks, as `ev_call` does; a root module's call through instances without parameters keeps its `Inst` chain on the expression | Examples' Huang (1 worker) 66 → 46 → 43 |
 | `r.f` keeps on the expression where the field was in the last record, and checks there first | Examples' MCPaxosSmall (1 worker) 20.3 → 18.6, 12% fewer instructions |
 | Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do | Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB |

@@ -991,17 +991,26 @@ static _Noreturn void incomparable(Value *a, Value *b) {
     abort();
 }
 
+/* x and y, n atoms each, in order, as vcmp compares the parts of sets and
+   tuples; NOT_ATOMS when it meets a pair that are not atoms of one kind. */
+enum { NOT_ATOMS = 2 };
+static inline int atoms_cmp(Value **x, Value **y, int n) {
+    for (int i = 0; i < n; i++) {
+        if (x[i]->kind != y[i]->kind || x[i]->kind > V_MODEL) return NOT_ATOMS;
+        if (x[i]->u.i != y[i]->u.i) return x[i]->u.i < y[i]->u.i ? -1 : 1;
+    }
+    return 0;
+}
+
 /* The standard order (§7.4). Model values come first; other values of
    different kinds cannot be compared. */
 static int vcmp(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a == b) return 0;
-    if (a->kind == V_SET && b->kind == V_SET) {   /* sets of atoms, as the set case below compares them */
+    if (a->kind == b->kind && (a->kind == V_SET || a->kind == V_TUPLE)) {   /* of atoms, as the cases below */
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
-        int i = 0;
-        for (Value *x, *y; i < a->n && (x = a->u.set.elems[i])->kind == (y = b->u.set.elems[i])->kind && x->kind <= V_MODEL; i++)
-            if (x->u.i != y->u.i) return x->u.i < y->u.i ? -1 : 1;
-        if (i == a->n) return 0;
+        int c = a->kind == V_SET ? atoms_cmp(a->u.set.elems, b->u.set.elems, a->n) : atoms_cmp(a->u.fcn.vals, b->u.fcn.vals, a->n);
+        if (c != NOT_ATOMS) return c;
     }
     if (a->kind == V_LAMBDA || b->kind == V_LAMBDA) realize_both(&a, &b);
     /* Comparing the parts of a value TLC made with a source names it in
@@ -1059,12 +1068,8 @@ static int vcmp(Value *a, Value *b) {
 static inline int vcmp_quick(Value *a, Value *b) {
     if (a->kind == b->kind && a->kind <= V_MODEL) return (a->u.i > b->u.i) - (a->u.i < b->u.i);
     if (a->kind == V_TUPLE && b->kind == V_TUPLE && a->n == b->n) {
-        for (int i = 0; i < a->n; i++) {
-            Value *x = a->u.fcn.vals[i], *y = b->u.fcn.vals[i];
-            if (x->kind != y->kind || x->kind > V_MODEL) return vcmp(a, b);
-            if (x->u.i != y->u.i) return x->u.i < y->u.i ? -1 : 1;
-        }
-        return 0;
+        int c = atoms_cmp(a->u.fcn.vals, b->u.fcn.vals, a->n);
+        if (c != NOT_ATOMS) return c;
     }
     return vcmp(a, b);
 }
