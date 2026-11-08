@@ -52,6 +52,29 @@ from TLC.
 - Compile tpp to WebAssembly for a browser playground, where anyone can paste
   a spec and check it with nothing installed.
 
+## Next: 0.7.0
+
+In the order of the goals above.
+
+1. **The Examples that differ from TLC.** At 0.6.1, 92 of the Examples
+   checked give TLC's output and 38 do not. Group the 38 by cause, then
+   fix each cause with a test in `tests/spec`.
+2. **Fewer, cheaper nodes in evaluation.** Counters spends about 60% of
+   its time evaluating, about 148 tree nodes per state
+   ([optimizations](optimizations.md#where-the-time-goes-now)). Resolve
+   variables and bound names to slots before the search, and fuse common
+   shapes such as `f[x]` and comparisons of integers into one node. This
+   speeds up every spec, and it should win back the 1–3% that
+   `assignable`'s search for names cost log, recursion and symmetry in
+   0.6.1.
+3. **The serial parts left with workers**
+   ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
+   - compute the initial states in parallel, merged in the order one
+     process finds them (MCBakery);
+   - evaluate a property's actions and `ENABLED`s on the edges as the
+     workers expand states, not after the search in one process
+     (AllocatorImplementation).
+
 ## What stays
 
 - One C file and one header, with no dependencies.
