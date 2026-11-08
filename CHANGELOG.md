@@ -111,6 +111,9 @@ Performance:
   LazyValue (a refinement check: 2.09 s to 1.55 s).
 - `<<x, y>> \in S` probes `S` with `x` and `y`, without making the tuple
   (closure 0.48 s to 0.46 s).
+- A stored state takes a byte for a small number instead of four: about
+  half the memory for states of records (PaxosCommit 2.1 GB to 1.1 GB),
+  for 3% more time on counters.
 
 ## 0.6.0
 

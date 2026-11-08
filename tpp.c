@@ -152,11 +152,16 @@ static void region_close(Region *r) {
 /* A growable byte buffer. */
 typedef struct { char *s; size_t n, cap; } Buf;
 
-static void buf_add(Buf *b, const char *s, size_t n) {
+/* Room for n more bytes and the terminating 0. */
+static inline void buf_room(Buf *b, size_t n) {
     if (b->n + n + 1 > b->cap) {
         b->cap = (b->n + n + 1) * 2;
         b->s = xrealloc(b->s, b->cap);
     }
+}
+
+static void buf_add(Buf *b, const char *s, size_t n) {
+    buf_room(b, n);
     memcpy(b->s + b->n, s, n);
     b->n += n;
     b->s[b->n] = 0;
@@ -8178,15 +8183,27 @@ static uint64_t value_hash(Value *v) {
 }
 
 /* A state is stored as the bytes of its values, which keep how a value
-   prints. */
-static void put32(Buf *b, int64_t v) { int32_t x = (int32_t)v; buf_add(b, (char *)&x, 4); }
+   prints: a tag and its 32-bit word, zigzagged and in 7-bit groups, so a
+   small number takes one byte. */
+static int put_word(char *w, int64_t v) {
+    uint32_t z = (uint32_t)(int32_t)v << 1 ^ (uint32_t)((int32_t)v >> 31);
+    int n = 0;
+    for (; z > 0x7f; z >>= 7) w[n++] = (char)(z | 0x80);
+    w[n++] = (char)z;
+    return n;
+}
 
-/* A tag and its word. */
+static void put32(Buf *b, int64_t v) {
+    buf_room(b, 5);
+    b->n += (size_t)put_word(b->s + b->n, v);
+    b->s[b->n] = 0;
+}
+
 static void put_tagged(Buf *b, char tag, int64_t v) {
-    char w[5] = {tag};
-    int32_t x = (int32_t)v;
-    memcpy(w + 1, &x, 4);
-    buf_add(b, w, 5);
+    buf_room(b, 6);
+    b->s[b->n++] = tag;
+    b->n += (size_t)put_word(b->s + b->n, v);
+    b->s[b->n] = 0;
 }
 
 static void encode(Buf *b, Value *v) {
@@ -8217,7 +8234,15 @@ static void encode(Buf *b, Value *v) {
     }
 }
 
-static int32_t get32(const char **p) { int32_t x; memcpy(&x, *p, 4); *p += 4; return x; }
+static int32_t get32(const char **p) {
+    uint32_t z = (unsigned char)**p;
+    if (z < 0x80) { (*p)++; return (int32_t)(z >> 1 ^ -(z & 1)); }
+    z = 0;
+    unsigned char c;
+    int shift = 0;
+    do { c = (unsigned char)*(*p)++; z |= (uint32_t)(c & 0x7f) << shift; shift += 7; } while (c & 0x80);
+    return (int32_t)(z >> 1 ^ -(z & 1));
+}
 
 /* A value of a state, with its hash: the successors that keep or update it
    need not hash it again. */

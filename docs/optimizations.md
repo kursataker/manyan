@@ -47,6 +47,7 @@ In the order they were made.
 | Profile-guided optimization (`make`), trained on the conformance suite (training on the bench specs instead gains about as much, so the suite is a fair profile) | clang: closure 0.55 → 0.48, counters 0.85 → 0.72, queue 0.18 → 0.16; gcc 15: counters 1.00 → 0.82 |
 | An instance's substitution of state level, but a variable, is computed once per state, as TLC keeps a LazyValue | refinement with K = 8 2.09 → 1.55, counters (no instance) +1% |
 | `<<x, y>> \in S`, of atoms and an enumerated S, probes S with the components, not a tuple made of them | closure 0.48 → 0.46 |
+| A stored state's words are zigzag varints, a small number one byte | memory: PaxosCommit 2067 → 1140 MB, counters 188 → 145 MB; time: counters +3%, others under 1% |
 
 ## Tried and dropped
 
