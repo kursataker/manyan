@@ -129,6 +129,9 @@ Performance:
   whose DyadicRationals instances Integers: 66 s to 43 s).
 - `r.f` looks first where it found `f` in the last record (MCPaxosSmall
   20.3 s to 18.6 s).
+- Computing the initial states drops what each candidate's guards and
+  each state's invariants made (MCBakery, all of whose 655200 states are
+  initial: 1.2 GB to 0.4 GB, 10% faster).
 
 ## 0.6.0
 

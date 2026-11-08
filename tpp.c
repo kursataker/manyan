@@ -119,6 +119,7 @@ static size_t arena_bytes(Arena *a) {
 typedef struct { Arena *a; Chunk *c; size_t used; int kept; } Region;
 static Region regions[64];
 static int nregions;
+static int init_regions;   /* computing the initial states, whose guards the scratch arena may drop */
 
 static int in_region(Region *r, void *p) {
     for (Chunk *c = r->a->head; c; c = c->next) {
@@ -135,7 +136,7 @@ static void held_by(void *holder) {
 }
 
 static Region *region_open(void) {
-    if (arena == &perm_arena || arena == &scratch_arena || nregions == 64) return NULL;
+    if (arena == &perm_arena || (arena == &scratch_arena && !init_regions) || nregions == 64) return NULL;
     Region *r = &regions[nregions++];
     *r = (Region){arena, arena->head, arena->head ? arena->head->used : 0, 0};
     return r;
@@ -9351,7 +9352,9 @@ static int init_emit(void) {
     int idx = add_state(st, fp, -1, -1, 1);
     if (dump_file) dump_node(idx, st);
     if (ntemporal_props) live_init(st);
+    Region *r = region_open();   /* what checking the state made: one of many */
     violation = check_initial(st);
+    region_close(r);
     return violation != 0;
 }
 
@@ -10063,7 +10066,9 @@ static int search(void) {
     arena = &scratch_arena;
     init_draws = draw_model;
     draw_restart(NULL);
+    init_regions = 1;
     gen(init_expr, root_ctx, NULL);
+    init_regions = 0;
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");

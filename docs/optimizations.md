@@ -51,6 +51,7 @@ In the order they were made.
 | Two enumerated sets compare their atoms first, before `vcmp`'s checks for other kinds | partition with N = 10 1.25 → 1.15 |
 | A native operator reached through an instance takes its arguments as values, without thunks, as `ev_call` does; a root module's call through instances without parameters keeps its `Inst` chain on the expression | Examples' Huang (1 worker) 66 → 46 → 43 |
 | `r.f` keeps on the expression where the field was in the last record, and checks there first | Examples' MCPaxosSmall (1 worker) 20.3 → 18.6, 12% fewer instructions |
+| Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do | Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB |
 
 ## Tried and dropped
 
