@@ -7500,7 +7500,11 @@ NATIVE(n_asserterror) {
     UNUSED;
     if (a) return FALSEV;   /* its arguments evaluated */
     Expr *err = call->args[0];
-    if (err->kind != X_STR) fail_at(err, "In computing AssertError, a non-string expression was used as the err of an AssertError(err, exp).");
+    if (err->kind != X_STR) {
+        Buf b = {0};
+        node_text(&b, err);
+        fail("In computing AssertError, a non-string expression (%s) was used as the err of an AssertError(err, exp).", b.s);
+    }
     if (in_worker) worker_cannot();
     EvalState s = eval_save();
     ErrorState saved = error_save();
