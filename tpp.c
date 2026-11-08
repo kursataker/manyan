@@ -7485,8 +7485,9 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
     case X_EXISTS:
         if (bounds_constant(e)) {
             SplitData s = {e->args[0], name, op};
+            int n = nactions;
             for_bindings(e->bounds, e->nb, c, split_fn, &s);
-            return;
+            if (nactions > n) return;   /* \E x \in {} : A is one action, as TLC */
         }
         break;
     case X_LET: {

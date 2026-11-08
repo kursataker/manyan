@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 8, col 9 to line 8, col 13 of module empty_exists>
+x = 0
+
+State 2: <Next line 9, col 34 to line 9, col 43 of module empty_exists>
+x = 1
+
+State 3: <Next line 9, col 34 to line 9, col 43 of module empty_exists>
+x = 2
+
+State 4: <Go(3) line 7, col 28 to line 7, col 37 of module empty_exists>
+x = 15
+
+State 5: <Next line 9, col 34 to line 9, col 43 of module empty_exists>
+x = 16
+
+State 6: <Go(2) line 7, col 28 to line 7, col 37 of module empty_exists>
+x = 28
+
+State 7: <Go(2) line 7, col 28 to line 7, col 37 of module empty_exists>
+x = 30
+exit 12

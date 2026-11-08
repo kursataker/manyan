@@ -17,6 +17,9 @@ Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
 - `TLCGet("-Dk")` and `TLCSet("-Dk", v)` are Java's system properties.
 - A module in no file of its own is read from the root module's file, as
   SANY reads a monolithic spec (braf's `Common`).
+- An action `\E x \in {} : A` is one action, as TLC splits it, so a
+  random behavior draws the same actions (EWD687a_anim, whose leaves
+  have no out-edges).
 
 ## 0.6.0
 

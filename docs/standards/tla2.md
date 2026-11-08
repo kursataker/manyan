@@ -626,8 +626,8 @@ the state constraints admit it, is an initial state.
 The next-state action is evaluated in a state `s` as the initial predicate
 is, with primed variables `v'` in the place of variables, and unprimed
 variables read from `s`. An action is split at its disjunctions, `\E`
-quantifiers, and the definitions it refers to; each part that produces a
-state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
+quantifiers, and the definitions it refers to, `\E x \in {} : A` being one
+part; each part that produces a state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
 definition's parameter may stand for a primed variable, `Op(v')`, and a
 constant operator for the definition that replaces it (§9.1); both are
 followed. `f[a]`, for any lazy `f` (§6.6), is its body with its bound names
