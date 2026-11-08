@@ -440,15 +440,19 @@ warning.)`, and a warning already printed is not printed again.
 
 ### 6.9 Action operators
 
-In an action, `e'` is `e` evaluated in the next state; `UNCHANGED e` is
+In an action, `e'` is `e` evaluated in the next state; `e' = v` and
+`e' \in S` assign a variable when `e'`, through definitions without
+parameters, `LET`, instances and their substitutions, is `x'` or
+`(d)'` with `d` reaching `x` likewise, as TLC's getPrimedVar finds it; `UNCHANGED e` is
 `e' = e`; `[A]_e` is `A \/ UNCHANGED e`; `<<A>>_e` is `A /\ ~UNCHANGED e`;
 `ENABLED A` is true in a state from which `A` has a successor; `A \cdot B`
 is composition.
 
 Inside `ENABLED`, as in TLC, a primed variable of an instantiated module
 written in `A` itself is not replaced by its substitution: `x' = e` gives
-the variable named `x` a value, so with `INSTANCE M WITH x <- z, y <- z`,
-`ENABLED (x' = 0 /\ y' = 1)` in `M` is true; `UNCHANGED x` and the change
+the variable named `x` a value, and `x'` reads it back, so with `INSTANCE
+M WITH x <- z, y <- z`, `ENABLED (x' = 0 /\ y' = 1)` in `M` is true;
+`UNCHANGED x` and the change
 `<<A>>_v` requires of `v` compare that variable likewise. An action passed to an
 operator argument from outside the instance keeps its substitutions.
 

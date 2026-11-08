@@ -5162,7 +5162,16 @@ static Expr *substitute(Def *d, Ctx *c) {
     return NULL;
 }
 
+static int enabled_by_name(Def *d, Ctx c);
+static int enabled_slot(Def *d);
+
 static Value *decl_value(Def *d, Ctx c, Expr *where) {
+    if (primed && d->kind == D_VAR && d->var_index < 0 && enabled_by_name(d, c)) {
+        int slot = enabled_slot(d);   /* as ENABLED assigns it (§6.9) */
+        if (slot < 0 || !next_state[slot])
+            fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+        return next_state[slot];
+    }
     Ctx outer = c;
     Expr *x = substitute(d, &outer);
     if (x) {
@@ -7216,6 +7225,15 @@ static int enabled_slot(Def *d) {
     return nvars + nenabled_names++;
 }
 
+/* Whether ENABLED marks c's chain of instances before one substitutes d. */
+static int enabled_by_name(Def *d, Ctx c) {
+    for (Inst *in = c.inst; in; in = in->parent) {
+        if (in->def == &enabled_mark) return 1;
+        for (int i = 0; i < in->def->nsubst; i++) if (in->def->subst_decl[i] == d) return 0;
+    }
+    return 0;
+}
+
 /* The evaluation globals, which a caller that goes on after an error
    restores. */
 typedef struct {
@@ -7356,20 +7374,17 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Exp
 }
 
 /* The variable an expression assigns: v (initial predicate) or v'
-   (action), through operator parameters, definitions and instance
-   substitutions that stand for it; -1 if none. */
+   (action), through operator parameters, definitions, LET and instance
+   substitutions that stand for it, as TLC's getPrimedVar and getVar;
+   -1 if none. */
+static Ctx instance_ctx(Expr *e, Ctx c);
 static int assignable(Expr *lhs, Ctx c) {
-    if (!gen_init) {
-        /* A parameter may stand for a primed argument: Op(x') == x = 1. */
-        for (Env *b; lhs->kind == K_BOUND && (b = env_find(c.env, lhs->def)) && b->e; c = (Ctx){b->ctx_env, b->ctx_inst})
-            lhs = b->e;
-        if (lhs->kind != K_PRIME) return -1;
-        lhs = lhs->args[0];
-    }
-    /* Through parameters, definitions and substitutions, as TLC's getVar. */
-    for (;;) {
+    for (int prime = gen_init;;) {   /* an initial predicate has no prime */
         Def *d = lhs->def;
-        if (lhs->kind == K_BOUND || (lhs->kind == K_CALL && lhs->n == 0)) {
+        if (lhs->kind == K_PRIME && !prime) {
+            prime = 1;
+            lhs = lhs->args[0];
+        } else if (lhs->kind == K_BOUND || (lhs->kind == K_CALL && lhs->n == 0)) {
             if (lhs->kind == K_BOUND || d->kind == D_PARAM || d->local == 2) {
                 Env *b = env_find(c.env, d);
                 if (!b || !b->e) return -1;
@@ -7381,7 +7396,17 @@ static int assignable(Expr *lhs, Ctx c) {
             } else {
                 return -1;
             }
-        } else if (lhs->kind == K_DECL) {
+        } else if (lhs->kind == K_INSTCALL && lhs->n == 0 && d->kind == D_OP && !d->native) {
+            c = instance_ctx(lhs, c);
+            lhs = d->body;
+        } else if (lhs->kind == X_LET && !prime) {
+            Env *env = c.env;
+            for (int i = 0; i < lhs->ndefs; i++)
+                if (!lhs->defs[i]->nparams) env = mk_thunk(lhs->defs[i], lhs->defs[i]->body, c, env);
+            for (Env *t = env; t != c.env; t = t->next) t->ctx_env = env;
+            c.env = env;
+            lhs = lhs->args[0];
+        } else if (lhs->kind == K_DECL && prime) {
             Expr *sub = NULL;
             Ctx outer = c;
             for (Inst *in = c.inst; in && !sub; in = in->parent) {

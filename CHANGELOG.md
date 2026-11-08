@@ -86,6 +86,11 @@ Edge cases found running TLC's own test models (`test-model`):
   with `-nowarning` (CyclicRedefineVars).
 - Fairness and properties whose disjunctive normal form TLC cannot count
   in an int, such as 36 `SF`s, are its error before the check (Github742).
+- `I!F \in S` with `F == x'`, `(LET y == x' IN y) = 0` and `I!G' = 0`
+  assign `x'`, in the next-state action and in `ENABLED`, as TLC 1.8's
+  getPrimedVar finds the variable (Github725c, d, e).
+- Inside `ENABLED`, a primed variable of an instance that the action
+  assigned by name is read back by name (Github725f, g).
 
 ## 0.6.0
 
