@@ -7507,12 +7507,14 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
     }
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
-        if (d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
+        if (d->kind != D_OP || d->nparams != e->n) break;
         /* As TLC, a call is one action, named by the definition and located
-           at the call, if an argument is not constant or fails. */
-        for (int i = 0; i < e->n; i++)
-            if (expr_level(e->args[i]) > 0) { add_action(e, c, e->def->name, e, NULL); return; }
-        Env *volatile env = NULL;
+           at the call, if the definition is built in or an argument is not
+           constant or fails. */
+        int whole = d->native != NULL;
+        for (int i = 0; i < e->n; i++) whole |= expr_level(e->args[i]) > 0;
+        if (whole) { add_action(e, c, e->def->name, e, NULL); return; }
+        Env *volatile env = d->local == 2 ? c.env : NULL;   /* a LET definition sees the LET */
         EvalState es = eval_save();
         ErrorState er = error_save();
         sigjmp_buf here;

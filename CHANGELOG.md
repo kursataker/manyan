@@ -22,8 +22,9 @@ Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
   whose leaves have no out-edges); one whose `S` fails is one action
   too, failing in the search rather than before it.
 - A call `Op(a)` in the next-state action whose argument is not
-  constant, or fails, is one action named `Op` and located at the call,
-  as TLC splits it.
+  constant, or fails, or of a built-in `Op`, is one action named `Op`
+  and located at the call, as TLC splits it; a call of a LET definition
+  is split.
 
 ## 0.6.0
 

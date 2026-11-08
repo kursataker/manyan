@@ -628,8 +628,8 @@ is, with primed variables `v'` in the place of variables, and unprimed
 variables read from `s`. An action is split at its disjunctions, `\E`
 quantifiers, and the definitions it refers to; `\E x \in S : A` is one
 part if `S` is empty or fails to evaluate as it is split, and a call
-`Op(a)` is one part, named `Op` and located at the call, if an argument
-is not constant or fails to evaluate. Each part that produces a state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
+`Op(a)` is one part, named `Op` and located at the call, if `Op` is built
+in or an argument is not constant or fails to evaluate. Each part that produces a state is a transition. `UNCHANGED v` assigns `v'` the value of `v`. A
 definition's parameter may stand for a primed variable, `Op(v')`, and a
 constant operator for the definition that replaces it (§9.1); both are
 followed. `f[a]`, for any lazy `f` (§6.6), is its body with its bound names
