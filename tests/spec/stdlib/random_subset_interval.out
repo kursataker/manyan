@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 9, col 8 to line 9, col 27 of module random_subset_interval failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.Randomization.RandomSubset(tlc2.value.impl.Value,tlc2.value.impl.Value),
+but it produced the following error:
+-1
+exit 10

@@ -92,6 +92,14 @@ Edge cases found running TLC's own test models (`test-model`):
 - Inside `ENABLED`, a primed variable of an instance that the action
   assigned by name is read back by name (Github725f, g).
 
+- TLCExt: `AssertError`, `TLCCache`, `TLCModelValue`, `TLCGetOrDefault`,
+  `AssertEq`, `TLCNoOp` and `TLCGetAndSet` (ConstantContextTLCCache,
+  ModuleSemanticsAssume); its operators of traces, fingerprints and
+  successors stop tpp, saying so.
+- `RandomSubset(k, a..b)` takes its elements without making the interval,
+  so it draws from up to 2^31 - 1 numbers; a negative `k` is Java's
+  NegativeArraySizeException.
+
 Performance:
 
 - A state-level substitution of an instance, such as a refinement

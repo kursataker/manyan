@@ -1954,6 +1954,7 @@ struct Def {
     int nb;
     Module *mod;
     Native native;
+    int lazy;             /* a native of TLC's evaluation methods: it evaluates the call's arguments itself, unless given values */
     const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
     Value *value;         /* the configured value of a constant or definition */
@@ -3535,6 +3536,49 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "\n\n\n\n\n\n\n\n\n\n\nTestRandomSetOfSubsets(k, n, S) ==\n"
      "              [i \\in 1..5 |-> Cardinality(RandomSetOfSubsets(k, n, S))]\n"
      "====\n"},
+    {"TLCExt",
+     "---- MODULE TLCExt ----\n"
+     "\nLOCAL INSTANCE TLC\n"
+     "LOCAL INSTANCE Integers\n"
+     "\n\n\n\n\n\n\n\n\nAssertEq(a, b) ==\n"
+     "    IF a # b THEN\n"
+     "        /\\ PrintT(\"Assertion failed\")\n"
+     "        /\\ PrintT(a)\n"
+     "        /\\ PrintT(b)\n"
+     "        /\\ a = b\n"
+     "    ELSE a = b\n"
+     "\n\nAssertError(err, exp) ==\n"
+     "    LET FailsEval(e) == CHOOSE b \\in BOOLEAN : TRUE\n"
+     "        TLCError     == CHOOSE s \\in STRING  : TRUE\n"
+     "    IN IF FailsEval(exp) THEN Assert(err = TLCError, TLCError) ELSE TRUE\n"
+     "\n\n\nTLCGetOrDefault(key, defaultVal) ==\n"
+     "  CHOOSE n : TRUE\n"
+     "\nTLCGetAndSet(key, Op(_,_), val, defaultVal) ==\n"
+     "  LET oldVal == TLCGetOrDefault(key, defaultVal)\n"
+     "  IN CHOOSE v \\in {oldVal} : TLCSet(key, Op(oldVal, val))\n"
+     "\n\n\n\n\nTrace ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n  TRUE\n"
+     "\n\n\nCounterExample ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n    TRUE\n"
+     "\nToTrace(CE) ==\n"
+     "\n\n\n\n\n\n\n\n\n    TRUE\n"
+     "\n\n\nTLCModelValue(str) ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n  CHOOSE v: ToString(v) = str\n"
+     "\nTLCDefer(expression) ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\n  TRUE\n"
+     "\n\n\nTLCNoOp(val) ==\n"
+     "\n\n\n\n\n\n  val\n"
+     "\n\nPickSuccessor(exp) ==\n"
+     "\n\n\n\n\n\n\n\n\n\n\n  IF (exp)\n"
+     "  THEN TRUE\n"
+     "  ELSE CHOOSE bool \\in BOOLEAN : TRUE\n"
+     "\n\n\nTLCCache(expression, closure) ==\n"
+     "\n\n\n\n\n\n  expression\n"
+     "\nTLCFP(var) ==\n"
+     "\n\n\n\n\n  CHOOSE i \\in Int: TRUE\n"
+     "\n\n\nTLCEvalDefinition(definitionName) ==\n"
+     "\n\n\n\n  TRUE\n"
+     "\n====\n"},
     {NULL, NULL}};
 
 static Module **modules;      /* in the order they were read */
@@ -5538,7 +5582,7 @@ static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
 static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     Def *d = e->def;
     if (d->kind == D_VAR && !d->replacement) return decl_value(d, c, e);
-    if (d->native && !d->replacement && e->n <= 4 && e->n == d->nparams) {
+    if (d->native && !d->lazy && !d->replacement && e->n <= 4 && e->n == d->nparams) {
         /* The common operators of the standard modules: no arena for the arguments. */
         Value *vals[4];
         int plain = 1;
@@ -5559,6 +5603,7 @@ static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
     Def *d = e->def;
     if (d->replacement) return call_def(d, e->args, e->n, c, e);   /* by the configuration, an operator of the root module */
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
+    if (d->lazy) return call_native(d, e, NULL, c);
     if (d->native || d->kind == D_FCN || e->n == 0) {
         if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
     }
@@ -6271,6 +6316,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Ctx inner = {env, b->ctx_inst};
         return eval_body(d->body, inner);
     }
+    if (d->lazy) return call_native(d, call, NULL, c);
     if (d->native) {
         Value **vals = NEWN(Value *, n);
         for (int i = 0; i < n; i++)
@@ -6589,8 +6635,9 @@ static int *prop(const char *key) {
 
 NATIVE(n_tlcget) {
     UNUSED;
-    if (a[0]->kind == V_STR) {
-        const char *key = S(a[0]->u.i);
+    Value *k = a ? a[0] : eval(call->args[0], c);
+    if (k->kind == V_STR) {
+        const char *key = S(k->u.i);
         int *p = prop(key);
         if (p) return mk_str(*p);
         if (!strcmp(key, "level")) return mk_int(cur_level + primed);   /* primed, the next state's */
@@ -6600,10 +6647,10 @@ NATIVE(n_tlcget) {
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
         return mk_int(n);
     }
-    if (a[0]->kind != V_INT || a[0]->u.i < 0)
-        fail("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
-    if (starting || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) fail("TLCGet(%s) was undefined.", pretty(a[0]));
-    const char *p = registers[a[0]->u.i].s;
+    if (k->kind != V_INT || k->u.i < 0)
+        fail("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(k));
+    if (starting || k->u.i >= nregisters || !registers[k->u.i].n) fail("TLCGet(%s) was undefined.", pretty(k));
+    const char *p = registers[k->u.i].s;
     return decode(&p);
 }
 
@@ -7017,6 +7064,7 @@ NATIVE(n_randomsubset) {
         fail_module("The first argument of RandomSubset should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
     if (!is_set(a[1]) || set_is_infinite(a[1]))
         fail_module("The second argument of RandomSubset should be a a finite set, but instead it is:\n%s", pretty(a[1]));
+    if (a[0]->u.i < 0) fail("%d", (int)a[0]->u.i);   /* Java's NegativeArraySizeException, sizing the subset */
     Value *s = a[1], **sets = NULL, *e = NULL;
     if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
     int n = 0;
@@ -7031,6 +7079,8 @@ NATIVE(n_randomsubset) {
             size = size > huge / (parts[i]->n + 1) ? huge : size * parts[i]->n;
         }
         sets = parts;
+    } else if (s->kind == V_INTERVAL) {
+        size = interval_size(s);   /* its i-th element is lo + i: up to 2^31 of them are not made */
     } else {
         e = enumerate(s);
         size = e->n;
@@ -7053,6 +7103,7 @@ NATIVE(n_randomsubset) {
         if (big) idx = ((Big)(INT64_MAX - 24) * i + start) % size;
         else do idx = (mult * idx + inc) % m; while (idx >= size);
         if (e) { list_add(&l, e->u.set.elems[(int64_t)idx]); continue; }
+        if (!sets) { list_add(&l, mk_int(s->u.range.lo + (int64_t)idx)); continue; }
         Big scale = 1;   /* of the last part, the least significant */
         for (int j = n - 1; j >= 0; j--) {
             int mod = sets[j]->n;
@@ -7103,6 +7154,73 @@ NATIVE(n_tostring) {
 
 NATIVE(n_tlceval) { UNUSED; return a[0]; }
 
+/* TLCExt's operators. */
+NATIVE(n_asserterror);   /* after the evaluation's saved state */
+
+/* TLCCache(expression, closure): a constant expression's value is kept for
+   each value of closure, as TLC keeps it in a table at the expression. One
+   of a state is kept in the state, which the search's states cannot: TLC
+   evaluates the closure and the expression, then the definition evaluates
+   the expression again. One of an action is the definition's. */
+static inline uint64_t elem_hash(Value *v);
+static struct { Expr *e; uint64_t key; Value *value; } *tlc_cache;
+static int ntlc_cache;
+
+NATIVE(n_tlccache) {
+    UNUSED;
+    if (a) return a[0];
+    Expr *x = call->args[0];
+    int level = expr_level(x);
+    if (level == 1) {
+        eval(call->args[1], c);
+        if (!simulating) eval(x, c);
+    }
+    if (level) return eval(x, c);
+    uint64_t key = elem_hash(eval(call->args[1], c));
+    for (int i = 0; i < ntlc_cache; i++) if (tlc_cache[i].e == x && tlc_cache[i].key == key) return tlc_cache[i].value;
+    if (in_worker) worker_cannot();
+    Value *v = eval(x, c);
+    Arena *saved = arena;
+    arena = &perm_arena;
+    long budget = INT64_MAX;
+    Value *kept = copy_value(v, &budget);
+    arena = saved;
+    if (!kept) return v;
+    tlc_cache = xrealloc(tlc_cache, sizeof *tlc_cache * (size_t)(ntlc_cache + 1));
+    tlc_cache[ntlc_cache].e = x, tlc_cache[ntlc_cache].key = key, tlc_cache[ntlc_cache++].value = kept;
+    return kept;
+}
+
+NATIVE(n_tlcmodelvalue) {
+    UNUSED;
+    if (a[0]->kind != V_STR) fail_module("The argument of ModelValue should be a string, but instead it is:\n%s", pretty(a[0]));
+    return mk_model((int)a[0]->u.i);
+}
+
+/* TLCGetOrDefault(i, d): register i, or d when nothing is kept there. */
+NATIVE(n_tlcgetordefault) {
+    UNUSED;
+    if (a[0]->kind != V_INT || starting || a[0]->u.i < 0 || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) return a[1];
+    const char *p = registers[a[0]->u.i].s;
+    return decode(&p);
+}
+
+/* TLCExt's operators that need TLC's own traces, fingerprints or successors. */
+static _Noreturn void unsupported(const char *op) {
+    if (in_worker) worker_cannot();
+    fflush(stdout);
+    fprintf(stderr, "tpp: %s is not supported\n", op);
+    exit(TPP_ERROR);
+}
+#define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
+UNSUPPORTED(n_trace, "Trace")
+UNSUPPORTED(n_counterexample, "CounterExample")
+UNSUPPORTED(n_totrace, "ToTrace")
+UNSUPPORTED(n_tlcdefer, "TLCDefer")
+UNSUPPORTED(n_picksuccessor, "PickSuccessor")
+UNSUPPORTED(n_tlcfp, "TLCFP")
+UNSUPPORTED(n_tlcevaldefinition, "TLCEvalDefinition")
+
 /* Java's names of TLC's value classes, for its methods' signatures. */
 #define J_V "tlc2.value.impl.Value"
 #define J_I "tlc2.value.impl.IntValue"
@@ -7150,6 +7268,17 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"Bags", "BagOfAll", n_bagofall, J_V, "BagOfAll(" J_V "," J_V ")"},
     {"Bags", "BagToSet", n_bagtoset, J_V, "BagToSet(" J_V ")"},
     {"Bags", "SetToBag", n_settobag, J_V, "SetToBag(" J_V ")"},
+    {"TLCExt", "AssertError", n_asserterror, "synchronized " J_V, "assertError(" J_EVAL ")"},
+    {"TLCExt", "TLCCache", n_tlccache, J_V, "tlcEval2(" J_EVAL ")"},
+    {"TLCExt", "TLCModelValue", n_tlcmodelvalue, "synchronized " J_V, "tlcModelValue(" J_V ")"},
+    {"TLCExt", "TLCGetOrDefault", n_tlcgetordefault, J_V, "tlcGetOrDefault(" J_V "," J_V ")"},
+    {"TLCExt", "Trace", n_trace, J_V, "getTrace(" J_EVAL ")"},
+    {"TLCExt", "CounterExample", n_counterexample, J_V, "error(" J_EVAL ")"},
+    {"TLCExt", "ToTrace", n_totrace, J_V, "lassoOrdinal(" J_V ")"},
+    {"TLCExt", "TLCDefer", n_tlcdefer, J_V, "tlcDefer(" J_EVAL ")"},
+    {"TLCExt", "PickSuccessor", n_picksuccessor, J_V, "pickSuccessor(" J_EVAL ")"},
+    {"TLCExt", "TLCFP", n_tlcfp, J_V, "tlcFingerprint(" J_V ")"},
+    {"TLCExt", "TLCEvalDefinition", n_tlcevaldefinition, J_V, "tlcDefByName(" J_EVAL ")"},
     {"TLC", "Print", n_print, J_V, "Print(" J_V "," J_V ")"},
     {"TLC", "PrintT", n_printt, J_V, "PrintT(" J_V ")"},
     {"TLC", "Assert", n_assert, J_V, "Assert(" J_V "," J_V ")"},
@@ -7169,9 +7298,9 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {NULL, NULL, NULL, NULL, NULL}};
 
 /* The number of arguments of a native's Java method; an evaluation
-   method's operator takes one. */
+   method's operator takes any number, -1. */
 static int native_arity(const char *method) {
-    if (strstr(method, "ExprOrOpArgNode[]")) return 1;
+    if (strstr(method, "ExprOrOpArgNode[]")) return -1;
     const char *p = strchr(method, '(');
     int n = p[1] != ')';
     for (; *p; p++) n += *p == ',';
@@ -7189,8 +7318,9 @@ static void bind_natives(void) {
             if (m->units[u].kind != 0 || !d) continue;
             for (int k = 0; natives[k].module; k++)
                 if (strcmp(natives[k].module, S(m->name)) == 0 && strcmp(natives[k].name, S(d->name)) == 0
-                    && d->nparams == native_arity(natives[k].method)) {
+                    && (native_arity(natives[k].method) < 0 || d->nparams == native_arity(natives[k].method))) {
                     d->native = natives[k].fn;
+                    d->lazy = native_arity(natives[k].method) < 0;
                     /* TLC always loads Integers (its trace modules use it), and takes
                        Naturals' operators from its class; a method may name its own. */
                     const char *m = natives[k].method;
@@ -7302,6 +7432,30 @@ static void error_restore(ErrorState *e) {
     buf_puts(&error_message, e->msg.s);
     free(e->msg.s);
     error_expr = e->expr, error_status = e->status, error_module = e->module, stackless = e->stackless;
+}
+
+/* AssertError(err, exp): whether evaluating exp fails
+   with the message err, as TLC's method catches its EvalException before
+   the preambles of the operators outside are added. A worker leaves it to
+   the search, which tells a real error from one only it can avoid. */
+NATIVE(n_asserterror) {
+    UNUSED;
+    if (a) return FALSEV;   /* its arguments evaluated */
+    Expr *err = call->args[0];
+    if (err->kind != X_STR) fail_at(err, "In computing AssertError, a non-string expression was used as the err of an AssertError(err, exp).");
+    if (in_worker) worker_cannot();
+    EvalState s = eval_save();
+    ErrorState saved = error_save();
+    sigjmp_buf here;
+    handler = &here;
+    java_depth = 0;
+    int failed = sigsetjmp(here, 0);
+    if (!failed) eval(call->args[1], c);
+    else if (error_java) { eval_restore(s); free(saved.msg.s); raise_error(); }   /* Java's own exception */
+    int same = failed && !strcmp(error_message.s ? error_message.s : "", S((int)err->num));
+    eval_restore(s);
+    error_restore(&saved);
+    return BOOLV(same);
 }
 
 /* A lazy function as TLC prints it: computed in full if it can be, else

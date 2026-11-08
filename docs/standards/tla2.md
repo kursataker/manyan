@@ -542,6 +542,12 @@ evaluated natively.
 - **TLC**: `Print`, `PrintT`, `Assert`, `JavaTime`, `TLCGet`, `TLCSet`,
   `:>`, `@@`, `Permutations`, `SortSeq`, `RandomElement`, `Any`,
   `ToString`, `TLCEval`.
+- **TLCExt**: `AssertError`, `TLCCache`, `TLCModelValue`,
+  `TLCGetOrDefault`; `AssertEq`, `TLCNoOp` and `TLCGetAndSet` are their
+  definitions. `Trace`, `CounterExample`, `ToTrace`, `TLCFP`,
+  `PickSuccessor`, `TLCDefer` and `TLCEvalDefinition` need TLC's own
+  traces, fingerprints or successors: tpp stops, saying it does not
+  support the one evaluated.
 
 `RandomElement(S)` and the Randomization operators draw as TLC does, from
 `java.util.Random` seeded with `-seed`. `RandomSubset(k, S)` takes
@@ -552,7 +558,9 @@ m's prime factors, x starts at a random index and c is a random one of
 TLC's 1341 primes (§10.8). An index into a set of functions, records or
 tuples is read in the mixed radix of its parts; for one of more than
 2^31 - 1 elements the indices are instead `(i * (2^63 - 25) + l) % |S|`,
-l the absolute value of a random long.
+l the absolute value of a random long. An interval's index i is its lower
+bound plus i, and the interval is not made. A negative k is Java's
+NegativeArraySizeException, whatever S.
 
 A string is no sequence, but `Len`, `Tail` and `SubSeq` take it as its
 characters, and `\o` joins two strings: `Len("ab") = 2`, and `Tail` and
@@ -584,6 +592,20 @@ evaluated as the model is read, an error there being that of a
 non-constant substitution (§9). Before TLC's checker exists, which is
 before the assumptions are checked, `TLCGet("level")` is 0 and the
 search's counters, `"config"` and the registers are undefined.
+
+`AssertError(err, exp)`, `err` a string literal, is whether evaluating
+`exp` fails with the message `err`: the message as TLC prints it, without
+its location, with the preambles of the standard operators inside `exp`
+but none of those outside; Java's own exceptions are not caught.
+`TLCCache(e, k)` of a constant `e` is `e`'s value, computed once for each
+value of `k` and kept; of a state-level `e`, `k` is evaluated and then `e`
+twice, as TLC's search keeps nothing in a state and its definition computes
+`e` again (once in a simulation, which keeps it); of an action, `e`.
+`TLCModelValue(s)` is the model value named by the string `s`.
+`TLCGetOrDefault(i, d)` is register `i`, or `d` if nothing is kept there.
+`TLCGet`, `AssertError` and `TLCCache` are evaluation methods: they
+evaluate their arguments themselves, inside their method, so an error
+there carries the method's preamble.
 
 ## 9 Model configuration
 
