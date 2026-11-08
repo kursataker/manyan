@@ -587,7 +587,7 @@ a keyword where one is expected, a keyword repeated or followed by nothing, an a
 
 | Statement | Meaning |
 |---|---|
-| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated |
+| `CONSTANT`, `CONSTANTS` | `c = v` binds constant `c` to the value `v`; `c <- Op` replaces `c` by the definition `Op`; `d <- [M] Op` replaces the definition `d` of module `M` by `Op` of the root module, and `d = [M] v` gives it the value `v`; `c = c` binds `c` to the model value `c`; a definition `d = v` is the value `v`, its body never evaluated; lines `F(a, b) = v` give the operator `F` the value `v` at the arguments `a, b` (applied elsewhere, an error; lines of different arity, an error before the model is checked), as TLC's `OpRcdValue`, and a later `F = v` replaces them; a constant whose value is no operator, applied, is that value |
 | `INIT`, `NEXT` | the initial predicate and next-state action |
 | `SPECIFICATION` | a formula `Init /\ [][Next]_v /\ Fairness`, possibly through instances, `I(y)!Spec` too; with `INIT` or `NEXT` too, an error |
 | `INVARIANT`, `INVARIANTS` | state predicates checked in every reachable state |

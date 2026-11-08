@@ -442,7 +442,9 @@ struct Value {
         /* set: an L_CUP, L_CAP or L_DIFF's elements, once enumerated */
         /* V_LAMBDA: [x \in a |-> expr] in env, with b for @, then n EXCEPT pairs (key, value);
            made_in: in a simulation, the current and next state it was made in */
-        struct { Def *def; Env *env; Inst *inst; Expr *lambda; } op;
+        struct { Def *def; Env *env; Inst *inst; Expr *lambda; Value *table; } op;
+        /* table: TLC's OpRcdValue, a constant operator the configuration
+           defines by its values, as tuples <<arg, ..., value>> in order */
     } u;
 };
 
@@ -777,7 +779,17 @@ static void print_value(Buf *b, Value *v) {
             buf_puts(b, ")");
         }
         return;
-    case V_OPER: buf_puts(b, "<operator>"); return;
+    case V_OPER:
+        if (!v->u.op.table) { buf_puts(b, "<operator>"); return; }
+        buf_puts(b, "{ ");
+        for (int i = 0; i < v->u.op.table->n; i++) {
+            Value *line = v->u.op.table->u.fcn.vals[i];
+            buf_puts(b, i ? ", <" : "<");
+            for (int j = 0; j < line->n; j++) { if (j) buf_puts(b, ", "); print_value(b, line->u.fcn.vals[j]); }
+            buf_puts(b, ">");
+        }
+        buf_puts(b, "}");
+        return;
     }
 }
 
@@ -5077,7 +5089,7 @@ static const char *java_class(Value *v) {
     case V_SET: return "SetEnumValue";
     case V_INTERVAL: return "IntervalValue";
     case V_LAMBDA: return "FcnLambdaValue";
-    case V_OPER: return "OpLambdaValue";
+    case V_OPER: return v->u.op.table ? "OpRcdValue" : "OpLambdaValue";
     default: break;
     }
     switch (v->lazy) {
@@ -5500,10 +5512,7 @@ static __attribute__((noinline)) Value *ev_paramcall(Expr *e, Ctx c) {
     } else {
         op = decl_value(e->def, c, e);
     }
-    if (op->kind != V_OPER) {
-        if (e->n == 0) return op;
-        fail_at(e, "%s is not an operator.", S(e->def->name));
-    }
+    if (op->kind != V_OPER) return op;   /* as TLC, a value applied is the value */
     Def *d = op->u.op.def->replacement ? op->u.op.def->replacement : op->u.op.def;
     if (d->kind == D_OP && !d->native && d->nparams == e->n) {   /* as TLC, a definition takes its arguments lazily */
         Ctx oc = {op->u.op.env, op->u.op.inst};
@@ -6069,7 +6078,23 @@ static Value *call_values(Def *d, Value **vals, int n, Ctx c, Expr *where) {
     return eval_body(d->body, inner);
 }
 
+/* As TLC's OpRcdValue: the value of the first line whose arguments equal args. */
+static Value *table_apply(Value *op, Value **args, int n) {
+    Value *t = op->u.op.table;
+    for (int i = 0; i < t->n; i++) {
+        Value *line = t->u.fcn.vals[i];
+        if (line->n - 1 != n) fail("Attempted to apply the operator %s\nwith wrong number of arguments.", pretty(op));
+        int j = 0;
+        while (j < n && veq(line->u.fcn.vals[j], args[j])) j++;
+        if (j == n) return line->u.fcn.vals[n];
+    }
+    Buf b = {0};
+    for (int i = 0; i < n; i++) { if (i) buf_puts(&b, ", "); print_value(&b, args[i]); }
+    fail("Attempted to apply operator:\n%s\nto arguments (%s), which is undefined.", pretty(op), b.s ? b.s : "");
+}
+
 static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
+    if (op->u.op.table) return table_apply(op, args, n);
     Def *d = op->u.op.def;
     if (d->replacement) d = d->replacement;
     if (d->nparams != n && !d->native)
@@ -9950,7 +9975,8 @@ static int simulate(const TPPOptions *o) {
 /* ---------------------------------------------------------------- configuration */
 
 /* A configuration statement (§9). */
-typedef struct { const char *keyword; int name; int op; Value *value; int target, module; } CfgItem;   /* module: of name, in <- [M] */
+typedef struct { const char *keyword; int name; int op; Value *value; int target, module; Value *args; } CfgItem;
+/* module: of name, in <- [M]; args: of name(a, ...) = value, a tuple */
 
 static CfgItem *cfg;
 static int ncfg;
@@ -10095,10 +10121,16 @@ static Value *cfg_value(CfgLexer *L, int kind) {
     return cfg_scanning ? NULL : mk_model(name);
 }
 
-static void cfg_add(const char *keyword, int name, int op, Value *v, int target, int module) {
+static Value *tuple_of(List *l) {
+    Value *t = mk_tuple(l->n);
+    for (int i = 0; i < l->n; i++) t->u.fcn.vals[i] = l->v[i];
+    return t;
+}
+
+static void cfg_add(const char *keyword, int name, int op, Value *v, int target, int module, Value *args) {
     if (cfg_scanning) return;
     cfg = xrealloc(cfg, sizeof(CfgItem) * (size_t)(ncfg + 1));
-    cfg[ncfg++] = (CfgItem){keyword, name, op, v, target, module};
+    cfg[ncfg++] = (CfgItem){keyword, name, op, v, target, module, args};
 }
 
 /* Reads the configuration as TLC does. TLC reads it before any module, so
@@ -10118,12 +10150,17 @@ static void read_config(const char *text, int scanning) {
             while (kind && cfg_keyword(kind) < 0) {
                 int name = cfg_name(&L, kind), module = 0;
                 kind = cfg_token(&L);
-                if (cfg_is(kind, "(")) {   /* an operator constant's parameters: skipped */
-                    while (kind && !cfg_is(kind, ")")) kind = cfg_token(&L);
-                    if (!kind) cfg_fail(&L, "It was expecting a value, but did not find it.");
+                List args = {0};
+                if (cfg_is(kind, "(")) {   /* name(a, ...) = value: an operator's value at a, ... */
+                    do {
+                        Value *a = cfg_value(&L, cfg_token(&L));
+                        list_add(&args, a ? a : TRUEV);   /* scanning makes no values */
+                        kind = cfg_token(&L);
+                    } while (cfg_is(kind, ","));
+                    if (!cfg_is(kind, ")")) cfg_fail(&L, "It was expecting ), but did not find it.");
                     kind = cfg_token(&L);
                 }
-                int op = cfg_is(kind, "=") ? '=' : cfg_is(kind, "<-") ? '<' : 0;
+                int op = cfg_is(kind, "=") ? '=' : cfg_is(kind, "<-") && !args.n ? '<' : 0;
                 if (!op) cfg_fail(&L, "It was expecting = or <-, but did not find it.");
                 kind = cfg_token(&L);
                 if (cfg_is(kind, "[")) {   /* name = [M] value, name <- [M] target: name of module M */
@@ -10131,20 +10168,20 @@ static void read_config(const char *text, int scanning) {
                     if (!cfg_is(cfg_token(&L), "]")) cfg_fail(&L, "It was expecting ], but did not find it.");
                     kind = cfg_token(&L);
                 }
-                if (op == '=') cfg_add(k, name, op, cfg_value(&L, kind), 0, module);
+                if (op == '=') cfg_add(k, name, op, cfg_value(&L, kind), 0, module, args.n ? tuple_of(&args) : NULL);
                 else if (!kind) cfg_fail(&L, module ? "Expected an identifier after <-[mod]." : "Expected an identifier after <-.");
-                else cfg_add(k, name, op, NULL, cfg_name(&L, kind), module);
+                else cfg_add(k, name, op, NULL, cfg_name(&L, kind), module, NULL);
                 kind = cfg_token(&L);
             }
         } else if (key < CFG_LISTS) {
-            for (; kind && cfg_keyword(kind) < 0; kind = cfg_token(&L)) cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0);
+            for (; kind && cfg_keyword(kind) < 0; kind = cfg_token(&L)) cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0, NULL);
         } else {
             if (!kind) cfg_fail(&L, "The keyword %s was not followed by an identifier.", k);
             if (seen[key]++) cfg_fail(&L, "The keyword %s appeared twice.", k);
             if (strcmp(k, "CHECK_DEADLOCK") == 0) {
                 if (!cfg_is(kind, "TRUE") && !cfg_is(kind, "FALSE")) cfg_fail(&L, "It was expecting TRUE or FALSE, but did not find it.");
-                cfg_add(k, 0, 0, cfg_is(kind, "TRUE") ? TRUEV : FALSEV, 0, 0);
-            } else cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0);
+                cfg_add(k, 0, 0, cfg_is(kind, "TRUE") ? TRUEV : FALSEV, 0, 0, NULL);
+            } else cfg_add(k, cfg_name(&L, kind), 0, NULL, 0, 0, NULL);
             kind = cfg_token(&L);
         }
     }
@@ -10152,6 +10189,22 @@ static void read_config(const char *text, int scanning) {
 }
 
 /* ---------------------------------------------------------------- model setup */
+
+/* d's value with the configuration's line name(args) = value added: TLC
+   makes the lines of a constant one OpRcdValue. */
+static Value *table_add(Def *d, CfgItem *it) {
+    Value *t = d->value && d->value->kind == V_OPER ? d->value->u.op.table : NULL;
+    int n = t ? t->n : 0, arity = it->args->n;
+    if (t && t->u.fcn.vals[0]->n != arity + 1)
+        config_error("The arity of the operator %s is inconsistent in the configuration file.", S(d->name));
+    Value *line = mk_tuple(arity + 1), *lines = mk_tuple(n + 1), *op = NEW(Value);
+    for (int i = 0; i < arity; i++) line->u.fcn.vals[i] = it->args->u.fcn.vals[i];
+    line->u.fcn.vals[arity] = it->value;
+    for (int i = 0; i < n; i++) lines->u.fcn.vals[i] = t->u.fcn.vals[i];
+    lines->u.fcn.vals[n] = line;
+    *op = (Value){.kind = V_OPER, .u.op = {.def = d, .table = lines}};
+    return op;
+}
 
 static Sym *root_sym(int name) { return module_lookup(root, name); }
 
@@ -10954,7 +11007,8 @@ static int setup_model(void) {
             if (!s && it->op != '=' && !*missing) *missing = m ? it->name : it->module;
             if (!s) continue;
             Def *d = s->def;
-            if (it->op == '=') d->value = it->value;
+            if (it->op == '=' && it->args) d->value = table_add(d, it);
+            else if (it->op == '=') d->value = it->value;
             else {
                 Sym *t = root_sym(it->target);
                 if (t) d->replacement = t->def;

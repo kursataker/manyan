@@ -47,6 +47,10 @@ Edge cases found running TLC's own test models (`test-model`):
 - Bags' operators but `SubBag` are TLC's Java methods, with their
   results and errors: `IsABag(<<"a">>)` is `FALSE` instead of failing to
   compare `"a"` with `Nat`, and `CopiesIn(2, 2 :> -1)` is `-1` (BagsTest).
+- The configuration's `CONSTANT F(0) = 1  F(1) = 2` defines the operator
+  `F` by its values, as TLC does; tpp skipped the arguments and took the
+  last value (ConstantOperatorConfiguration). A constant whose value is
+  no operator, applied to arguments, is that value, as in TLC.
 
 ## 0.6.0
 

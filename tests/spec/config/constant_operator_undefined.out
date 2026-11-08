@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to apply operator:
+{ <0, "a", 1>, <1, "a", 5>}
+to arguments (5, "a"), which is undefined.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 22 of module constant_operator_undefined>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 22 of module constant_operator_undefined>
+x = 5
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 75
