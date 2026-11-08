@@ -26,6 +26,20 @@ Edge cases found running tlaplus/Examples' models against TLC 1.8.0:
   and located at the call, as TLC splits it; a call of a LET definition
   is split.
 
+Edge cases found running TLC's own test models (`test-model`):
+
+- A tab moves to the column after the next multiple of 8, as SANY counts
+  it, for junction alignment and locations.
+- A constant operator, and an instance's definition (`I!Op`), are
+  operator arguments by their bare names.
+- An operator passed as an argument takes its arguments lazily, as a
+  definition does.
+- A property is split as TLC's `processConfigProps` splits it: through
+  LET, calls of definitions with arguments, and `\A x \in S` over a
+  constant set; a parameter has its argument's level, so
+  `Prop(a) == [](a < 2)` checks `Prop(s)` as an invariant `Prop`
+  instead of failing to evaluate `s` without a state.
+
 ## 0.6.0
 
 - TLC 1.8.0 is the oracle, pinned to the pre-release jar built from

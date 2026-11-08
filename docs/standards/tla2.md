@@ -59,8 +59,9 @@ this Standard and tests must not depend on it.
 
 ### 3.1 Characters
 
-A module is ASCII text. Lines end with LF or CR LF. A tab counts as one
-column. Columns and lines are numbered from 1.
+A module is ASCII text. Lines end with LF or CR LF. A tab moves to the
+column after the next multiple of 8, as SANY counts it. Columns and lines
+are numbered from 1.
 
 ### 3.2 Module boundaries
 
@@ -168,9 +169,11 @@ declares the state variables. The plural spellings are synonyms.
 `Op == e`, `Op(p1, ..., pn) == e`, and the infix, prefix, and postfix forms
 `a ++ b == e`, `-. a == e`, `a ^+ == e` define operators. A parameter may
 itself be an operator, written `F(_)` or `_ + _`, and an argument for it is
-an operator name, an operator parameter, or a `LAMBDA x, y : e`. Arguments are passed by name: the
+an operator name (a constant operator's, or an instance's `I!Op`), an
+operator parameter, or a `LAMBDA x, y : e`. Arguments are passed by name: the
 argument expression is evaluated, in the context of the call, where the
-parameter is used.
+parameter is used, also when the operator called is a parameter; a
+built-in operator takes its arguments' values.
 
 ### 5.3 Function definitions
 
@@ -679,9 +682,16 @@ every transition; other properties are checked over the state graph after
 the search (liveness checking). A property is split into its
 conjuncts, following definitions and calls of an instance's definitions
 without parameters (`I!Spec`), through any number of instances
-(`Refinement == M!Spec` seen through `INSTANCE Mid`); a part of several is named in messages by
+(`Refinement == M!Spec` seen through `INSTANCE Mid`), and, outside
+instances, `LET`, calls of a definition that is not recursive with
+arguments (`I!P(a)` too), the arguments its parameters reach, and `\A x
+\in S : P` over a constant `S`, a part for each `x` (no element is the
+error `The liveness formula is a tautology.`). A parameter has the level
+of its argument, and an operator parameter applied that of the operator
+and of every argument. A part of several is named in messages by
 its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
-violated.` A state whose step violates an action property is not left on
+violated.`, the body of `\A` likewise, and a call's parts by the
+definition called. A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
 B` is `(p /\ A) \/ (~p /\ B)`. As TLC checks the negation of a property,
 a constant in it is folded through `/\` and `\/`; `[]<>c` and `<>[]c`

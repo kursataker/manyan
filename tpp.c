@@ -2005,6 +2005,7 @@ static _Noreturn void parse_error(const char *file, int line, int col, const cha
 static void lex_advance(Lexer *L, int n) {
     while (n--) {
         if (L->src[L->pos] == '\n') { L->line++; L->col = 1; }
+        else if (L->src[L->pos] == '\t') L->col = ((L->col - 1) / 8 + 1) * 8 + 1;   /* SANY's tab stops */
         else L->col++;
         L->pos++;
     }
@@ -4090,7 +4091,7 @@ static void resolve_path(Expr *e, Scope *sc) {
             d = subexpression(e, d, i, &args, &nargs);
             break;
         } else {
-            check_arity(e, d, s->n);
+            if (s->n || d->kind != D_OP || !d->nparams) check_arity(e, d, s->n);   /* bare, an operator argument */
             args = s->args;
             nargs = s->n;
         }
@@ -4139,7 +4140,8 @@ static void resolve_name(Expr *e, Scope *sc) {
     }
     d = sym->def;
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
-    if (!(d->kind == D_OP && s->n == 0 && d->nparams > 0)) check_arity(e, d, s->n);
+    int bare = s->n == 0 && (d->kind == D_OP ? d->nparams : d->kind == D_CONST ? d->arity : 0) > 0;
+    if (!bare) check_arity(e, d, s->n);   /* bare, it is an operator argument */
     e->def = d;
     if (d->kind == D_CONST || d->kind == D_VAR) {
         e->kind = d->arity ? K_PARAMCALL : K_DECL;
@@ -4433,6 +4435,7 @@ static void resolve_module(Module *m) {
             for (int k = i + 1; k < m->nunits; k++)
                 if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&
                     (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN)) {
+                    m->units[k].def->recursive = 1;
                     add_sym(m, u->def->name, m->units[k].def, NULL, 0, m->units[k].local, m->units[k].def->where);
                     break;
                 }
@@ -4982,6 +4985,37 @@ static Env *env_find(Env *env, Def *d) {
     return NULL;
 }
 
+static int level_in(Expr *e, Ctx c);
+
+/* The level of a parameter op applied to args in c: that of the operator
+   or argument it stands for, and of every argument, as TLC levels it
+   with its level parameters. */
+static int applied_level(Expr *op, Ctx oc, Expr **args, int n, Ctx c) {
+    int l = 0;
+    for (Env *b; op && (op->kind == K_PARAMCALL || op->kind == K_BOUND) && (b = env_find(oc.env, op->def));) {
+        if (b->e) { op = b->e; oc = (Ctx){b->ctx_env, b->ctx_inst}; continue; }
+        if (b->v && b->v->kind == V_OPER) l = def_level(b->v->u.op.def);
+        op = NULL;
+    }
+    if (op) l = level_in(op, oc);   /* the expression it stands for: an operator's name, or a value */
+    for (int i = 0; i < n; i++) { int a = level_in(args[i], c); if (a > l) l = a; }
+    return l;
+}
+
+/* e's level in c, where a parameter has its argument's level: TLC levels
+   a temporal formula in the context it expands it in (§10.5). */
+static int level_in(Expr *e, Ctx c) {
+    int l = expr_level(e);
+    if (l >= 3 || !c.env) return l;
+    if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && env_find(c.env, e->def)) {
+        int a = applied_level(e, c, e->args, e->n, c);
+        return a > l ? a : l;
+    }
+    for (int i = 0; i < e->n; i++) if (e->args[i]) { int a = level_in(e->args[i], c); if (a > l) l = a; }
+    for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) { int a = level_in(e->bounds[i].set, c); if (a > l) l = a; }
+    return l;
+}
+
 /* An argument for parameter d: a thunk, or the value of a bound name that
    already has one that no state changes, as forcing the thunk would give. */
 static Env *mk_arg(Def *d, Expr *e, Ctx c, Env *next) {
@@ -5469,6 +5503,16 @@ static __attribute__((noinline)) Value *ev_paramcall(Expr *e, Ctx c) {
     if (op->kind != V_OPER) {
         if (e->n == 0) return op;
         fail_at(e, "%s is not an operator.", S(e->def->name));
+    }
+    Def *d = op->u.op.def->replacement ? op->u.op.def->replacement : op->u.op.def;
+    if (d->kind == D_OP && !d->native && d->nparams == e->n) {   /* as TLC, a definition takes its arguments lazily */
+        Ctx oc = {op->u.op.env, op->u.op.inst};
+        Env *b = d->local == 2 ? env_find(oc.env, d) : NULL;
+        Env *env = b ? b->ctx_env : oc.env;
+        for (int i = 0; i < e->n; i++)
+            env = d->params[i]->arity ? mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env)
+                                      : mk_arg(d->params[i], e->args[i], c, env);
+        return eval_body(d->body, (Ctx){env, oc.inst});
     }
     Value **vals = NEWN(Value *, e->n);
     for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
@@ -7765,7 +7809,7 @@ static Value **decode_state(int idx) {
 
 /* ---------------------------------------------------------------- the model */
 
-typedef struct { Def *def; Expr *expr; int name; } Check;
+typedef struct { Def *def; Expr *expr; Ctx ctx; int name; } Check;   /* expr, in ctx */
 
 static Expr *init_expr, *next_expr;
 /* The last of the initial predicates, which a simulation names an initial
@@ -7784,11 +7828,9 @@ static Expr **fairness;       /* WF and SF conjuncts of the specification */
 static int nfairness;
 static Expr *spec_subscript;
 
-static void add_check(Check **list, int *n, Def *d, Expr *e, int name) {
+static void add_check(Check **list, int *n, Def *d, Expr *e, Ctx c, int name) {
     *list = xrealloc(*list, sizeof(Check) * (size_t)(*n + 1));
-    (*list)[*n].def = d;
-    (*list)[*n].expr = e;
-    (*list)[*n].name = name;
+    (*list)[*n] = (Check){d, e, c, name};
     (*n)++;
 }
 
@@ -8501,7 +8543,7 @@ static int check_list(Check *list, int n, Value **st) {
         if (list == constraints && body && (body->kind == X_NUM || body->kind == X_STR))
             fail("class tla2sany.semantic.OpDefNode cannot be cast to class tlc2.value.impl.Value "
                  "(tla2sany.semantic.OpDefNode and tlc2.value.impl.Value are in unnamed module of loader 'app')");
-        Value *v = eval(list[i].expr, root_ctx);
+        Value *v = eval(list[i].expr, list[i].ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
             cur_level--;
@@ -8524,7 +8566,7 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
     for (int i = 0; i < n && bad < 0; i++) {
         error_check = &list[i];
         error_state = to;
-        Value *v = eval(list[i].expr, root_ctx);
+        Value *v = eval(list[i].expr, list[i].ctx);
         if (v->kind != V_BOOL) not_boolean_check(&list[i]);
         if (!v->u.i) bad = i;
     }
@@ -10158,36 +10200,89 @@ static void use_specification(Expr *spec) {
     free(init);
 }
 
-/* The parts of a property, named as TLC names them: a conjunct by its
-   location, unless it calls a definition, or is []P of one, named by
-   that definition. */
-typedef struct { Expr *e, *call; int name; } Part;
-static void property_parts(Expr *e, Expr *call, int name, Part **out, int *n) {
-    if (e->kind == K_CALL && e->n == 0 && eval_depth < 5000) {
+/* The parts of a property, as TLC's processConfigProps finds them
+   (§10.5): through definitions, conjunctions, LET, calls of a definition
+   with arguments and the arguments their parameters reach, and \A x \in S
+   over a constant S, a part for each x; each in the context it is
+   reached in. Inside an instance, where TLC has entered its
+   substitutions, only definitions and conjunctions. A part is named by
+   its location if it is a conjunct or a quantifier's body, else by the
+   definition called, or, as []P, by P. */
+typedef struct { Expr *e, *call; Ctx c; int name; } Part;
+
+static int collect_ctx(Ctx c, void *data) {
+    List *l = data;
+    Ctx *k = NEW(Ctx);
+    *k = c;
+    list_add(l, (Value *)k);
+    return 0;
+}
+
+static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int *n) {
+    Buf b = {0};
+    switch (eval_depth < 5000 ? e->kind : -1) {
+    case K_BOUND: {   /* a parameter of a call: its argument, where it was written */
+        Env *p = env_find(c.env, e->def);
+        if (!p || !p->e) break;
+        property_parts(p->e, call, (Ctx){p->ctx_env, p->ctx_inst}, name, out, n);
+        return;
+    }
+    case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
-        if (d->kind == D_OP && !d->native && !d->nparams) {
-            eval_depth++;
-            property_parts(d->body, call, e->def->name, out, n);
-            eval_depth--;
-            return;
-        }
+        if (d->kind != D_OP || d->native || d->nparams != e->n || (e->n && (call || d->recursive))) break;
+        Env *env = d->local == 2 ? c.env : NULL;
+        for (int i = 0; i < e->n; i++)
+            env = d->params[i]->arity ? mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env)
+                                      : mk_thunk(d->params[i], e->args[i], c, env);
+        eval_depth++;
+        property_parts(d->body, call, (Ctx){env, c.inst}, e->def->name, out, n);
+        eval_depth--;
+        return;
     }
-    if (e->kind == K_AND) {
+    case K_INSTCALL: {
+        if (e->def->kind != D_OP || e->def->native || (e->n && call)) break;
+        Def *in;
+        property_parts(e->def->body, through(call, e), c, e->n ? instance_name(e, &in) : name, out, n);
+        return;
+    }
+    case X_LET: {
+        if (call) break;
+        Env *env = c.env;
+        for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
+        for (Env *t = env; t != c.env; t = t->next) t->ctx_env = env;
+        property_parts(e->args[0], call, (Ctx){env, c.inst}, name, out, n);
+        return;
+    }
+    case K_AND:
         for (int i = 0; i < e->n; i++) {
-            Buf b = {0};
             loc_text(&b, e->args[i]);
-            property_parts(e->args[i], call, intern(b.s), out, n);
-            free(b.s);
+            property_parts(e->args[i], call, c, intern(b.s), out, n);
+            b.n = 0;
         }
+        free(b.s);
+        return;
+    case X_FORALL: {
+        if (call || !bounds_constant(e)) break;
+        List each = {0};
+        EvalState es = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        int failed = sigsetjmp(here, 0);   /* as TLC, a set that fails is no constant: the part is whole */
+        if (!failed) for_bindings(e->bounds, e->nb, c, collect_ctx, &each);
+        eval_restore(es);
+        error_restore(&er);
+        if (failed) break;
+        if (!each.n) config_error("The liveness formula is a tautology.");
+        loc_text(&b, e->args[0]);
+        for (int i = 0; i < each.n; i++) property_parts(e->args[0], call, *(Ctx *)each.v[i], intern(b.s), out, n);
+        free(b.s);
         return;
     }
-    if (e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        property_parts(e->def->body, through(call, e), name, out, n);
-        return;
     }
     if (e->kind == K_ALWAYS && e->args[0]->kind == K_CALL && e->args[0]->n == 0) name = e->args[0]->def->name;
     *out = xrealloc(*out, sizeof(Part) * (size_t)(*n + 1));
-    (*out)[(*n)++] = (Part){e, call, name};
+    (*out)[(*n)++] = (Part){e, call, c, name};
 }
 
 /* A property's part that is an action, not under []. */
@@ -10215,18 +10310,19 @@ static void use_property(Expr *p) {
     Def *d = p->def;
     Part *parts = NULL;
     int n = 0;
-    property_parts(p->kind == K_INSTCALL ? d->body : p, p->kind == K_INSTCALL ? p : NULL, d->name, &parts, &n);
+    property_parts(p->kind == K_INSTCALL ? d->body : p, p->kind == K_INSTCALL ? p : NULL, root_ctx, d->name, &parts, &n);
     for (int i = 0; i < n; i++) {
         Expr *e = parts[i].e, *call = parts[i].call;
-        int name = parts[i].name;
-        if (expr_level(e) <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), name); continue; }
-        if (expr_level(e) == 2) action_property(e, name);
+        Ctx c = parts[i].c;
+        int name = parts[i].name, level = level_in(in_instance(call, e), c);
+        if (level <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), c, name); continue; }
+        if (level == 2) action_property(e, name);
         if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
-            if (expr_level(body) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), name); continue; }
-            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), name); continue; }
+            if (level_in(in_instance(call, body), c) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), c, name); continue; }
+            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), c, name); continue; }
         }
-        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), name);
+        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), c, name);
     }
     free(parts);
 }
@@ -10680,7 +10776,7 @@ static int setup_model(void) {
                            "please check if this bug described in LevelNode.java starting at line 590ff affects you.\n");
                 exit(TPP_FAILURE_SAFETY_EVAL);
             }
-            if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, e->def->name);
+            if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, root_ctx, e->def->name);
         } else if (strncmp(k, "PROPERT", 7) == 0) {
             e = config_call(it->name, "property", 's');
             if (expr_level(e) == 1) {
@@ -10699,10 +10795,10 @@ static int setup_model(void) {
             if (config_check(e, "property")) use_property(e);
         } else if (strncmp(k, "CONSTRAINT", 10) == 0) {
             e = config_call(it->name, "constraint", 'r');
-            if (config_check(e, "constraint")) add_check(&constraints, &nconstraints, e->def, e, e->def->name);
+            if (config_check(e, "constraint")) add_check(&constraints, &nconstraints, e->def, e, root_ctx, e->def->name);
         } else if (strncmp(k, "ACTION_CONSTRAINT", 17) == 0) {
             e = config_call(it->name, "action constraint", 'r');
-            if (config_check(e, "action constraint")) add_check(&action_constraints, &naction_constraints, e->def, e, e->def->name);
+            if (config_check(e, "action constraint")) add_check(&action_constraints, &naction_constraints, e->def, e, root_ctx, e->def->name);
         } else if (strcmp(k, "VIEW") == 0) {
             view_expr = config_call(it->name, "view function", 'r');
             if (!literal_def(view_expr) && constant_value(view_expr)) config_error("The view function %s cannot be a constant.", S(it->name));
@@ -10800,7 +10896,7 @@ static TF *tf_new(int op, TF *a, TF *b) {
 static TF *tf_atom(Expr *e, Ctx c, int neg) {
     TF *t = tf_new(TF_ATOM, NULL, NULL);
     t->atom = e; t->c = c; t->neg = neg;
-    t->action = expr_level(e) >= 2;
+    t->action = level_in(e, c) >= 2;
     t->index = natoms;
     atoms = xrealloc(atoms, sizeof(TF *) * (size_t)(natoms + 1));
     atoms[natoms++] = t;
@@ -10833,8 +10929,9 @@ static int tf_bound_fn(Ctx c, void *data) {
 
 /* The formula e (negated when neg) in negation normal form. */
 static TF *to_tf(Expr *e, Ctx c, int neg) {
-    if (expr_level(e) <= 2) {
-        if (expr_level(e) == 0) {   /* as TLC, a constant is its value */
+    int level = level_in(e, c);
+    if (level <= 2) {
+        if (level == 0) {   /* as TLC, a constant is its value */
             Value *v = eval(e, c);
             if (v->kind == V_BOOL) return tf_new((v->u.i != 0) != neg ? TF_TRUE : TF_FALSE, NULL, NULL);
         }
@@ -10845,7 +10942,9 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native) break;
         Env *env = d->local == 2 ? env_find(c.env, d)->ctx_env : NULL;
-        for (int i = 0; i < e->n; i++) env = mk_thunk(d->params[i], e->args[i], c, env);
+        for (int i = 0; i < e->n; i++)
+            env = d->params[i]->arity ? mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env)
+                                      : mk_thunk(d->params[i], e->args[i], c, env);
         deeper();
         TF *t = to_tf(d->body, (Ctx){env, c.inst}, neg);
         eval_depth--;
@@ -11440,7 +11539,7 @@ static void print_violated(int *ls, int n, int cyc) {
         sigjmp_buf here;
         handler = &here;
         volatile int violated = 0;
-        if (!sigsetjmp(here, 0)) violated = !holds_on_lasso(to_tf(temporal_props[p].expr, root_ctx, 0), ls, n, cyc, 0);
+        if (!sigsetjmp(here, 0)) violated = !holds_on_lasso(to_tf(temporal_props[p].expr, temporal_props[p].ctx, 0), ls, n, cyc, 0);
         eval_restore(saved);
         int name = temporal_props[p].def->name, seen = 0;
         for (int i = 0; i < nnames; i++) seen |= names[i] == name;
@@ -11674,7 +11773,7 @@ static void live_init_lits(void) {
         natoms = 0;
         neventualities = 0;
         ntnodes = 0;
-        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
+        TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
         if (!tf_tableau(neg)) {
             for (int i = 0; i < natoms; i++)
                 if (atoms[i]->atom->kind != K_ENABLED) add_init_lits(&atoms[i], 1);
@@ -11730,7 +11829,7 @@ static void live_init(Value **st) {
 static int live_error(void) {
     natoms = 0;
     neventualities = 0;
-    for (int p = 0; p < ntemporal_props; p++) to_tf(temporal_props[p].expr, root_ctx, 1);
+    for (int p = 0; p < ntemporal_props; p++) to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     static int s, seen;   /* static: read after an error jumps back */
     sigjmp_buf here;
     handler = &here;
@@ -11787,7 +11886,7 @@ static int live_violated(void) {
         npnodes = 0;
         free(pnodes_of);
         pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
-        TF *neg = to_tf(temporal_props[p].expr, root_ctx, 1);
+        TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
         free(state_atom_cache);
         state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
         if (check_property(neg)) return 1;
@@ -11812,13 +11911,13 @@ static int tf_false(TF *t) {
 
 /* The tableau of ~e, or NULL if building it fails; tf_unhandled names
    what TLC cannot handle. */
-static TF *negation(Expr *e) {
+static TF *negation(Check *p) {
     EvalState s = eval_save();
     sigjmp_buf here;
     handler = &here;
     tf_unhandled = NULL;
     TF *volatile negated = NULL;
-    if (!sigsetjmp(here, 0)) negated = to_tf(e, root_ctx, 1);
+    if (!sigsetjmp(here, 0)) negated = to_tf(p->expr, p->ctx, 1);
     eval_restore(s);
     return negated;
 }
@@ -11837,7 +11936,7 @@ static int tf_wrong_form(TF *f) {
 static int check_temporal_forms(int simulating) {
     int temporal = 0, unsatisfiable = 0;
     for (int p = 0; p < ntemporal_props; p++) {
-        TF *negated = negation(temporal_props[p].expr);
+        TF *negated = negation(&temporal_props[p]);
         if (tf_unhandled) {
             Buf b = {0};
             loc_text(&b, tf_unhandled);
@@ -11852,7 +11951,7 @@ static int check_temporal_forms(int simulating) {
             printf("Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.\n");
             return TPP_ERROR;
         }
-        if (expr_level(temporal_props[p].expr) == 3) {   /* a predicate on the initial states is no tautology */
+        if (level_in(temporal_props[p].expr, temporal_props[p].ctx) == 3) {   /* a predicate on the initial states is no tautology */
             temporal++;
             unsatisfiable += tf_false(negated);
         }

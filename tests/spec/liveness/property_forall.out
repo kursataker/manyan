@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant line 9, col 31 to line 9, col 43 of module property_forall is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+s = 0
+
+State 2: <Next line 7, col 9 to line 7, col 24 of module property_forall>
+s = 1
+
+State 3: <Next line 7, col 9 to line 7, col 24 of module property_forall>
+s = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
