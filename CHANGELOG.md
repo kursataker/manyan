@@ -116,6 +116,11 @@ Performance:
   for 3% more time on counters.
 - Two sets of numbers or strings compare without the general checks
   (partition with N = 10: 1.25 s to 1.15 s).
+- An operator of an instance of a standard module, such as `+` through
+  `LOCAL INSTANCE Integers`, takes its arguments' values as a call in
+  the module itself does, and a call from the root module through
+  instances without parameters keeps its chain of instances (Huang,
+  whose DyadicRationals instances Integers: 66 s to 43 s).
 
 ## 0.6.0
 

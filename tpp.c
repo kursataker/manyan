@@ -1949,6 +1949,7 @@ struct Expr {
     int l1, c1, l2, c2;
     int pl1, pc1, pl2, pc2;   /* with the parentheses around it, if any */
     Value *value;         /* X_SETENUM of literals of one kind, or a fixed product: its value, once computed */
+    Inst *inst;           /* K_INSTCALL from the root module through instances without parameters: its chain */
 };
 
 enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM };   /* D_THM: a theorem's or assumption's name */
@@ -5567,6 +5568,11 @@ static Value *junction(Expr *e, Ctx c, int and) {
 
 /* The instances an instance call goes through, each with its parameters. */
 static Inst *instance_chain(Expr *e, Ctx c) {
+    if (e->inst) return e->inst;
+    int fixed = !c.inst;
+    for (int i = 0; i < e->ndefs; i++) fixed &= !e->defs[i]->nparams && e->defs[i]->local != 2;
+    Arena *saved = arena;
+    if (fixed) arena = &perm_arena;
     Inst *inst = c.inst;
     for (int i = 0; i < e->ndefs; i++) {
         Def *id = e->defs[i];
@@ -5580,6 +5586,7 @@ static Inst *instance_chain(Expr *e, Ctx c) {
         in->parent = inst;
         inst = in;
     }
+    if (fixed) e->inst = inst, arena = saved;
     return inst;
 }
 
@@ -5591,34 +5598,34 @@ static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
     return force(b);
 }
 
+/* The arguments of a call of a standard module's common operators, which
+   take values only: evaluated in c, with no arena for them. */
+static int plain_args(Def *d, Expr *e, Ctx c, Value **vals) {
+    if (!d->native || d->lazy || e->n > 4 || e->n != d->nparams) return 0;
+    for (int i = 0; i < e->n; i++) if (d->params[i]->arity) return 0;
+    for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
+    return 1;
+}
+
 static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     Def *d = e->def;
     if (d->kind == D_VAR && !d->replacement) return decl_value(d, c, e);
-    if (d->native && !d->lazy && !d->replacement && e->n <= 4 && e->n == d->nparams) {
-        /* The common operators of the standard modules: no arena for the arguments. */
-        Value *vals[4];
-        int plain = 1;
-        for (int i = 0; i < e->n && plain; i++) plain = !d->params[i]->arity;
-        if (plain) {
-            for (int i = 0; i < e->n; i++) vals[i] = eval(e->args[i], c);
-            return call_native(d, e, vals, c);
-        }
-    }
+    Value *vals[4];
+    if (!d->replacement && plain_args(d, e, c, vals)) return call_native(d, e, vals, c);
     return call_def(d, e->args, e->n, c, e);
 }
 
 static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
-    Inst *inst = instance_chain(e, c);
-    Ctx ic = {c.env, inst};
-    /* The arguments are evaluated in the caller's context. */
-    Value **vals = NEWN(Value *, e->n);
     Def *d = e->def;
     if (d->replacement) return call_def(d, e->args, e->n, c, e);   /* by the configuration, an operator of the root module */
+    Inst *inst = instance_chain(e, c);
+    Ctx ic = {c.env, inst};
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
     if (d->lazy) return call_native(d, e, NULL, c);
-    if (d->native || d->kind == D_FCN || e->n == 0) {
-        if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
-    }
+    if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
+    /* The arguments are evaluated in the caller's context. */
+    Value *few[4], **vals = e->n <= 4 ? few : NEWN(Value *, e->n);
+    if (plain_args(d, e, c, vals)) return call_native(d, e, vals, ic);
     Env *env = NULL;
     for (int k = 0; k < e->n && k < d->nparams; k++) {
         if (d->params[k]->arity) env = mk_binding(d->params[k], eval_operator_arg(e->args[k], c), env);

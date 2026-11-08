@@ -49,6 +49,7 @@ In the order they were made.
 | `<<x, y>> \in S`, of atoms and an enumerated S, probes S with the components, not a tuple made of them | closure 0.48 → 0.46 |
 | A stored state's words are zigzag varints, a small number one byte | memory: PaxosCommit 2067 → 1140 MB, counters 188 → 145 MB; time: counters +3%, others under 1% |
 | Two enumerated sets compare their atoms first, before `vcmp`'s checks for other kinds | partition with N = 10 1.25 → 1.15 |
+| A native operator reached through an instance takes its arguments as values, without thunks, as `ev_call` does; a root module's call through instances without parameters keeps its `Inst` chain on the expression | Examples' Huang (1 worker) 66 → 46 → 43 |
 
 ## Tried and dropped
 
