@@ -121,6 +121,8 @@ Performance:
   the module itself does, and a call from the root module through
   instances without parameters keeps its chain of instances (Huang,
   whose DyadicRationals instances Integers: 66 s to 43 s).
+- `r.f` looks first where it found `f` in the last record (MCPaxosSmall
+  20.3 s to 18.6 s).
 
 ## 0.6.0
 

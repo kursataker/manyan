@@ -1932,6 +1932,7 @@ struct Expr {
     unsigned char made;   /* made by tpp, not written: no frame of TLC's call stack */
     int op;               /* operator or name; field of X_DOT */
     int n;
+    int field;            /* X_DOT: where the field was in the last record */
     Expr **args;
     Bound *bounds;
     int nb;
@@ -5992,7 +5993,8 @@ static __attribute__((noinline)) Value *ev_dot(Expr *e, Ctx c) {
     if (!is_fcn(r)) fail_at(e, "Attempted to select field \"%s\" from a non-record value %s", S(e->op), pretty(r));
     Value *field = mk_str(e->op);
     if (r->made == MADE_RECORD) {
-        int i = fcn_index(r, field);
+        int i = e->field;
+        if (i < 0 || i >= r->n || r->u.fcn.keys[i] != field) e->field = i = fcn_index(r, field);
         if (i < 0) fail_at(e, "Attempted to select nonexistent field \"%s\" from the record\n%s", S(e->op), pretty(r));
         return r->u.fcn.vals[i];
     }
