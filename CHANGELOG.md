@@ -109,6 +109,8 @@ Performance:
 - A state-level substitution of an instance, such as a refinement
   mapping `q <- Map(x)`, is computed once per state, as TLC keeps its
   LazyValue (a refinement check: 2.09 s to 1.55 s).
+- `<<x, y>> \in S` probes `S` with `x` and `y`, without making the tuple
+  (closure 0.48 s to 0.46 s).
 
 ## 0.6.0
 

@@ -5677,9 +5677,46 @@ static __attribute__((noinline)) Value *ev_neq(Expr *e, Ctx c) {
     return BOOLV(!veq(a, b));
 }
 
+/* <<x1, ..., xn>> \in s, the xi atoms and s enumerated, by set_member's
+   probes without making the tuple; -1 if a probe is not of a tuple of atoms
+   of the same kinds, which vcmp compares. */
+static int tuple_member(Value **xs, int n, Value *s) {
+    int lo = 0, hi = s->n;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1, c = 0;
+        Value *t = s->u.set.elems[mid];
+        if (t->kind != V_TUPLE || t->n != n) return -1;
+        for (int i = 0; i < n && !c; i++) {
+            Value *y = t->u.fcn.vals[i];
+            if (y->kind != xs[i]->kind) return -1;
+            c = (xs[i]->u.i > y->u.i) - (xs[i]->u.i < y->u.i);
+        }
+        if (!c) return 1;
+        if (c < 0) hi = mid; else lo = mid + 1;
+    }
+    return 0;
+}
+
 static __attribute__((noinline)) Value *ev_in(Expr *e, Ctx c) {
-    Value *v = eval(e->args[0], c), *s = eval(e->args[1], c);
-    int in = set_member(v, s);
+    Expr *x = e->args[0];
+    Value *v, *s, *xs[4];
+    int in = -1;
+    if (x->kind == X_TUPLE && x->n <= 4) {
+        int atoms = 1;
+        for (int i = 0; i < x->n; i++) atoms &= (xs[i] = eval(x->args[i], c))->kind <= V_MODEL;
+        s = eval(e->args[1], c);
+        if (atoms && s->kind == V_SET && !s->u.set.product && !(s->n && s->u.set.elems[0]->kind == V_MODEL))
+            in = tuple_member(xs, x->n, s);
+        if (in < 0) {
+            v = mk_tuple(x->n);
+            for (int i = 0; i < x->n; i++) v->u.fcn.vals[i] = xs[i];
+            v->u.fcn.source = source(x);
+        }
+    } else {
+        v = eval(x, c);
+        s = eval(e->args[1], c);
+    }
+    if (in < 0) in = set_member(v, s);
     return BOOLV(e->kind == K_IN ? in : !in);
 }
 
