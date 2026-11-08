@@ -5283,7 +5283,9 @@ static Expr *substitute(Def *d, Ctx *c) {
     return NULL;
 }
 
-static int enabled_by_name(Def *d, Ctx c);
+/* ENABLED marks the instance chain where it is evaluated. As in TLC, a
+   variable reached from there is not substituted (§6.9). */
+static Def enabled_mark;
 static int enabled_slot(Def *d);
 
 /* The value of substitution i of instance in, in the current state:
@@ -5307,14 +5309,18 @@ static __attribute__((noinline)) Value *substitution_value(Inst *in, int i) {
     return in->kept[i] ? in->kept[i] : (in->kept[i] = eval(x, outer));
 }
 
-static Value *decl_value(Def *d, Ctx c, Expr *where) {
-    if (primed && d->kind == D_VAR && d->var_index < 0 && enabled_by_name(d, c)) {
-        int slot = enabled_slot(d);   /* as ENABLED assigns it (§6.9) */
-        if (slot < 0 || !next_state[slot])
-            fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
-        return next_state[slot];
-    }
+/* The value of d through the substitutions of c's instances, or NULL if
+   none substitutes it. */
+static Value *decl_value(Def *d, Ctx c, Expr *where);
+static __attribute__((noinline)) Value *substituted_value(Def *d, Ctx c, Expr *where) {
     for (Inst *in = c.inst; in; in = in->parent) {
+        if (in->def == &enabled_mark) {   /* before a substitution: by name, as ENABLED assigns it (§6.9) */
+            if (!primed || d->kind != D_VAR || d->var_index >= 0) continue;
+            int slot = enabled_slot(d);
+            if (slot < 0 || !next_state[slot])
+                fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+            return next_state[slot];
+        }
         int i = subst_index(in->def, d);
         if (i >= 0) {
             Expr *x = in->def->subst_expr[i];
@@ -5322,6 +5328,14 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
             if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
             return d->arity ? eval_operator_arg(x, outer) : substitution_value(in, i);
         }
+    }
+    return NULL;
+}
+
+static Value *decl_value(Def *d, Ctx c, Expr *where) {
+    if (c.inst) {
+        Value *v = substituted_value(d, c, where);
+        if (v) return v;
     }
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
@@ -6422,9 +6436,6 @@ static Value **copy_values(Value **vs, int n, long *budget) {
     return c;
 }
 
-/* ENABLED marks the instance chain where it is evaluated. As in TLC, a
-   variable reached from there is not substituted (§6.9). */
-static Def enabled_mark;
 
 static Value *def_value(Def *d);
 
@@ -6455,8 +6466,8 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Ctx inner = {env, b->ctx_inst};
         return eval_body(d->body, inner);
     }
-    if (d->lazy) return call_native(d, call, NULL, c);
     if (d->native) {
+        if (d->lazy) return call_native(d, call, NULL, c);
         Value **vals = NEWN(Value *, n);
         for (int i = 0; i < n; i++)
             vals[i] = d->params[i]->arity ? eval_operator_arg(args[i], c) : eval(args[i], c);
@@ -7541,15 +7552,6 @@ static int enabled_slot(Def *d) {
     return nvars + nenabled_names++;
 }
 
-/* Whether ENABLED marks c's chain of instances before one substitutes d. */
-static int enabled_by_name(Def *d, Ctx c) {
-    for (Inst *in = c.inst; in; in = in->parent) {
-        if (in->def == &enabled_mark) return 1;
-        if (subst_index(in->def, d) >= 0) return 0;
-    }
-    return 0;
-}
-
 /* The evaluation globals, which a caller that goes on after an error
    restores. */
 typedef struct {
@@ -7957,7 +7959,7 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->nparams != e->n) break;
-        if (def_level(d) == 0 && e->n == 0) break;   /* TLC computes it as a constant */
+        if (e->n == 0 && def_level(d) == 0) break;   /* TLC computes it as a constant */
         if (d->local == 2) {
             Env *b = env_find(c.env, d);
             if (!b) break;
@@ -8328,10 +8330,18 @@ static void put32(Buf *b, int64_t v) {
     b->s[b->n] = 0;
 }
 
-static void put_tagged(Buf *b, char tag, int64_t v) {
+static inline void put_tagged(Buf *b, char tag, int64_t v) {
     buf_room(b, 6);
-    b->s[b->n++] = tag;
-    b->n += (size_t)put_word(b->s + b->n, v);
+    char *w = b->s + b->n;
+    uint32_t z = (uint32_t)(int32_t)v << 1 ^ (uint32_t)((int32_t)v >> 31);
+    w[0] = tag;
+    if (z < 0x80) {   /* most words: one byte */
+        w[1] = (char)z;
+        w[2] = 0;
+        b->n += 2;
+        return;
+    }
+    b->n += 1 + (size_t)put_word(w + 1, v);
     b->s[b->n] = 0;
 }
 

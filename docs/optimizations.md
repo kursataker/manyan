@@ -53,6 +53,7 @@ In the order they were made.
 | `r.f` keeps on the expression where the field was in the last record, and checks there first | Examples' MCPaxosSmall (1 worker) 20.3 → 18.6, 12% fewer instructions |
 | Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do | Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB |
 | A declaration keeps the index of its substitution by the module last instantiated, not searching the instance's substitutions at each read | instructions: Examples' AllocatorImplementation −3.6%, MCPaxosSmall −1.8% |
+| A declaration read outside an instance skips the instance and ENABLED checks (a separate noinline function); a stored word under 64 writes one byte inline; `gen` does not expand a constant call | against 0.6.0's bench regressions: counters 2549 → 2510 M cycles, symmetry 621 → 606, log 173 → 165 |
 
 ## Tried and dropped
 
@@ -68,6 +69,7 @@ In the order they were made.
 | Prefetching fingerprint slots, successors queued 8 deep | none, slightly slower: the out-of-order core already overlaps the miss |
 | Interning strings and model values (counters made 5.8M model values) | no gain: arena allocation is a pointer bump, and the scratch arena is reset each state, so it stays in cache |
 | `t \in [1..n -> R]` for a tuple `t` checking the domain by the interval's bounds, without enumerating it | 0.25% fewer instructions on Examples' MCBakery, whose TypeOK does it twice per state: the profile's samples there were the members' checks |
+| `assignable` with a fast path, an inline front, or a switch | each made partition about 11% slower with the profile-guided build; the loop form stays |
 
 ## Where the time goes now
 
