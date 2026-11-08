@@ -8533,11 +8533,6 @@ static Def *late_def(int name, const char *role, Buf *why) {
 static int alias_name;   /* the ALIAS, 0 if none */
 static Expr *unfold(Expr *e);
 
-/* State st of a trace, the level-th, followed by next, as TLC prints it:
-   with an ALIAS, the alias's value on the step from st to next is printed
-   as the state if it is a record, its fields as variables, in the order a
-   record constructor gives them, as TLC prints the record unnormalized; an
-   error evaluating it is printed as a variable _ALIASEvalError after st's. */
 static void state_text(Buf *b, Value **st) {
     for (int i = 0; i < nvars; i++)
         buf_printf(b, "%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
@@ -8590,6 +8585,11 @@ static void java_format(Buf *b, const char *f, const char *key, const char *valu
     }
 }
 
+/* State st of a trace, the level-th, followed by next, as TLC prints it, into b:
+   with an ALIAS, the alias's value on the step from st to next is printed
+   as the state if it is a record, its fields as variables, in the order a
+   record constructor gives them, as TLC prints the record unnormalized; an
+   error evaluating it is printed as a variable _ALIASEvalError after st's. */
 static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
     if (!alias_name) { state_text(b, st); return; }
     Buf why = {0};
