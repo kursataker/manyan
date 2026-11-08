@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Action property line 9, col 21 to line 9, col 30 of module Queue is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ len = 0
+/\ buf = <<0, 0, 0>>
+
+State 2: <Put(1) line 9, col 11 to line 9, col 73 of module instance_mapping_violated>
+/\ len = 1
+/\ buf = <<1, 0, 0>>
+
+State 3: <Put(2) line 9, col 11 to line 9, col 73 of module instance_mapping_violated>
+/\ len = 2
+/\ buf = <<1, 2, 0>>
+
+State 4: <Get line 10, col 8 to line 10, col 46 of module instance_mapping_violated>
+/\ len = 1
+/\ buf = <<1, 2, 0>>
+
+15 states generated, 15 distinct states found, 9 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

@@ -45,6 +45,7 @@ In the order they were made.
 | `-workers N` is N processes: the search expands a batch while it waits for one, instead of spinning | counters (4.78M states) 1.65 → 1.55 with 8 |
 | Workers take room in the claim table 64 claims at a time, not one atomic add per claim | counters 0.28 → 0.23 with 8 |
 | Profile-guided optimization (`make`), trained on the conformance suite (training on the bench specs instead gains about as much, so the suite is a fair profile) | clang: closure 0.55 → 0.48, counters 0.85 → 0.72, queue 0.18 → 0.16; gcc 15: counters 1.00 → 0.82 |
+| An instance's substitution of state level, but a variable, is computed once per state, as TLC keeps a LazyValue | refinement with K = 8 2.09 → 1.55, counters (no instance) +1% |
 
 ## Tried and dropped
 

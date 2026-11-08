@@ -932,10 +932,15 @@ struct Env {
 
 /* An instance: the module instance definition and the context of the
    instantiation, where the substitutions are evaluated. */
+/* kept: the values of the substitutions in the state whose values are
+   in state, as TLC keeps a LazyValue, for the search's scratch arena
+   while it is not reset (resets). */
 struct Inst {
     Def *def;
     Env *env;
     Inst *parent;
+    unsigned resets;
+    Value **state, **kept;
 };
 
 typedef Value *(*EvalFn)(Expr *e, Ctx c);
@@ -1970,6 +1975,7 @@ struct Def {
     int nsubst;
     Def **subst_decl;
     Expr **subst_expr;
+    char *subst_kept;     /* each substitution: 1 if its value is kept for a state (Inst), 2 if not; 0 unknown */
     Expr *where;          /* the definition's location */
     int part;             /* a copy whose body is part of the original's, as an instance sees it (in_instance) */
 };
@@ -5165,6 +5171,27 @@ static Expr *substitute(Def *d, Ctx *c) {
 static int enabled_by_name(Def *d, Ctx c);
 static int enabled_slot(Def *d);
 
+/* The value of substitution i of instance in, in the current state:
+   kept while the state's values are, as TLC keeps a LazyValue for the
+   states it computed it in. Kept in the search, for a substitution of
+   state level but a variable. */
+static __attribute__((noinline)) Value *substitution_value(Inst *in, int i) {
+    Def *id = in->def;
+    Expr *x = id->subst_expr[i];
+    Ctx outer = {in->env, in->parent};
+    if (primed || gen_init || !cur_state || arena != &scratch_arena) return eval(x, outer);
+    if (!id->subst_kept) id->subst_kept = calloc((size_t)id->nsubst, 1);
+    if (!id->subst_kept[i]) id->subst_kept[i] = x->kind != K_DECL && expr_level(x) == 1 ? 1 : 2;
+    if (id->subst_kept[i] == 2) return eval(x, outer);
+    if (!in->state || in->resets != scratch_resets || memcmp(in->state, cur_state, sizeof(Value *) * (size_t)nvars)) {
+        in->resets = scratch_resets;
+        in->state = NEWN(Value *, nvars);
+        memcpy(in->state, cur_state, sizeof(Value *) * (size_t)nvars);
+        in->kept = NEWN(Value *, id->nsubst);
+    }
+    return in->kept[i] ? in->kept[i] : (in->kept[i] = eval(x, outer));
+}
+
 static Value *decl_value(Def *d, Ctx c, Expr *where) {
     if (primed && d->kind == D_VAR && d->var_index < 0 && enabled_by_name(d, c)) {
         int slot = enabled_slot(d);   /* as ENABLED assigns it (§6.9) */
@@ -5172,12 +5199,14 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
             fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return next_state[slot];
     }
-    Ctx outer = c;
-    Expr *x = substitute(d, &outer);
-    if (x) {
-        if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
-        return d->arity ? eval_operator_arg(x, outer) : eval(x, outer);
-    }
+    for (Inst *in = c.inst; in; in = in->parent)
+        for (int i = 0; i < in->def->nsubst; i++) {
+            if (in->def->subst_decl[i] != d) continue;
+            Expr *x = in->def->subst_expr[i];
+            Ctx outer = {in->env, in->parent};
+            if (x->kind == X_OPREF) return x->def->kind == D_CONST ? decl_value(x->def, outer, where) : mk_oper(x->def, outer);
+            return d->arity ? eval_operator_arg(x, outer) : substitution_value(in, i);
+        }
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
         state_reads++;

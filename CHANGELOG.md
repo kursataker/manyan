@@ -92,6 +92,12 @@ Edge cases found running TLC's own test models (`test-model`):
 - Inside `ENABLED`, a primed variable of an instance that the action
   assigned by name is read back by name (Github725f, g).
 
+Performance:
+
+- A state-level substitution of an instance, such as a refinement
+  mapping `q <- Map(x)`, is computed once per state, as TLC keeps its
+  LazyValue (a refinement check: 2.09 s to 1.55 s).
+
 ## 0.6.0
 
 - TLC 1.8.0 is the oracle, pinned to the pre-release jar built from
