@@ -1250,6 +1250,7 @@ static Value *enumerate_lazy(Value *s) {
         fp_enter(s->u.l.expr);
         if (set_is_infinite(s->u.l.a)) count_infinite(s->u.l.a);
         Value *base = enumerate(s->u.l.a);
+        if (base->n >= 31) fail("Overflow when computing the number of elements in:\n%s", pretty(s));   /* TLC's size() */
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
         /* In the standard order, so nothing to sort: smaller subsets first,
            then those of each size in the order of their elements. */
@@ -1484,6 +1485,24 @@ static int all_members(Value *sub, Value *s) {
     Value *e = enumerate(sub);
     for (int i = 0; i < e->n; i++) if (!set_member(e->u.set.elems[i], s)) return 0;
     return 1;
+}
+
+/* S \subseteq T, as TLC's isSubsetEq: SUBSET A \subseteq SUBSET B as
+   A \subseteq B, an interval in an interval by their bounds, else each
+   element of S in T. An error inside S, made with a source, is one TLC
+   cannot fingerprint. */
+static int subseteq(Value *a, Value *b) {
+    Expr *src = a->kind == V_LAZY ? a->u.l.expr : a->kind == V_SET ? a->u.set.source : NULL;
+    fp_enter(src);
+    int r;
+    if (a->kind == V_LAZY && a->lazy == L_SUBSET && b->kind == V_LAZY && b->lazy == L_SUBSET && !user_set(a->u.l.a))
+        r = subseteq(a->u.l.a, b->u.l.a);
+    else if (a->kind == V_INTERVAL && b->kind == V_INTERVAL && b->u.range.lo <= a->u.range.lo && b->u.range.hi >= a->u.range.hi)
+        r = 1;
+    else
+        r = all_members(a, b);
+    fp_leave(src);
+    return r;
 }
 
 /* TLC's error testing membership in a value that is not a set. */
@@ -5570,7 +5589,7 @@ static __attribute__((noinline)) Value *ev_cup(Expr *e, Ctx c) {
     Value *a = eval(e->args[0], c), *b = eval(e->args[1], c);
     if (e->kind == K_SUBSETEQ) {
         if (!is_set(a) || user_set(a)) fail_at(e, "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.");
-        return BOOLV(all_members(a, b));
+        return BOOLV(subseteq(a, b));
     }
     Value *r = e->kind == K_CUP ? set_union(a, b) : e->kind == K_CAP ? set_inter(a, b) : set_minus(a, b);
     if (r != a && r != b && r->kind == V_LAZY && r->lazy >= L_CUP) r->u.l.expr = source(e);
@@ -5670,19 +5689,22 @@ static int fixed_expr(Expr *e) {
 /* The set make makes of e: in the search, where e is fixed, once, in the
    permanent arena, naming e as its source as a set made anew would. */
 static Value *ev_fixed(Expr *e, Ctx c, Value *(*make)(Expr *, Ctx)) {
+    static int fixing;   /* making a fixed set, whose fixed parts are made so too */
     if (c.inst) return make(e, c);
     if (e->value) return e->value;   /* replaying too, in the permanent arena */
-    if (arena != &scratch_arena) return make(e, c);
-    if (!fixed_expr(e)) return make(e, c);
+    if ((arena != &scratch_arena && !fixing) || !fixed_expr(e)) return make(e, c);
     Arena *saved = arena;
+    int was = fixing;
     sigjmp_buf *outer = handler, here;
     handler = &here;
-    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; raise_error(); }
+    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; fixing = was; raise_error(); }
     arena = &perm_arena;
+    fixing = 1;
     Value *t = make(e, c);
     (t->kind == V_LAZY ? t : t->u.set.product)->u.l.expr = e;
     handler = outer;
     arena = saved;
+    fixing = was;
     return e->value = t;
 }
 
@@ -9437,6 +9459,36 @@ static int merge_level(int lo, int hi) {
     return 0;
 }
 
+/* Whether TLC, seeking an unfingerprintable successor again among the
+   state's by equality, can compare v with its copy: SUBSET S, [S -> T]
+   and S \X T by their parts, another set it keeps as its definition by
+   its elements, which may fail. */
+static int comparable(Value *v) {
+    if (v->kind == V_LAZY && !user_set(v)) switch (v->lazy) {
+    case L_SUBSET: return comparable(v->u.l.a);
+    case L_FCNSET: return comparable(v->u.l.a) && comparable(v->u.l.b);
+    case L_TIMES: case L_RCDSET:
+        for (int i = 0; i < v->n; i++) if (!comparable(v->u.l.names[v->n + i])) return 0;
+        return 1;
+    default: {
+        EvalState es = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf *outer = handler, here;
+        handler = &here;
+        Value *volatile set = NULL;
+        if (!sigsetjmp(here, 0)) set = enumerate(union_cache(v));
+        handler = outer;
+        eval_restore(es);
+        error_restore(&er);
+        if (!set) return 0;
+        v = set;
+    }
+    }
+    if (v->kind == V_SET) for (int i = 0; i < v->n; i++) if (!comparable(v->u.set.elems[i])) return 0;
+    if (is_fcn(v)) for (int i = 0; i < v->n; i++) if (!comparable(v->u.fcn.vals[i])) return 0;
+    return 1;
+}
+
 /* After an error, the function constructors that were being computed in
    full, innermost first, which TLC reports it cannot fingerprint (§11.3);
    else a blank line. */
@@ -9508,7 +9560,8 @@ static int search(void) {
             print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": ");
             print_error_text();
             if (outside) {
-                int again = unfingerprintable;
+                int again = 1;   /* found again by equality, it fails again */
+                for (int i = 0; i < nvars && again && !unfingerprintable; i++) again = comparable(succ[i]);
                 print_trace(expanding, NULL, 0);
                 replay_error(decode_state(expanding));
                 if (again) {

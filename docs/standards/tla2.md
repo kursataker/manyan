@@ -380,6 +380,12 @@ filter is enumerated. A quantifier or `CHOOSE` over a value that is not a
 set, or over `Nat`, `Int`, `STRING` or `Seq(S)`, is an error at once; over
 another infinite set, the error is that of enumerating it.
 
+`S \subseteq T` tests each element of `S` in `T`, but, as TLC,
+`SUBSET A \subseteq SUBSET B` is `A \subseteq B` and an interval is in
+an interval when its bounds are. Enumerating `SUBSET S` of an `S` of 31
+elements or more fails counting it, as TLC: `Overflow when computing the
+number of elements in:` and the set.
+
 A `UNION S` that TLC keeps is taken by quantifiers, set images and
 `x \in S` in an action one element of `S` after another, in the standard
 order of `S`, with any duplicates; `CHOOSE`, filters and functions take it

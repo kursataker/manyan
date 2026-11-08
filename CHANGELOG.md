@@ -51,6 +51,13 @@ Edge cases found running TLC's own test models (`test-model`):
   `F` by its values, as TLC does; tpp skipped the arguments and took the
   last value (ConstantOperatorConfiguration). A constant whose value is
   no operator, applied to arguments, is that value, as in TLC.
+- `S \subseteq T` is TLC's: `SUBSET A \subseteq SUBSET B` is
+  `A \subseteq B`, an interval in an interval is decided by its bounds,
+  and an error inside `S` is one TLC cannot fingerprint (EmptySubsetEq).
+- `SUBSET S` of 31 elements or more fails as TLC counts it, with each
+  SUBSET inside in the fingerprint stack; a successor TLC finds again,
+  comparing SUBSETs by their bases, fails again rather than with its
+  NullPointerException (FingerprintExceptionInit, FingerprintExceptionNext).
 
 ## 0.6.0
 
