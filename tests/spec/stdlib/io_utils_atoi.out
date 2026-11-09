@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 26 of module io_utils_atoi failed.
+The argument of atoi should be a string, but instead it is:
+"12x"
+exit 10

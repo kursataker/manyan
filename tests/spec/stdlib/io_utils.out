@@ -1,0 +1,10 @@
+FALSE
+<<42, -17, 3>>
+[exitValue |-> 0, stdout |-> "out\n", stderr |-> ""]
+[exitValue |-> 3, stdout |-> "", stderr |-> "err\n"]
+[exitValue |-> 0, stdout |-> "hi 7\n", stderr |-> ""]
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

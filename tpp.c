@@ -15,7 +15,10 @@
 #include "tpp.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
+#include <poll.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -7323,6 +7326,101 @@ NATIVE(n_tostring) {
 
 NATIVE(n_tlceval) { UNUSED; return a[0]; }
 
+/* CommunityModules' IOUtils, as its Java implements it. */
+extern char **environ;
+
+NATIVE(n_ioenv) {
+    UNUSED;
+    List names = {0}, values = {0};
+    for (char **e = environ; *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (!eq) continue;
+        list_add(&names, mk_str(intern_n(*e, (int)(eq - *e))));
+        list_add(&values, mk_str(intern(eq + 1)));
+    }
+    return mk_fcn_from(&names, &values);
+}
+
+NATIVE(n_atoi) {
+    UNUSED;
+    if (a[0]->kind == V_STR) {   /* Java's Integer.parseInt */
+        const char *t = S(a[0]->u.i), *d = t + (*t == '-' || *t == '+');
+        char *end;
+        errno = 0;
+        long long i = *d >= '0' && *d <= '9' ? strtoll(t, &end, 10) : 0;
+        if (*d >= '0' && *d <= '9' && !*end && !errno && i >= INT32_MIN && i <= INT32_MAX) return mk_int(i);
+    }
+    fail_module("The argument of atoi should be a string, but instead it is:\n%s", pretty(a[0]));
+}
+
+/* The command's words, each a string, as IOExec takes them. */
+static char **command_words(Value *v, const char *op) {
+    v = realize(v);
+    if (v->kind != V_TUPLE) fail_module("The argument of %s should be a sequence, but instead it is:\n%s", op, pretty(v));
+    char **argv = NEWN(char *, v->n + 1);
+    for (int i = 0; i < v->n; i++) {
+        Value *w = v->u.fcn.vals[i];
+        if (w->kind != V_STR) fail_module("The argument of IOExec should be a sequence, but instead it is:\n%s", pretty(w));
+        argv[i] = (char *)S(w->u.i);
+    }
+    argv[v->n] = NULL;
+    return argv;
+}
+
+/* Runs argv with env's variables added: [exitValue, stdout, stderr]. */
+static Value *run_process(char **argv, Value *env) {
+    int out[2], err[2];
+    fflush(stdout);
+    if (pipe(out) || pipe(err)) fail("Cannot run program \"%s\": %s", argv[0], strerror(errno));
+    pid_t pid = fork();
+    if (pid == 0) {
+        int in = open("/dev/null", O_RDONLY);
+        dup2(in, 0), dup2(out[1], 1), dup2(err[1], 2);
+        close(out[0]), close(err[0]);
+        for (int i = 0; env && i < env->n; i++) {
+            Value *k = env->u.fcn.keys[i], *v = env->u.fcn.vals[i];
+            setenv(S(k->u.i), v->kind == V_STR ? S(v->u.i) : value_str(v), 1);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(out[1]), close(err[1]);
+    Buf text[2] = {{0}, {0}};
+    struct pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
+    for (int open = 2; open;) {
+        poll(fds, 2, -1);
+        for (int i = 0; i < 2; i++) {
+            if (fds[i].fd < 0 || !fds[i].revents) continue;
+            char chunk[4096];
+            ssize_t n = read(fds[i].fd, chunk, sizeof chunk);
+            if (n > 0) { buf_printf(&text[i], "%.*s", (int)n, chunk); continue; }
+            close(fds[i].fd), fds[i].fd = -1, open--;
+        }
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    List names = {0}, values = {0};
+    const char *fields[] = {"exitValue", "stdout", "stderr"};
+    for (int i = 0; i < 3; i++) list_add(&names, mk_str(intern(fields[i])));
+    list_add(&values, mk_int(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status)));
+    for (int i = 0; i < 2; i++) {
+        list_add(&values, mk_str(intern(text[i].s ? text[i].s : "")));
+        free(text[i].s);
+    }
+    return mk_fcn_from(&names, &values);
+}
+
+NATIVE(n_ioexec) { UNUSED; return run_process(command_words(a[0], "IOExec"), NULL); }
+
+NATIVE(n_ioenvexec) {
+    UNUSED;
+    Value *env = realize(a[0]);
+    int record = is_fcn(env);
+    for (int i = 0; record && i < env->n; i++) record = env->u.fcn.keys[i]->kind == V_STR;
+    if (!record) fail_module("The argument of IOEnvExec should be a record, but instead it is:\n%s", pretty(env));
+    return run_process(command_words(a[1], "IOEnvExec"), env);
+}
+
 /* TLCExt's operators. */
 NATIVE(n_asserterror);   /* after the evaluation's saved state */
 
@@ -7464,6 +7562,10 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"Randomization", "RandomSetOfSubsets", n_randomsetofsubsets, J_V, "RandomSetOfSubsets(" J_V "," J_V "," J_V ")"},
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
+    {"IOUtils", "IOEnv", n_ioenv, J_V, "tlc2.overrides.IOUtils.ioEnv()"},
+    {"IOUtils", "atoi", n_atoi, J_V, "tlc2.overrides.IOUtils.atoi(" J_V ")"},
+    {"IOUtils", "IOExec", n_ioexec, J_V, "tlc2.overrides.IOUtils.ioExec(" J_V ")"},
+    {"IOUtils", "IOEnvExec", n_ioenvexec, J_V, "tlc2.overrides.IOUtils.ioEnvExec(" J_V "," J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};
 
 /* The number of arguments of a native's Java method; an evaluation

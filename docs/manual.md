@@ -31,7 +31,10 @@ tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
 instantiates are read from the same directory; the standard modules
 (Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
-Randomization, RealTime, Toolbox, TLCExt) are built in.
+Randomization, RealTime, Toolbox, TLCExt) are built in. A module named
+as one of CommunityModules, beside the spec, gets the operators TLC
+implements in Java for it from its jar: IOUtils' `IOEnv`, `atoi`,
+`IOExec` and `IOEnvExec`.
 
 | option | meaning |
 |---|---|

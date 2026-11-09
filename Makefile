@@ -23,8 +23,14 @@ OBJDIR = .obj
 TLA_JAR = $(OBJDIR)/tla/tla2tools.jar
 TLA_URL = https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
 TLA_SHA256 = e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
+# CommunityModules on TLC's class path, as tlaplus/Examples' CI puts it,
+# give the modules of its names, such as IOUtils, their Java operators.
+COMMUNITY_REV = 202611060952
+COMMUNITY_SHA256 = a3b27c40f1fb5085f30c6ead37e918457f8cfc62c1e50a1dc668ef592ad2b5fb
+COMMUNITY = $(OBJDIR)/CommunityModules-$(COMMUNITY_REV)
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
-TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)) tlc2.TLC
+TLC_CP = $(abspath $(TLA_JAR)):$(abspath $(COMMUNITY)/modules.jar)
+TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP) tlc2.TLC
 
 .PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench full-bench install clean
 
@@ -68,17 +74,17 @@ test-spec: tpp
 	python3 tests/spec_runner.py "./tpp -workers 4" --strict
 
 # The oracle must agree with every expected output, which validates the tests.
-test-spec-oracle: tpp $(TLA_JAR)
+test-spec-oracle: tpp $(TLA_JAR) $(COMMUNITY)
 	python3 tests/spec_runner.py ./tpp --strict --oracle "$(TLC)"
 
 # Rewrite the expected outputs from the oracle (after adding a test).
-bless: $(TLA_JAR)
+bless: $(TLA_JAR) $(COMMUNITY)
 	python3 tests/spec_runner.py ./tpp --oracle "$(TLC)" --bless $(if $(ONLY),--only $(ONLY))
 
-test-tla: tpp $(TLA_JAR)
+test-tla: tpp $(TLA_JAR) $(COMMUNITY)
 	python3 tests/tla_check.py ./tpp --tlc "$(TLC)"
 
-tla-tools: $(TLA_JAR)
+tla-tools: $(TLA_JAR) $(COMMUNITY)
 $(TLA_JAR):
 	mkdir -p $(dir $@)
 	curl -fsSL -o $@.tmp $(TLA_URL)
@@ -100,28 +106,25 @@ SEED ?= 1
 fuzz: $(OBJDIR)/tpp-sanitize
 	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/tpp-sanitize --runs $(RUNS) --seed $(SEED)
 
-fuzz-oracle: tpp $(TLA_JAR)
+fuzz-oracle: tpp $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py diff ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-fuzz-sim: tpp $(TLA_JAR)
+fuzz-sim: tpp $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py sim ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-bench: tpp $(TLA_JAR)
+bench: tpp $(TLA_JAR) $(COMMUNITY)
 	python3 bench/compare.py ./tpp --tlc "$(TLC)"
 
-# tlaplus/Examples, pinned, with the modules its CI puts on TLC's class
-# path: CommunityModules and TLAPS. Move a pin with its date in the commit.
+# tlaplus/Examples, pinned, with the TLAPS modules its CI puts on TLC's
+# class path too. Move a pin with its date in the commit.
 EXAMPLES_REV = ca168055339d5cbcee95b7eefcb97c1ee59f9914
 TLAPM_REV = c8ddc44a80b621989f96a9ee2c371301c52b109f
-COMMUNITY_REV = 202611060952
-COMMUNITY_SHA256 = a3b27c40f1fb5085f30c6ead37e918457f8cfc62c1e50a1dc668ef592ad2b5fb
 EXAMPLES = $(OBJDIR)/Examples-$(EXAMPLES_REV)
 TLAPM = $(OBJDIR)/tlapm-$(TLAPM_REV)
-COMMUNITY = $(OBJDIR)/CommunityModules-$(COMMUNITY_REV)
-FULL_TLC = $(JAVA) -XX:+UseParallelGC -cp $(abspath $(TLA_JAR)):$(abspath $(COMMUNITY)/modules.jar):$(abspath $(TLAPM)/library) tlc2.TLC
+FULL_TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP):$(abspath $(TLAPM)/library) tlc2.TLC
 
 # ONLY=PATTERN picks models; MAX_RUNTIME=hh:mm:ss caps the manifest's runtime.
-full-bench: tpp $(TLA_JAR) $(EXAMPLES) $(TLAPM) $(COMMUNITY)
+full-bench: tpp $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
 	python3 bench/examples.py ./tpp --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
 		--library $(COMMUNITY) --library $(TLAPM)/library \
 		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME))
