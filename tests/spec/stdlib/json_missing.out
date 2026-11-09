@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 50 of module json_missing failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.IValue tlc2.overrides.Json.ndDeserialize(tlc2.value.impl.StringValue) throws java.io.IOException,
+but it produced the following error:
+missing.ndjson (No such file or directory)
+exit 10

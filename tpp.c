@@ -779,7 +779,7 @@ static void print_value(Buf *b, Value *v) {
         buf_puts(b, "}");
         return;
     case V_TUPLE: case V_FCN:
-        if (v->n == 0) { buf_puts(b, "<<>>"); return; }
+        if (v->n == 0) { buf_puts(b, v->kind == V_FCN && v->made == MADE_RECORD ? "[]" : "<<>>"); return; }   /* [] from Java: a JSON object */
         if (fcn_is_tuple(v)) {
             buf_puts(b, "<<");
             for (int i = 0; i < v->n; i++) {
@@ -6577,6 +6577,12 @@ Value *tpp_function(size_t n, Value *const *keys, Value *const *values) {
     return mk_fcn_from(&k, &v);
 }
 
+Value *tpp_record(size_t n, Value *const *names, Value *const *values) {
+    Value *r = tpp_function(n, names, values);
+    r->made = MADE_RECORD;
+    return r;
+}
+
 Value *tpp_set(size_t n, Value *const *elems) {
     List l = {0};
     for (size_t i = 0; i < n; i++) list_add(&l, elems[i]);
@@ -6613,6 +6619,13 @@ void tpp_fail(TPPCall *call, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfail(NULL, 1, TPP_ERROR, fmt, ap);
+}
+
+void tpp_throw(TPPCall *call, const char *fmt, ...) {
+    (void)call;
+    va_list ap;
+    va_start(ap, fmt);
+    vfail(NULL, 0, TPP_ERROR, fmt, ap);
 }
 
 

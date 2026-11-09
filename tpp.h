@@ -70,12 +70,13 @@ int tpp_define(const char *module, const char *name, int arity, TPPNative fn, co
    arguments, as they are given, and what it makes. Sets and functions are
    given in TLC's order: sorted. */
 typedef enum { TPP_BOOL, TPP_INT, TPP_STRING, TPP_MODEL, TPP_TUPLE, TPP_FUNCTION, TPP_SET, TPP_OTHER } TPPKind;
-TPPKind tpp_kind(TPPValue *);   /* a record is a function; a tuple a function on 1..n */
+TPPKind tpp_kind(TPPValue *);   /* a record is a function, from strings; a tuple a function on 1..n */
 TPPValue *tpp_bool(int);
 TPPValue *tpp_int(int64_t);
 TPPValue *tpp_string(const char *, size_t);
 TPPValue *tpp_tuple(size_t n, TPPValue *const *elems);
 TPPValue *tpp_function(size_t n, TPPValue *const *keys, TPPValue *const *values);   /* keys distinct, any order */
+TPPValue *tpp_record(size_t n, TPPValue *const *names, TPPValue *const *values);   /* names strings, as tpp_function's keys */
 TPPValue *tpp_set(size_t n, TPPValue *const *elems);   /* any order, duplicates too */
 int tpp_is_true(TPPValue *);
 int64_t tpp_int_value(TPPValue *);
@@ -91,10 +92,16 @@ TPPValue *tpp_element(TPPValue *elements, size_t);
 int tpp_compare(TPPValue *, TPPValue *);   /* TLC's order of values: <0, 0 or >0 */
 const char *tpp_print(TPPValue *);         /* as TLC prints it */
 TPPValue *tpp_arg(TPPCall *, int i);       /* a TPP_LAZY native's argument i, evaluated */
-/* An error in the native, which TLC reports as one in its Java. */
+/* An error in the native: tpp_fail one TLC reports as its own, as an
+   EvalException; tpp_throw another exception of its Java, which TLC
+   reports with the method that threw it. */
 #if defined(__GNUC__)
 __attribute__((noreturn, format(printf, 2, 3)))
 #endif
 void tpp_fail(TPPCall *, const char *fmt, ...);
+#if defined(__GNUC__)
+__attribute__((noreturn, format(printf, 2, 3)))
+#endif
+void tpp_throw(TPPCall *, const char *fmt, ...);
 
 #endif

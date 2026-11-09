@@ -23,6 +23,7 @@ gives, error messages included.
 |---|---|
 | Graphs | `SimplePath`, `AreConnectedIn`, `IsStronglyConnected` |
 | IOUtils | `IOEnv`, `atoi`, `IOExec`, `IOEnvExec`, `Serialize` (format `TXT`; another format is the definition's) |
+| Json | `JsonDeserialize`, `ndJsonDeserialize` |
 | SequencesExt | `SetToSeq` |
 | SVG | `SVGElemToString` |
 | UndirectedGraphs | `ConnectedComponents` |
@@ -57,10 +58,13 @@ each it needs with `tpp_arg`; returning `NULL` then leaves the call to the
 definition, as `Serialize` does for a format other than `TXT`.
 
 Values are made and read with the functions `tpp.h` declares. A record is a
-function from strings, a sequence a tuple, and the elements of sets and the
-keys of functions come in TLC's order. Values belong to the evaluation that
-made them; a native keeps none past its return. `tpp_fail` reports an
-error as TLC reports one in its Java, and does not return.
+function from strings (`tpp_record` makes one TLC's Java makes as a
+`RecordValue`), a sequence a tuple, and the elements of sets and the keys
+of functions come in TLC's order. Values belong to the evaluation that
+made them; a native keeps none past its return. An error does not return:
+`tpp_fail` for one TLC's Java raises as an `EvalException`, which TLC
+prints as it is, and `tpp_throw` for another exception, which TLC prints
+under the Java method that threw it.
 
 Each new native gets a test in `tests/spec/stdlib`, its expected output
 from TLC with the CommunityModules jar (`make bless`), and a stub of the

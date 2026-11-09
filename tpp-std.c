@@ -52,7 +52,7 @@ static TPPValue *io_env(TPPCall *call, TPPValue **a) {
         add(&names, tpp_string(*e, (size_t)(eq - *e)));
         add(&values, str(eq + 1));
     }
-    TPPValue *r = tpp_function(names.n, names.v, values.v);
+    TPPValue *r = tpp_record(names.n, names.v, values.v);
     free(names.v), free(values.v);
     return r;
 }
@@ -83,7 +83,7 @@ static char **command_words(TPPCall *call, TPPValue *v, const char *op) {
 static TPPValue *exec_record(int64_t code, const char *out, size_t nout, const char *err) {
     TPPValue *keys[] = {str("exitValue"), str("stdout"), str("stderr")};
     TPPValue *vals[] = {tpp_int(code), tpp_string(out, nout), str(err)};
-    return tpp_function(3, keys, vals);
+    return tpp_record(3, keys, vals);
 }
 
 /* Runs argv with env's variables added, its standard input empty. */
@@ -224,6 +224,178 @@ static TPPValue *svg_elem_to_string(TPPCall *call, TPPValue **a) {
     svg_markup(call, &t, a[0]);
     TPPValue *v = tpp_string(t.s ? t.s : "", t.n);
     free(t.s);
+    return v;
+}
+
+/* ---------------------------------------------------------------- Json */
+
+/* JSON text as Json's getValue makes it a value: an array a tuple, an
+   object a record, a number Gson's getAsInt, true, false and strings
+   themselves; null is no value. */
+typedef struct { TPPCall *call; const char *p, *end; } Json;
+
+static void json_space(Json *j) { while (j->p < j->end && strchr(" \t\r\n", *j->p)) j->p++; }
+
+static _Noreturn void json_bad(Json *j) {
+    tpp_throw(j->call, "com.google.gson.JsonSyntaxException: malformed JSON at %.20s", j->p < j->end ? j->p : "end of input");
+}
+
+static void json_expect(Json *j, char c) {
+    json_space(j);
+    if (j->p == j->end || *j->p != c) json_bad(j);
+    j->p++;
+}
+
+/* The UTF-8 of code point u, at t. */
+static void utf8(Text *t, unsigned u) {
+    char b[4];
+    size_t n = u < 0x80 ? 1 : u < 0x800 ? 2 : u < 0x10000 ? 3 : 4;
+    if (n == 1) b[0] = (char)u;
+    else {
+        for (size_t i = n - 1; i > 0; i--) b[i] = (char)(0x80 | (u & 0x3f)), u >>= 6;
+        b[0] = (char)(((0xf00 >> n) & 0xff) | u);
+    }
+    put(t, b, n);
+}
+
+static unsigned json_hex4(Json *j) {
+    unsigned u = 0;
+    for (int i = 0; i < 4; i++, j->p++) {
+        char c = j->p < j->end ? *j->p : 0;
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) json_bad(j);
+        u = u * 16 + (unsigned)d;
+    }
+    return u;
+}
+
+static TPPValue *json_string(Json *j) {
+    json_expect(j, '"');
+    Text t = {0};
+    put(&t, "", 0);
+    while (j->p < j->end && *j->p != '"') {
+        if (*j->p != '\\') { put(&t, j->p++, 1); continue; }
+        if (++j->p == j->end) json_bad(j);
+        char c = *j->p++;
+        switch (c) {
+        case '"': case '\\': case '/': put(&t, &c, 1); break;
+        case 'b': put(&t, "\b", 1); break;
+        case 'f': put(&t, "\f", 1); break;
+        case 'n': put(&t, "\n", 1); break;
+        case 'r': put(&t, "\r", 1); break;
+        case 't': put(&t, "\t", 1); break;
+        case 'u': {
+            unsigned u = json_hex4(j);
+            if (u >= 0xd800 && u < 0xdc00 && j->end - j->p >= 6 && j->p[0] == '\\' && j->p[1] == 'u') {   /* a surrogate pair */
+                j->p += 2;
+                u = 0x10000 + ((u - 0xd800) << 10) + (json_hex4(j) - 0xdc00);
+            }
+            utf8(&t, u);
+            break;
+        }
+        default: json_bad(j);
+        }
+    }
+    if (j->p == j->end) json_bad(j);
+    j->p++;
+    TPPValue *v = tpp_string(t.s, t.n);
+    free(t.s);
+    return v;
+}
+
+static TPPValue *json_value(Json *j) {
+    json_space(j);
+    if (j->p == j->end) json_bad(j);
+    if (*j->p == '"') return json_string(j);
+    if (*j->p == '[' || *j->p == '{') {
+        int object = *j->p++ == '{';
+        Values keys = {0}, values = {0};
+        json_space(j);
+        if (j->p < j->end && *j->p == (object ? '}' : ']')) j->p++;
+        else for (;;) {
+            if (object) {   /* Gson keeps a key's last value */
+                TPPValue *k = json_string(j);
+                json_expect(j, ':');
+                size_t i = 0;
+                while (i < keys.n && tpp_compare(keys.v[i], k)) i++;
+                if (i == keys.n) add(&keys, k), add(&values, NULL);
+                values.v[i] = json_value(j);
+            } else {
+                add(&values, json_value(j));
+            }
+            json_space(j);
+            if (j->p < j->end && *j->p == ',') { j->p++; continue; }
+            json_expect(j, object ? '}' : ']');
+            break;
+        }
+        TPPValue *v = object ? tpp_record(keys.n, keys.v, values.v) : tpp_tuple(values.n, values.v);
+        free(keys.v), free(values.v);
+        return v;
+    }
+    const char *word = j->p;
+    while (j->p < j->end && !strchr(" \t\r\n,]}", *j->p)) j->p++;
+    size_t n = (size_t)(j->p - word);
+    if (n == 4 && !strncmp(word, "true", 4)) return tpp_bool(1);
+    if (n == 5 && !strncmp(word, "false", 5)) return tpp_bool(0);
+    if (n == 4 && !strncmp(word, "null", 4))
+        tpp_throw(j->call, "java.io.IOException: Cannot convert value: unsupported JSON value null");
+    char number[64], *end;
+    if (n == 0 || n >= sizeof number) json_bad(j);
+    memcpy(number, word, n), number[n] = 0;
+    errno = 0;
+    long long i = strtoll(number, &end, 10);   /* getAsInt: an int's low bits, or a decimal's truncated */
+    if (*end || errno) {
+        double d = strtod(number, &end);
+        if (*end) { j->p = word; json_bad(j); }
+        i = d >= 9.2e18 || d <= -9.2e18 ? 0 : (long long)d;
+    }
+    return tpp_int((int32_t)(uint32_t)(unsigned long long)i);
+}
+
+/* The file at path, or TLC's error that it cannot be read. */
+static char *json_file(TPPCall *call, TPPValue *path, size_t *n) {
+    if (tpp_kind(path) != TPP_STRING) tpp_fail(call, "The argument should be a string, but instead it is:\n%s", tpp_print(path));
+    const char *name = tpp_string_value(path, NULL);
+    FILE *f = fopen(name, "rb");
+    if (!f) tpp_throw(call, "%s (%s)", name, strerror(errno));
+    Text t = {0};
+    put(&t, "", 0);
+    char chunk[1 << 16];
+    for (size_t got; (got = fread(chunk, 1, sizeof chunk, f)) > 0;) put(&t, chunk, got);
+    fclose(f);
+    *n = t.n;
+    return t.s;
+}
+
+static TPPValue *json_deserialize(TPPCall *call, TPPValue **a) {
+    size_t n;
+    char *text = json_file(call, a[0], &n);
+    Json j = {call, text, text + n};
+    TPPValue *v = json_value(&j);
+    json_space(&j);
+    if (j.p != j.end) json_bad(&j);
+    free(text);
+    return v;
+}
+
+/* Each line not blank a value: ndJSON. */
+static TPPValue *nd_json_deserialize(TPPCall *call, TPPValue **a) {
+    size_t n;
+    char *text = json_file(call, a[0], &n);
+    Values lines = {0};
+    for (const char *p = text, *end = text + n; p < end;) {
+        const char *eol = memchr(p, '\n', (size_t)(end - p));
+        Json j = {call, p, eol ? eol : end};
+        json_space(&j);
+        if (j.p < j.end) {
+            add(&lines, json_value(&j));
+            json_space(&j);
+            if (j.p != j.end) json_bad(&j);
+        }
+        p = eol ? eol + 1 : end;
+    }
+    TPPValue *v = tpp_tuple(lines.n, lines.v);
+    free(lines.v), free(text);
     return v;
 }
 
@@ -384,6 +556,10 @@ int tpp_std_init(void) {
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
         {"SVG", "SVGElemToString", 1, svg_elem_to_string, OVERRIDE("SVG", "SVGElemToString(" J_V ")")},
+        {"Json", "JsonDeserialize", 1, json_deserialize,
+         "public static tlc2.value.IValue tlc2.overrides.Json.deserialize(tlc2.value.impl.StringValue) throws java.io.IOException"},
+        {"Json", "ndJsonDeserialize", 1, nd_json_deserialize,
+         "public static tlc2.value.IValue tlc2.overrides.Json.ndDeserialize(tlc2.value.impl.StringValue) throws java.io.IOException"},
         {"Graphs", "SimplePath", 1, simple_path, OVERRIDE("Graphs", "simplePath(" J_V ")")},
         {"Graphs", "AreConnectedIn", 3, are_connected_in, OVERRIDE("Graphs", "areConnectedIn(" J_V "," J_V "," J_V ")")},
         {"Graphs", "IsStronglyConnected", 1, is_strongly_connected, OVERRIDE("Graphs", "isStronglyConnected(" J_V ")")},
