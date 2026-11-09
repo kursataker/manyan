@@ -54,17 +54,18 @@ PGO_USE = -fprofile-use=$(PGO) -fprofile-partial-training
 PGO_MERGE = true
 endif
 
-tpp: tpp.c tpp.h
+SRC = tpp.c tpp-std.c
+HDR = tpp.h tpp-std.h
+
+tpp: $(SRC) $(HDR)
 ifeq ($(PGO_TOOLS),)
-	$(CC) $(CFLAGS) $(LDFLAGS) tpp.c $(LDLIBS) -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 else
 	rm -rf $(PGO) && mkdir -p $(PGO)
-	$(CC) $(CFLAGS) $(PGO_GEN) -c tpp.c -o $(PGO)/tpp.o
-	$(CC) $(PGO_GEN) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o $(PGO)/tpp
+	$(CC) $(CFLAGS) $(PGO_GEN) $(LDFLAGS) $(SRC) $(LDLIBS) -o $(PGO)/tpp
 	LLVM_PROFILE_FILE=$(PGO)/%p.profraw $(PYTHON) tests/spec_runner.py $(PGO)/tpp > /dev/null
 	$(PGO_MERGE)
-	$(CC) $(CFLAGS) $(PGO_USE) -c tpp.c -o $(PGO)/tpp.o
-	$(CC) $(LDFLAGS) $(PGO)/tpp.o $(LDLIBS) -o $@
+	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
 test: test-spec
@@ -91,9 +92,9 @@ $(TLA_JAR):
 	echo "$(TLA_SHA256)  $@.tmp" | shasum -a 256 -c -
 	mv $@.tmp $@
 
-$(OBJDIR)/tpp-sanitize: tpp.c tpp.h
+$(OBJDIR)/tpp-sanitize: $(SRC) $(HDR)
 	mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all tpp.c $(LDLIBS) -o $@
+	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all $(SRC) $(LDLIBS) -o $@
 
 sanitize: $(OBJDIR)/tpp-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
@@ -149,7 +150,7 @@ $(COMMUNITY):
 install: tpp
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/include
 	install tpp $(DESTDIR)$(PREFIX)/bin/tpp
-	install -m 644 tpp.h $(DESTDIR)$(PREFIX)/include/tpp.h
+	install -m 644 tpp.h tpp-std.h $(DESTDIR)$(PREFIX)/include/
 
 clean:
 	rm -f tpp

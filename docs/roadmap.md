@@ -77,7 +77,8 @@ In the order of the goals above.
 
 ## What stays
 
-- One C file and one header, with no dependencies.
+- The core language in one C file and one header, and the operators TLC
+  computes in Java in another pair, on the core's API; no dependencies.
 - Every expected output comes from TLC.
 - With any number of workers, the output is identical to a one-worker run.
 - An improvement over TLC that changes the output, such as a clearer error

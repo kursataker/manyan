@@ -39,7 +39,7 @@ jobs:
           make
           mkdir arm64 x86_64
           mv tpp arm64/tpp
-          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c -lm -o x86_64/tpp
+          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c tpp-std.c -lm -o x86_64/tpp
       - run: |
           softwareupdate --install-rosetta --agree-to-license
           for arch in arm64 x86_64; do

@@ -9,8 +9,8 @@ how to run it.
 ## Building
 
 ```sh
-make            # builds ./tpp from tpp.c and tpp.h; needs a C11 compiler
-make install    # installs bin/tpp and include/tpp.h under PREFIX (/usr/local)
+make            # builds ./tpp from tpp.c and tpp-std.c; needs a C11 compiler
+make install    # installs bin/tpp and include/tpp.h, tpp-std.h under PREFIX (/usr/local)
 ```
 
 `make` builds tpp instrumented, runs the conformance suite with it, and
@@ -31,13 +31,9 @@ tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
 instantiates are read from the same directory; the standard modules
 (Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
-Randomization, RealTime, Toolbox, TLCExt) are built in. A module named
-as one of CommunityModules, beside the spec, gets the operators TLC
-implements in Java for it from its jar: IOUtils' `IOEnv`, `atoi`,
-`IOExec`, `IOEnvExec` and `Serialize` (format `TXT`), SequencesExt's
-`SetToSeq`, SVG's `SVGElemToString` and UndirectedGraphs'
-`ConnectedComponents`. Its other modules' operators are computed from their
-definitions.
+Randomization, RealTime, Toolbox, TLCExt) are built in. A module of
+CommunityModules beside the spec gets the operators TLC computes in Java
+for it; [std.md](std.md) lists them.
 
 | option | meaning |
 |---|---|
@@ -159,7 +155,10 @@ TPPOptions o = {.spec = "MySpec", .check_deadlock = 1, .workers = 1};
 int status = tpp_check(&o);   /* prints the report; returns an exit status */
 ```
 
-Compile `tpp.c` with `-DTPP_NO_MAIN` to link it into another program.
+Compile `tpp.c` with `-DTPP_NO_MAIN` to link it into another program, with
+`tpp-std.c` and a call of `tpp_std_init()` before `tpp_check` for the
+operators of [std.md](std.md). `tpp_define` adds a native operator of your
+own, as std.md shows.
 
 ## Testing
 

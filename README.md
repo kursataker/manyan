@@ -141,8 +141,10 @@ Java (they download tla2tools 1.8.0 themselves):
 
 ```
 tpp.c, tpp.h           the checker and its C API
+tpp-std.c, tpp-std.h   the operators TLC computes in Java, on that API
 docs/standards/        the language standard tpp conforms to
 docs/manual.md         how to use tpp
+docs/std.md            the standard modules, and writing an operator in C
 docs/benchmark.md      tpp against TLC
 docs/optimizations.md  what made tpp fast, and what did not
 docs/roadmap.md        where tpp is going

@@ -33,7 +33,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-typedef struct Value Value;
+typedef struct TPPValue Value;
 typedef struct Expr Expr;
 typedef struct Def Def;
 typedef struct Module Module;
@@ -439,7 +439,7 @@ enum LazyKind {
     L_CUP, L_CAP, L_DIFF
 };
 
-struct Value {
+struct TPPValue {
     unsigned char kind;
     union {
         unsigned char lazy;  /* LazyKind of a V_LAZY */
@@ -1982,6 +1982,7 @@ struct Def {
     int nb;
     Module *mod;
     Native native;
+    TPPNative api;        /* a native of tpp_define: native is then n_defined, which marks it */
     int lazy;             /* a native of TLC's evaluation methods: it evaluates the call's arguments itself, unless given values */
     const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
@@ -5711,7 +5712,10 @@ static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
     Inst *inst = instance_chain(e, c);
     Ctx ic = {c.env, inst};
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
-    if (d->lazy) return call_native(d, e, NULL, c);
+    if (d->lazy) {
+        Value *v = call_native(d, e, NULL, c);
+        if (v) return v;   /* NULL: as TLC's evaluation methods, it leaves this call to the definition */
+    }
     if (e->n == 0) { Ctx bare = {NULL, inst}; return call_def(d, NULL, 0, bare, e); }
     /* The arguments are evaluated in the caller's context. */
     Value *few[4], **vals = e->n <= 4 ? few : NEWN(Value *, e->n);
@@ -5721,7 +5725,7 @@ static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
         if (d->params[k]->arity) env = mk_binding(d->params[k], eval_operator_arg(e->args[k], c), env);
         else env = mk_thunk(d->params[k], e->args[k], c, env);
     }
-    if (d->native) {
+    if (d->native && !d->lazy) {
         for (int k = 0; k < e->n; k++) vals[k] = force(env_find(env, d->params[k]));
         return call_native(d, e, vals, ic);
     }
@@ -6499,14 +6503,106 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
 
 #define NATIVE(name) static Value *name(Expr *call, Value **a, Ctx c)
 
+static Value *api_call(Def *d, Expr *call, Value **args, Ctx c);
+
 static Value *call_native(Def *d, Expr *call, Value **args, Ctx c) {
     if (java_depth < 64) java_frames[java_depth] = d->java;
     java_depth++;
-    Value *v = d->native(call, args, c);
+    Value *v = d->api ? api_call(d, call, args, c) : d->native(call, args, c);
     java_depth--;
     return v;
 }
 #define UNUSED (void)call; (void)a; (void)c
+
+/* ---------------------------------------------------------------- native operators of tpp.h */
+
+struct TPPCall { Expr *call; Value **args; Ctx c; };
+
+NATIVE(n_defined) { UNUSED; return NULL; }   /* marks a Def whose native is d->api */
+
+static Value *api_call(Def *d, Expr *call, Value **args, Ctx c) {
+    for (int i = 0; args && i < d->nparams; i++) args[i] = realize(args[i]);
+    TPPCall tc = {call, args, c};
+    return d->api(&tc, args);
+}
+
+static struct { const char *module, *name; int arity; TPPNative fn; const char *java; } *defined;
+static int ndefined;
+
+int tpp_define(const char *module, const char *name, int arity, TPPNative fn, const char *java) {
+    void *grown = realloc(defined, sizeof *defined * (size_t)(ndefined + 1));
+    if (!grown) return -1;
+    defined = grown;
+    defined[ndefined].module = module, defined[ndefined].name = name, defined[ndefined].arity = arity;
+    defined[ndefined].fn = fn, defined[ndefined++].java = java;
+    return 0;
+}
+
+TPPKind tpp_kind(Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return TPP_BOOL;
+    case V_INT: return TPP_INT;
+    case V_STR: return TPP_STRING;
+    case V_MODEL: return TPP_MODEL;
+    case V_TUPLE: return TPP_TUPLE;
+    case V_FCN: case V_LAMBDA: return TPP_FUNCTION;
+    default: return is_set(v) ? TPP_SET : TPP_OTHER;
+    }
+}
+
+Value *tpp_bool(int b) { return BOOLV(b); }
+Value *tpp_int(int64_t i) { return mk_int(i); }
+Value *tpp_string(const char *s, size_t n) { return mk_str(intern_n(s, (int)n)); }
+
+Value *tpp_tuple(size_t n, Value *const *elems) {
+    Value *t = mk_tuple((int)n);
+    for (size_t i = 0; i < n; i++) t->u.fcn.vals[i] = elems[i];
+    return t;
+}
+
+Value *tpp_function(size_t n, Value *const *keys, Value *const *values) {
+    List k = {(Value **)keys, (int)n, (int)n}, v = {(Value **)values, (int)n, (int)n};
+    return mk_fcn_from(&k, &v);
+}
+
+Value *tpp_set(size_t n, Value *const *elems) {
+    List l = {0};
+    for (size_t i = 0; i < n; i++) list_add(&l, elems[i]);
+    return list_set(&l);
+}
+
+int tpp_is_true(Value *v) { return v->kind == V_BOOL && v->u.i; }
+int64_t tpp_int_value(Value *v) { return v->u.i; }
+
+const char *tpp_string_value(Value *v, size_t *len) {
+    if (len) *len = (size_t)strs[v->u.i].len;
+    return S(v->u.i);
+}
+
+size_t tpp_size(Value *v) { return (size_t)v->n; }
+Value *tpp_key(Value *v, size_t i) { return v->kind == V_TUPLE ? mk_int((int64_t)i + 1) : v->u.fcn.keys[i]; }
+Value *tpp_value(Value *v, size_t i) { return realize(v->u.fcn.vals[i]); }
+
+Value *tpp_field(Value *r, const char *name) {
+    int i = is_fcn(r) ? fcn_index(r, mk_str(intern(name))) : -1;
+    return i < 0 ? NULL : realize(r->u.fcn.vals[i]);
+}
+
+Value *tpp_elements(Value *s) { return is_set(s) && enumerable(s) ? enumerate(s) : NULL; }
+Value *tpp_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
+int tpp_compare(Value *a, Value *b) { return vcmp(a, b); }
+
+const char *tpp_print(Value *v) { return pretty(v); }
+
+Value *tpp_arg(TPPCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
+
+void tpp_fail(TPPCall *call, const char *fmt, ...) {
+    (void)call;
+    va_list ap;
+    va_start(ap, fmt);
+    vfail(NULL, 1, TPP_ERROR, fmt, ap);
+}
+
 
 NATIVE(n_nat) { UNUSED; return mk_lazy(L_NAT); }
 NATIVE(n_int) { UNUSED; return mk_lazy(L_INT); }
@@ -7328,241 +7424,6 @@ NATIVE(n_tostring) {
 
 NATIVE(n_tlceval) { UNUSED; return a[0]; }
 
-/* CommunityModules' IOUtils, as its Java implements it. */
-extern char **environ;
-
-NATIVE(n_ioenv) {
-    UNUSED;
-    List names = {0}, values = {0};
-    for (char **e = environ; *e; e++) {
-        const char *eq = strchr(*e, '=');
-        if (!eq) continue;
-        list_add(&names, mk_str(intern_n(*e, (int)(eq - *e))));
-        list_add(&values, mk_str(intern(eq + 1)));
-    }
-    return mk_fcn_from(&names, &values);
-}
-
-NATIVE(n_atoi) {
-    UNUSED;
-    if (a[0]->kind == V_STR) {   /* Java's Integer.parseInt */
-        const char *t = S(a[0]->u.i), *d = t + (*t == '-' || *t == '+');
-        char *end;
-        errno = 0;
-        long long i = *d >= '0' && *d <= '9' ? strtoll(t, &end, 10) : 0;
-        if (*d >= '0' && *d <= '9' && !*end && !errno && i >= INT32_MIN && i <= INT32_MAX) return mk_int(i);
-    }
-    fail_module("The argument of atoi should be a string, but instead it is:\n%s", pretty(a[0]));
-}
-
-/* The command's words, each a string, as IOExec takes them. */
-static char **command_words(Value *v, const char *op) {
-    v = realize(v);
-    if (v->kind != V_TUPLE) fail_module("The argument of %s should be a sequence, but instead it is:\n%s", op, pretty(v));
-    char **argv = NEWN(char *, v->n + 1);
-    for (int i = 0; i < v->n; i++) {
-        Value *w = v->u.fcn.vals[i];
-        if (w->kind != V_STR) fail_module("The argument of IOExec should be a sequence, but instead it is:\n%s", pretty(w));
-        argv[i] = (char *)S(w->u.i);
-    }
-    argv[v->n] = NULL;
-    return argv;
-}
-
-/* What IOExec and Serialize give: [exitValue, stdout, stderr]. */
-static Value *exec_record(int64_t code, const char *out, const char *err) {
-    List names = {0}, values = {0};
-    const char *fields[] = {"exitValue", "stdout", "stderr"};
-    for (int i = 0; i < 3; i++) list_add(&names, mk_str(intern(fields[i])));
-    list_add(&values, mk_int(code));
-    list_add(&values, mk_str(intern(out)));
-    list_add(&values, mk_str(intern(err)));
-    return mk_fcn_from(&names, &values);
-}
-
-/* Runs argv with env's variables added. */
-static Value *run_process(char **argv, Value *env) {
-    int out[2], err[2];
-    fflush(stdout);
-    if (pipe(out) || pipe(err)) fail("Cannot run program \"%s\": %s", argv[0], strerror(errno));
-    pid_t pid = fork();
-    if (pid == 0) {
-        int in = open("/dev/null", O_RDONLY);
-        dup2(in, 0), dup2(out[1], 1), dup2(err[1], 2);
-        close(out[0]), close(err[0]);
-        for (int i = 0; env && i < env->n; i++) {
-            Value *k = env->u.fcn.keys[i], *v = env->u.fcn.vals[i];
-            setenv(S(k->u.i), v->kind == V_STR ? S(v->u.i) : value_str(v), 1);
-        }
-        execvp(argv[0], argv);
-        _exit(127);
-    }
-    close(out[1]), close(err[1]);
-    Buf text[2] = {{0}, {0}};
-    struct pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
-    for (int open = 2; open;) {
-        poll(fds, 2, -1);
-        for (int i = 0; i < 2; i++) {
-            if (fds[i].fd < 0 || !fds[i].revents) continue;
-            char chunk[4096];
-            ssize_t n = read(fds[i].fd, chunk, sizeof chunk);
-            if (n > 0) { buf_printf(&text[i], "%.*s", (int)n, chunk); continue; }
-            close(fds[i].fd), fds[i].fd = -1, open--;
-        }
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    Value *r = exec_record(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status),
-                           text[0].s ? text[0].s : "", text[1].s ? text[1].s : "");
-    free(text[0].s);
-    free(text[1].s);
-    return r;
-}
-
-/* CommunityModules' UndirectedGraphs, as its Java implements it. */
-static int set_position(Value *s, Value *v) {
-    for (int lo = 0, hi = s->n - 1; lo <= hi;) {
-        int m = (lo + hi) / 2, c = vcmp(s->u.set.elems[m], v);
-        if (!c) return m;
-        if (c < 0) lo = m + 1; else hi = m - 1;
-    }
-    return -1;
-}
-
-static Value *graph_set(Value *g, const char *field) {
-    int i = fcn_index(g, mk_str(intern(field)));
-    Value *v = i < 0 ? NULL : realize(g->u.fcn.vals[i]);
-    return v && is_set(v) && !user_set(v) ? enumerate(v) : NULL;
-}
-
-static int component_root(int *parent, int i) {
-    while (parent[i] != i) i = parent[i] = parent[parent[i]];
-    return i;
-}
-
-NATIVE(n_connectedcomponents) {
-    UNUSED;
-    Value *g = realize(a[0]), *nodes = NULL, *edges = NULL;
-    int record = is_fcn(g);
-    for (int i = 0; record && i < g->n && g->kind != V_TUPLE; i++) record = g->u.fcn.keys[i]->kind == V_STR;
-    const char *bad = !record ? "record with a node and an edge field"
-                    : !(nodes = graph_set(g, "node")) ? "record whose node field is a set"
-                    : !(edges = graph_set(g, "edge")) ? "record whose edge field is a set" : NULL;
-    if (bad) fail_module("The first argument of ConnectedComponents should be a undirected graph %s, but instead it is:\n%s", bad, pretty(a[0]));
-    int *parent = NEWN(int, nodes->n);
-    for (int i = 0; i < nodes->n; i++) parent[i] = i;
-    for (int k = 0; k < edges->n; k++) {   /* an edge is a set of one or two nodes; others join nothing */
-        Value *e = realize(edges->u.set.elems[k]);
-        if (!is_set(e) || user_set(e) || (e = enumerate(e))->n == 0 || e->n > 2) continue;
-        int i = set_position(nodes, e->u.set.elems[0]), j = set_position(nodes, e->u.set.elems[e->n - 1]);
-        if (i >= 0 && j >= 0) parent[component_root(parent, j)] = component_root(parent, i);
-    }
-    List *members = memset(NEWN(List, nodes->n), 0, sizeof(List) * (size_t)nodes->n), out = {0};
-    for (int i = 0; i < nodes->n; i++) list_add(&members[component_root(parent, i)], nodes->u.set.elems[i]);
-    for (int i = 0; i < nodes->n; i++) if (members[i].n) list_add(&out, list_set(&members[i]));
-    return list_set(&out);
-}
-
-NATIVE(n_ioexec) { UNUSED; return run_process(command_words(a[0], "IOExec"), NULL); }
-
-/* The field of record r, or NULL. */
-static Value *field_of(Value *r, const char *name) {
-    int i = is_fcn(r) ? fcn_index(r, mk_str(intern(name))) : -1;
-    return i < 0 ? NULL : r->u.fcn.vals[i];
-}
-
-/* Serialize(payload, file, [format |-> "TXT", charset |-> ..., openOptions |-> ...])
-   writes the string payload to file, with Java's StandardOpenOptions; TLC
-   leaves another format to the definition. */
-NATIVE(n_serialize) {
-    UNUSED;
-    Value *opts = realize(eval(call->args[2], c)), *format = field_of(opts, "format");
-    if (!format || format->kind != V_STR || strcmp(S(format->u.i), "TXT")) return NULL;
-    Value *payload = eval(call->args[0], c), *file = eval(call->args[1], c);
-    Value *options = field_of(opts, "openOptions"), *charset = field_of(opts, "charset");
-    options = options ? realize(options) : NULL;
-    int ok = payload->kind == V_STR && file->kind == V_STR && options && options->kind == V_TUPLE && charset && charset->kind == V_STR;
-    int flags = options && options->n ? 0 : O_WRONLY | O_CREAT | O_TRUNC;
-    static const struct { const char *name; int flags; } open_options[] = {
-        {"READ", 0}, {"WRITE", O_WRONLY}, {"APPEND", O_WRONLY | O_APPEND}, {"TRUNCATE_EXISTING", O_TRUNC},
-        {"CREATE", O_CREAT}, {"CREATE_NEW", O_CREAT | O_EXCL}, {"DSYNC", O_DSYNC}, {"SYNC", O_SYNC}, {NULL, 0}};
-    for (int i = 0; ok && i < options->n; i++) {
-        Value *o = options->u.fcn.vals[i];
-        int k = 0;
-        while (open_options[k].name && (o->kind != V_STR || strcmp(open_options[k].name, S(o->u.i)))) k++;
-        ok = open_options[k].name != NULL;
-        flags |= ok ? open_options[k].flags : 0;
-    }
-    if (!ok) return exec_record(1, "", "Serialize error invalid parameters");
-    int fd = open(S(file->u.i), flags, 0644);
-    size_t n = (size_t)strs[payload->u.i].len;
-    int written = fd >= 0 && write(fd, S(payload->u.i), n) == (ssize_t)n;
-    int err = errno;
-    if (fd >= 0) close(fd);
-    if (!written) {
-        Buf b = {0};
-        buf_printf(&b, "Serialize error writing to the file: %s: %s", S(file->u.i), strerror(err));
-        Value *r = exec_record(1, "", b.s);
-        free(b.s);
-        return r;
-    }
-    return exec_record(0, "Finish writing to the file with success!", "");
-}
-
-/* CommunityModules' SequencesExt: a finite set's elements in order. */
-NATIVE(n_settoseq) {
-    UNUSED;
-    Value *set = enumerate(a[0]), *t = mk_tuple(set->n);
-    for (int i = 0; i < set->n; i++) t->u.fcn.vals[i] = set->u.set.elems[i];
-    return t;
-}
-
-/* CommunityModules' SVG: an element [name, attrs, children, innerText] as
-   its markup, as its Java writes it. */
-static void svg_markup(Buf *b, Value *elem) {
-    elem = realize(elem);
-    Value *name = field_of(elem, "name"), *attrs = field_of(elem, "attrs");
-    Value *children = field_of(elem, "children"), *text = field_of(elem, "innerText");
-    attrs = attrs ? realize(attrs) : NULL;
-    children = children ? realize(children) : NULL;
-    if (!name || name->kind != V_STR || !attrs || !is_fcn(attrs) || !children || !is_fcn(children) || !text || text->kind != V_STR)
-        fail_module("An SVG element must be a record of name, attrs, children and innerText:\n%s", pretty(elem));
-    buf_printf(b, "<%s", S(name->u.i));
-    for (int i = 0; i < attrs->n && attrs->kind != V_TUPLE; i++) {
-        Value *k = attrs->u.fcn.keys[i], *v = attrs->u.fcn.vals[i];
-        if (k->kind != V_STR || v->kind != V_STR) fail_module("An SVG attribute must be a string:\n%s", pretty(attrs));
-        buf_puts(b, " ");
-        for (const char *c = S(k->u.i); *c; c++) buf_printf(b, "%c", *c == '_' ? '-' : *c);
-        buf_printf(b, "='%s'", S(v->u.i));
-    }
-    buf_puts(b, ">");
-    for (const char *c = S(text->u.i); *c; c++) {   /* a tuple <<1, 2>> in the text */
-        if (!strncmp(c, "<<", 2)) buf_puts(b, "&lt;&lt;"), c++;
-        else if (!strncmp(c, ">>", 2)) buf_puts(b, "&gt;&gt;"), c++;
-        else buf_printf(b, "%c", *c);
-    }
-    for (int i = 0; i < children->n; i++) svg_markup(b, children->u.fcn.vals[i]);
-    buf_printf(b, "</%s>", S(name->u.i));
-}
-
-NATIVE(n_svgelemtostring) {
-    UNUSED;
-    Buf b = {0};
-    svg_markup(&b, a[0]);
-    Value *v = mk_str(intern(b.s ? b.s : ""));
-    free(b.s);
-    return v;
-}
-
-NATIVE(n_ioenvexec) {
-    UNUSED;
-    Value *env = realize(a[0]);
-    int record = is_fcn(env);
-    for (int i = 0; record && i < env->n; i++) record = env->u.fcn.keys[i]->kind == V_STR;
-    if (!record) fail_module("The argument of IOEnvExec should be a record, but instead it is:\n%s", pretty(env));
-    return run_process(command_words(a[1], "IOEnvExec"), env);
-}
-
 /* TLCExt's operators. */
 NATIVE(n_asserterror);   /* after the evaluation's saved state */
 
@@ -7704,14 +7565,6 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"Randomization", "RandomSetOfSubsets", n_randomsetofsubsets, J_V, "RandomSetOfSubsets(" J_V "," J_V "," J_V ")"},
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
-    {"UndirectedGraphs", "ConnectedComponents", n_connectedcomponents, J_V, "tlc2.overrides.UndirectedGraphs.connectedComponents(" J_V ")"},
-    {"SequencesExt", "SetToSeq", n_settoseq, J_V, "tlc2.overrides.SequencesExt.SetToSeq(" J_V ")"},
-    {"SVG", "SVGElemToString", n_svgelemtostring, J_V, "tlc2.overrides.SVG.SVGElemToString(" J_V ")"},
-    {"IOUtils", "Serialize", n_serialize, "synchronized " J_V, "tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
-    {"IOUtils", "IOEnv", n_ioenv, J_V, "tlc2.overrides.IOUtils.ioEnv()"},
-    {"IOUtils", "atoi", n_atoi, J_V, "tlc2.overrides.IOUtils.atoi(" J_V ")"},
-    {"IOUtils", "IOExec", n_ioexec, J_V, "tlc2.overrides.IOUtils.ioExec(" J_V ")"},
-    {"IOUtils", "IOEnvExec", n_ioenvexec, J_V, "tlc2.overrides.IOUtils.ioEnvExec(" J_V "," J_V ")"},
     {NULL, NULL, NULL, NULL, NULL}};
 
 /* The number of arguments of a native's Java method; an evaluation
@@ -7748,6 +7601,13 @@ static void bind_natives(void) {
                     buf_printf(&b, "public static %s %s%s%s%s", natives[k].ret, full ? "" : "tlc2.module.",
                                named ? "" : cls, named ? "" : ".", m);
                     d->java = buf_take(&b);
+                }
+            for (int k = 0; k < ndefined; k++)
+                if (!strcmp(defined[k].module, S(m->name)) && !strcmp(defined[k].name, S(d->name))
+                    && (defined[k].arity == TPP_LAZY || d->nparams == defined[k].arity)) {
+                    d->native = n_defined, d->api = defined[k].fn;
+                    d->lazy = defined[k].arity == TPP_LAZY;
+                    d->java = defined[k].java;
                 }
         }
     }
@@ -13552,7 +13412,10 @@ int tpp_check(const TPPOptions *o) {
 }
 
 #ifndef TPP_NO_MAIN
+#include "tpp-std.h"
+
 int main(int argc, char **argv) {
+    if (tpp_std_init()) { fprintf(stderr, "tpp: out of memory\n"); return TPP_ERROR; }
     TPPOptions o = {0};
     o.check_deadlock = 1;
     const char **properties = calloc((size_t)argc, sizeof(char *));
