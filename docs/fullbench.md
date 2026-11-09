@@ -26,6 +26,34 @@ nothing to compare. Three differ for reasons tpp keeps:
   `Bits.class` and says so; tpp computes `Bits!And` from its definition,
   with the same result.
 
+## Gaps
+
+What the full bench does not yet compare, and what would close each gap.
+A model leaves this list when it gets a row in the results.
+
+| gap | models | to close |
+|---|---:|---|
+| runtime not recorded | 10 | Run each once under the 15-minute cap, and keep the ones that finish |
+| TLC over 15 minutes | 4 | A longer cap for TLC, run once; its results stay cached |
+| recorded over 10 minutes | 7 | A run with a larger `MAX_RUNTIME`, hours long |
+| simulations | 3 | Compare the outcome (violation, exit status) under a fixed `-seed`; traces are random |
+| generation (`-generate`) | 3 | tpp has no `-generate` yet |
+| more than one worker | 174 | Run the checked models again with `-workers 4` |
+| symbolic | 46 | None: these are Apalache's models, not TLC's |
+
+- Runtime not recorded: CarTalkPuzzle Model_3, SpanTreeTest5Nodes,
+  TestMCReachability, BPConProof, c1cs, TLCSailfish2, MC_HDiskSynod,
+  EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC.
+- TLC over 15 minutes: ElevatorSafetyLarge (tpp 774 s), aba_asyn_byz
+  (tpp 31 s), PConProof (tpp 185 s), MultiPaxos_MC (tpp over 15 minutes as
+  well).
+- Recorded over 10 minutes: MCKVSSafetyLarge (7 h 16 min),
+  EnvironmentController (2 h), SlushLarge and EWD998 (50 min each),
+  bcastFolklore (30 min), MCNanoLarge (20 min), ElevatorLivenessLarge
+  (11 min).
+- Simulations: SmokeEWD998, EWD687a_anim, EWD840_anim.
+- Generation: DiningPhilosophers_stats, SimKnuthYao, SimTokenRing.
+
 <!-- results -->
 
 tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run in at most 00:10:00. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
