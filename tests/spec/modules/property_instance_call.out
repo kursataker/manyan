@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Action property C!Grows is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Action line 6, col 21 to line 6, col 36 of module property_instance_call>
+x = 1
+
+State 3: <Action line 6, col 21 to line 6, col 36 of module property_instance_call>
+x = 2
+
+State 4: <Action line 6, col 21 to line 6, col 36 of module property_instance_call>
+x = 0
+
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 13

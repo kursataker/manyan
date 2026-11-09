@@ -11370,7 +11370,7 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
     case K_INSTCALL: {
         if (e->def->kind != D_OP || e->def->native || (e->n && call)) break;
         Def *in;
-        property_parts(e->def->body, through(call, e), c, e->n ? instance_name(e, &in) : name, out, n);
+        property_parts(e->def->body, through(call, e), c, instance_name(e, &in), out, n);
         return;
     }
     case X_LET: {
