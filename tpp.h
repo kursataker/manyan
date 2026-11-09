@@ -36,6 +36,7 @@ typedef struct {
     const char *user_file;   /* write Print's output to this file instead, or NULL (-userFile) */
     int workers;         /* processes expanding states; 0 or 1 for one */
     int simulate;        /* random behaviors instead of the state graph, as -simulate */
+    int generate;        /* simulation: each successor built by random choices, as -generate */
     long traces;         /* simulation: behaviors to make, 0 for no end (-simulate num=N) */
     long depth;          /* simulation: states in a behavior, 0 for 100 (-depth) */
     long long seed;      /* the seed, when seed_given (-seed): a simulation's, and model checking's for RandomElement */

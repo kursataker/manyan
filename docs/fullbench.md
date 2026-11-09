@@ -37,7 +37,7 @@ A model leaves this list when it gets a row in the results.
 | TLC over 15 minutes | 4 | A longer cap for TLC, run once; its results stay cached |
 | recorded over 10 minutes | 7 | A run with a larger `MAX_RUNTIME`, hours long |
 | simulations | 3 | Compare the outcome (violation, exit status) under a fixed `-seed`; traces are random |
-| generation (`-generate`) | 3 | tpp has no `-generate` yet |
+| generation (`-generate`) | 3 | Run under a fixed `-seed` and `num=`; SimKnuthYao and SimTokenRing also need `TLCGet("revision")` and CSV's Java operators |
 | more than one worker | 174 | Run the checked models again with `-workers 4` |
 | symbolic | 46 | None: these are Apalache's models, not TLC's |
 
@@ -52,7 +52,8 @@ A model leaves this list when it gets a row in the results.
   bcastFolklore (30 min), MCNanoLarge (20 min), ElevatorLivenessLarge
   (11 min).
 - Simulations: SmokeEWD998, EWD687a_anim, EWD840_anim.
-- Generation: DiningPhilosophers_stats, SimKnuthYao, SimTokenRing.
+- Generation: DiningPhilosophers_stats (with `-seed 1`, `num=1000`, `-depth 1000`
+  it prints what TLC prints, 1000001 states), SimKnuthYao, SimTokenRing.
 
 <!-- results -->
 

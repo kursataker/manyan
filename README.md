@@ -104,8 +104,8 @@ report as TLC with one worker.
   `ALIAS`, `POSTCONDITION`, `CHECK_DEADLOCK`.
 - Checking: assumptions, invariants, action properties, deadlock, and
   temporal properties under weak and strong fairness, with TLC's
-  counterexamples; random simulation (`-simulate`), drawing the same
-  behaviors as TLC for a seed, and writing them to files (`file=`);
+  counterexamples; random simulation (`-simulate`, `-generate`), drawing
+  the same behaviors as TLC for a seed, and writing them to files (`file=`);
   TLC's `-continue`, `-difftrace`, `-view`, `-userFile` and `-dump dot`.
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.

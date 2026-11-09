@@ -26,6 +26,7 @@ tpp is one C file with no dependencies beyond the C library and POSIX
 ```sh
 tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
 tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+tpp -generate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
 ```
 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
@@ -42,6 +43,7 @@ for it; [std.md](std.md) lists them.
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
+| `-generate` | simulate, building each successor by random choices instead of all of an action's successors, as TLC's `-generate`; takes `-simulate`'s `num=` and `file=` |
 | `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., each after a comment naming its action, as TLC does |
 | `-depth D` | the length of each random behavior, in steps (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
@@ -114,6 +116,13 @@ taken `-depth` steps or stops (Standard §10.8). Temporal properties are checked
 With the same `-seed` and `-aril`, tpp draws the same behaviors as TLC
 with one worker and prints the same report; `-workers` is ignored. A
 seed is drawn at random unless one is given.
+
+`-generate` simulates too, as TLC's `-generate` does, but builds one
+successor at a time: within an action it tries a random disjunct, then
+the others by a random prime step, and each `\E` binding and each value
+of `x' \in S` or `x' \subseteq S` in TLC's random order, until a
+successor is kept in the constraints. `TLCGet("config").mode` is
+`"generate"`. As in TLC, a `CASE` in an action is an error.
 
 ## Exit statuses
 

@@ -1,0 +1,124 @@
+"generate"
+Finished computing initial states: 1 distinct state generated.
+exit 0
+--- walk_0_0
+---------------- MODULE walk_0_0 -----------------
+\* <Init line 9, col 9 to line 9, col 65 of module generate>
+STATE_1 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 0
+/\ y = {}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_2 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 5
+/\ y = {7}
+/\ z = <<0, 0>>
+
+
+\* <Next line 17, col 15 to line 17, col 23 of module generate>
+STATE_3 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 5
+/\ y = {7}
+/\ z = <<1, 5>>
+
+
+\* <C line 14, col 45 to line 14, col 87 of module generate>
+STATE_4 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 1
+/\ y = {7}
+/\ z = <<1, 5>>
+
+
+\* <C line 14, col 45 to line 14, col 87 of module generate>
+STATE_5 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 2
+/\ y = {7}
+/\ z = <<1, 5>>
+
+
+=================================================
+--- walk_0_1
+---------------- MODULE walk_0_1 -----------------
+\* <Init line 9, col 9 to line 9, col 65 of module generate>
+STATE_1 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 0
+/\ y = {}
+/\ z = <<0, 0>>
+
+
+\* <C line 14, col 45 to line 14, col 87 of module generate>
+STATE_2 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 3
+/\ y = {}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_3 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 1
+/\ y = {8}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_4 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 1
+/\ y = {7}
+/\ z = <<0, 0>>
+
+
+=================================================
+--- walk_0_2
+---------------- MODULE walk_0_2 -----------------
+\* <Init line 9, col 9 to line 9, col 65 of module generate>
+STATE_1 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 0
+/\ y = {}
+/\ z = <<0, 0>>
+
+
+\* <Next line 17, col 15 to line 17, col 23 of module generate>
+STATE_2 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 0
+/\ y = {2}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_3 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 4
+/\ y = {7}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_4 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 3
+/\ y = {7}
+/\ z = <<0, 0>>
+
+
+\* <A line 10, col 39 to line 10, col 78 of module generate>
+STATE_5 == 
+/\ w = [a |-> 0, b |-> 0]
+/\ x = 4
+/\ y = {9}
+/\ z = <<0, 0>>
+
+
+=================================================

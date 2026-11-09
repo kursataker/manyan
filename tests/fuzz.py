@@ -5,11 +5,12 @@ usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
-build) on each, half of them as random simulations; it must exit with one
-of its statuses, without a signal or a sanitizer report.
+build) on each, half of them as random simulations (-simulate or
+-generate); it must exit with one of its statuses, without a signal or a
+sanitizer report.
 
-sim: runs models of tests/spec as random simulations, with random seeds
-and depths, with the engine and with TLC; they must print the same.
+sim: runs models of tests/spec as random simulations (-simulate or
+-generate), with random seeds and depths, with the engine and with TLC; they must print the same.
 
 diff: makes random constant expressions and checks ASSUME PrintT(e) with
 the engine and with TLC; they must print the same. A batch of expressions
@@ -87,7 +88,7 @@ def crash(engine, runs, seed):
             (directory / path.name).write_text(text)
             options = spec_runner.options(path)
             if not options and rng.random() < 0.5:
-                options = ["-simulate", "num=5", "-depth", "20", "-seed", str(rng.randint(0, 999))]
+                options = [rng.choice(["-simulate", "-generate"]), "num=5", "-depth", "20", "-seed", str(rng.randint(0, 999))]
             code, out = run(engine, path.stem, directory, 10, options)
             if code is not None and (code not in STATUSES or "runtime error" in out or "Sanitizer" in out):
                 failed += 1
@@ -314,7 +315,7 @@ def sim(engine, tlc, runs, seed):
     failed = 0
     for _ in range(runs):
         path = rng.choice(models)
-        options = ["-simulate", f"num={rng.randint(1, 5)}", "-depth", str(rng.randint(1, 30)),
+        options = [rng.choice(["-simulate", "-generate"]), f"num={rng.randint(1, 5)}", "-depth", str(rng.randint(1, 30)),
                    "-seed", str(rng.randint(0, 999))]
         ours = spec_runner.run(engine + options, path)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path)

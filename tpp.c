@@ -7351,11 +7351,63 @@ static void draw_params(int64_t n, int64_t *m, int64_t *a) {
     }
 }
 
-/* k elements of S, as TLC draws them: indices from a linear congruential
-   generator of a random seed and a random prime increment. A set of
-   functions, records or tuples is indexed in the mixed radix of its parts,
-   the last the least significant; one too large for an int index has
-   indices apart by a 63-bit step from a random long. */
+/* The elements of S in TLC's random order, as its draws of k of them
+   (RandomSubset) and -generate's of all: indices from a linear
+   congruential generator of a random seed and a random prime increment,
+   whose period visits each index once. A set of functions, records or
+   tuples is indexed in the mixed radix of its parts, the last the least
+   significant; one too large for an int index has indices apart by a
+   63-bit step from a random long. */
+__extension__ typedef __int128 Big;
+#define HUGE_INDEX ((Big)1 << 126)   /* above every index drawn */
+typedef struct {
+    Value *s, *e, **sets, **vals;   /* the set; it indexed, or the parts of a product */
+    int n;
+    Big size, idx, start;
+    int64_t m, mult, inc, i;
+} Order;
+
+static void order_begin(Order *o, Value *s) {
+    if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
+    *o = (Order){.s = s, .size = 1};
+    if (is_product(s)) {
+        Value **sets = product_parts(s, &o->n);
+        o->sets = NEWN(Value *, o->n);
+        o->vals = NEWN(Value *, o->n);
+        for (int i = 0; i < o->n; i++) {
+            o->sets[i] = indexed(sets[i]);
+            o->size = o->size > HUGE_INDEX / (o->sets[i]->n + 1) ? HUGE_INDEX : o->size * o->sets[i]->n;
+        }
+    } else {
+        o->e = indexed(s);
+        o->size = o->e->n;
+    }
+    JRandom *r = draws();
+    if (o->size > 2147483647) {
+        int64_t l = jr_long(r);
+        o->start = l < 0 && l != INT64_MIN ? -l : l;
+    } else if (o->size > 0) {
+        draw_params((int64_t)o->size, &o->m, &o->mult);
+        o->start = jr_int(r, (int)o->size);
+        o->inc = random_prime(r);
+    }
+    o->idx = o->start;
+}
+
+/* The next element: after the last, the first again. */
+static Value *order_next(Order *o) {
+    if (o->size > 2147483647) o->idx = ((Big)(INT64_MAX - 24) * o->i++ + o->start) % o->size;
+    else do o->idx = (o->mult * o->idx + o->inc) % o->m; while (o->idx >= o->size);
+    if (o->e) return element_at(o->e, (int64_t)o->idx);
+    Big scale = 1;   /* of the last part, the least significant */
+    for (int j = o->n - 1; j >= 0; j--) {
+        int mod = o->sets[j]->n;
+        o->vals[j] = element_at(o->sets[j], (int64_t)(o->idx / scale % mod));
+        scale = scale > HUGE_INDEX / (mod + 1) ? HUGE_INDEX : scale * mod;
+    }
+    return product_element(o->s, o->vals);
+}
+
 NATIVE(n_randomsubset) {
     UNUSED;
     if (a[0]->kind != V_INT)
@@ -7363,50 +7415,10 @@ NATIVE(n_randomsubset) {
     if (!is_set(a[1]) || set_is_infinite(a[1]))
         fail_module("The second argument of RandomSubset should be a a finite set, but instead it is:\n%s", pretty(a[1]));
     if (a[0]->u.i < 0) fail("%d", (int)a[0]->u.i);   /* Java's NegativeArraySizeException, sizing the subset */
-    Value *s = a[1], **sets = NULL, *e = NULL;
-    if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
-    int n = 0;
-    __extension__ typedef __int128 Big;
-    const Big huge = (Big)1 << 126;   /* above every index drawn */
-    Big size = 1;
-    if (is_product(s)) {
-        sets = product_parts(s, &n);
-        Value **parts = NEWN(Value *, n);
-        for (int i = 0; i < n; i++) {
-            parts[i] = indexed(sets[i]);
-            size = size > huge / (parts[i]->n + 1) ? huge : size * parts[i]->n;
-        }
-        sets = parts;
-    } else {
-        e = indexed(s);
-        size = e->n;
-    }
-    JRandom *r = draws();
-    int big = size > 2147483647, k = size > 0 ? (int)a[0]->u.i : 0;
-    int64_t m = 0, mult = 0, inc = 0;
-    Big idx = 0, start = 0;
-    if (big) {
-        int64_t l = jr_long(r);
-        start = l < 0 && l != INT64_MIN ? -l : l;
-    } else if (size > 0) {
-        draw_params((int64_t)size, &m, &mult);
-        idx = jr_int(r, (int)size);
-        inc = random_prime(r);
-    }
+    Order o;
+    order_begin(&o, a[1]);
     List l = {0};
-    Value **vals = NEWN(Value *, n);
-    for (int i = 0; i < k; i++) {
-        if (big) idx = ((Big)(INT64_MAX - 24) * i + start) % size;
-        else do idx = (mult * idx + inc) % m; while (idx >= size);
-        if (e) { list_add(&l, element_at(e, (int64_t)idx)); continue; }
-        Big scale = 1;   /* of the last part, the least significant */
-        for (int j = n - 1; j >= 0; j--) {
-            int mod = sets[j]->n;
-            vals[j] = element_at(sets[j], (int64_t)(idx / scale % mod));
-            scale = scale > huge / (mod + 1) ? huge : scale * mod;
-        }
-        list_add(&l, product_element(s, vals));
-    }
+    for (int64_t i = 0; o.size > 0 && i < a[0]->u.i; i++) list_add(&l, order_next(&o));
     return list_set(&l);
 }
 
@@ -7640,6 +7652,28 @@ static void bind_natives(void) {
 
 /* ---------------------------------------------------------------- generator */
 
+/* TLC's random generator of behaviors, counting its doubles (aril). */
+static JRandom rng;
+static int64_t rng_aril;
+
+static void rng_seed(int64_t seed) {
+    jr_seed(&rng, seed);
+    rng_aril = 0;
+}
+
+/* An index below n, as TLC draws one: floor(nextDouble() * n). */
+static int rng_index(int n) {
+    rng_aril++;
+    return (int)(jr_double(&rng) * n);   /* >= 0: truncation is floor */
+}
+
+/* One of TLC's primes, its step through the actions. */
+static int rng_prime(void) {
+    int i = 1341;
+    while (i == 1341) i = rng_index(1341);
+    return tlc_prime(i);
+}
+
 /* The generator enumerates the assignments an initial predicate or an
    action allows (§10.2, §10.3). Conjuncts still to be satisfied wait in a
    continuation. */
@@ -7648,6 +7682,13 @@ typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont; 
 static Value **gen_target;      /* the state being assigned */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 static long generated;          /* states generated, as TLC counts them */
+
+/* -generate: TLC builds a behavior's successor by random choices, of a
+   disjunct, a binding or a value, each ending once a successor is kept. */
+static int generating;
+static int sim_succ_emit(void);
+static int sim_kept(void);
+static int choosing(void) { return generating && gen_emit == sim_succ_emit; }
 
 static inline int gen(Expr *e, Ctx c, Cont *k);
 static int gen_unchanged(Expr *e, Ctx c, Cont *k);
@@ -7921,6 +7962,47 @@ static int gen_bound_fn(Ctx c, void *data) {
     return gen(g->body, c, g->k);
 }
 
+/* \E as -generate takes it: each variable's set in its random order, all
+   drawn first, the first varying fastest. */
+static int gen_exists_random(Expr *e, Ctx c, Cont *k) {
+    int total = bounds_total(e->bounds, e->nb), empty = 0;
+    Order *o = NEWN(Order, total);
+    Bound **owner = NEWN(Bound *, total);
+    int *slot = NEWN(int, total);
+    Value **cur = NEWN(Value *, total);
+    Big *at = NEWN(Big, total);
+    for (int i = 0, j = 0; i < e->nb; i++) {
+        Value *s = bound_value(&e->bounds[i], c);
+        for (int m = 0; m < (e->bounds[i].tuple ? 1 : e->bounds[i].n); m++, j++) {
+            owner[j] = &e->bounds[i], slot[j] = m;
+            order_begin(&o[j], s);
+            empty |= !o[j].size;
+        }
+    }
+    if (empty) return 0;
+    for (int j = 0; j < total; j++) cur[j] = order_next(&o[j]);
+    for (;;) {
+        Env *env = c.env;
+        for (int j = 0; j < total; j++) {
+            Bound *b = owner[j];
+            Value *v = cur[j];
+            if (!b->tuple) { env = mk_binding(b->defs[slot[j]], v, env); continue; }
+            if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != b->n)
+                fail("Argument mismatch in operator application.%%1");   /* sic, as for_bindings */
+            for (int m = 0; m < b->n; m++) env = mk_binding(b->defs[m], v->u.fcn.vals[m], env);
+        }
+        int r = gen(e->args[0], (Ctx){env, c.inst}, k);
+        if (r || sim_kept()) return r;
+        int j = 0;
+        for (; j < total; j++) {
+            cur[j] = order_next(&o[j]);
+            if (++at[j] < o[j].size) break;
+            at[j] = 0;
+        }
+        if (j == total) return 0;
+    }
+}
+
 /* The bindings of a quantifier, in the arena. */
 typedef struct { Ctx *v; int n, cap; } Ctxs;
 
@@ -8127,6 +8209,31 @@ static int gen_tracked(Expr *e, Ctx c, Cont *k) {
 }
 static inline int gen(Expr *e, Ctx c, Cont *k) { return tracking ? gen_tracked(e, c, k) : gen_untracked(e, c, k); }
 
+/* var' \in s: each element in turn, in TLC's random order in -generate. */
+static int gen_member(int var, Value *s, Expr *e, Cont *k) {
+    /* TLC enumerates any set it can, failing there for an infinite one. */
+    if (!is_set(s) || user_set(s))
+        fail_at(e, gen_emit == enabled_emit ? "The right side of \\IN is not enumerable." : "In computing %s, the right side of \\IN is not enumerable.", gen_what());
+    if (choosing()) {
+        Order o;
+        order_begin(&o, s);
+        for (Big i = 0; i < o.size; i++) {
+            int r = gen_assign(var, order_next(&o), k);
+            if (r || sim_kept()) return r;
+        }
+        return 0;
+    }
+    if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
+        Value *base = filter_base(s);
+        for (int i = 0; i < base->n; i++)
+            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && gen_assign(var, base->u.set.elems[i], k)) return 1;
+        return 0;
+    }
+    s = elements(s);
+    for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
+    return 0;
+}
+
 static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     switch (e->kind) {
     case X_BOOL:
@@ -8137,9 +8244,18 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         for (int i = e->n - 1; i >= 1; i--) k = mk_cont(e->args[i], c, k);
         return gen(e->args[0], c, k);
     case K_OR:
+        if (choosing()) {   /* from a random disjunct, by a random prime step */
+            int n = e->n, i = rng_index(n), p = rng_prime();
+            for (int t = 0; t < n; t++, i = (i + p) % n) {
+                int r = gen(e->args[i], c, k);
+                if (r || sim_kept()) return r;
+            }
+            return 0;
+        }
         for (int i = 0; i < e->n; i++) if (gen(e->args[i], c, k)) return 1;
         return 0;
     case X_EXISTS: {
+        if (choosing()) return gen_exists_random(e, c, k);
         GenData g = {e->args[0], k};
         return for_bindings(e->bounds, e->nb, c, gen_bound_fn, &g);
     }
@@ -8174,6 +8290,7 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         return v->u.i ? gen(e->args[1], c, k) : gen_cont(k);
     }
     case X_CASE:
+        if (choosing()) fail_java("java.lang.UnsupportedOperationException", "Probabilistic evaluation of next-state relation not implemented for CASE yet.");
         for (int i = 0; i + 1 < e->n; i += 2) {
             Value *v = e->args[i] ? eval(e->args[i], c) : TRUEV;
             if (v->kind != V_BOOL)
@@ -8244,24 +8361,17 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         if (var >= 0 && !gen_target[var]) return gen_assign(var, eval(e->args[1], c), k);
         break;
     }
-    case K_IN: {
+    case K_IN: case K_SUBSETEQ: {   /* x' \subseteq S as x' \in SUBSET S */
         int var = assignable(e->args[0], c);
-        if (var >= 0 && !gen_target[var]) {
-            Value *s = eval(e->args[1], c);
-            /* TLC enumerates any set it can, failing there for an infinite one. */
-            if (!is_set(s) || user_set(s))
-                fail_at(e, gen_emit == enabled_emit ? "The right side of \\IN is not enumerable." : "In computing %s, the right side of \\IN is not enumerable.", gen_what());
-            if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
-                Value *base = filter_base(s);
-                for (int i = 0; i < base->n; i++)
-                    if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && gen_assign(var, base->u.set.elems[i], k)) return 1;
-                return 0;
-            }
-            s = elements(s);
-            for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
-            return 0;
+        if (var < 0 || gen_target[var]) break;
+        Value *s = eval(e->args[1], c);
+        if (e->kind == K_SUBSETEQ) {
+            Value *t = mk_lazy(L_SUBSET);
+            t->u.l.expr = source(e);
+            t->u.l.a = s;
+            s = t;
         }
-        break;
+        return gen_member(var, s, e, k);
     }
     case X_APPLY: {
         /* As TLC: a lazy function applied is its body, part of the
@@ -9770,7 +9880,7 @@ static Value *search_config(void) {
     char seed[24];
     snprintf(seed, sizeof seed, "%lld", (long long)draw_seed);
     const char *names[] = {"mode", "deadlock", "worker", "seed", "traces", "depth", "aril", "sched"};
-    Value *vals[] = {mk_str(intern(simulating ? "simulate" : "bfs")), BOOLV(check_deadlock), mk_int(nworkers),
+    Value *vals[] = {mk_str(intern(generating ? "generate" : simulating ? "simulate" : "bfs")), BOOLV(check_deadlock), mk_int(nworkers),
                      mk_str(intern(seed)), mk_int(sim_traces_max), mk_int(sim_depth), mk_str(intern("0")),
                      mk_str(intern("random"))};
     List keys = {0}, l = {0};
@@ -10454,34 +10564,13 @@ static int search(void) {
 
 /* ---------------------------------------------------------------- simulation */
 
-/* TLC's random generator of behaviors, counting its doubles (aril). */
-static JRandom rng;
-static int64_t rng_aril;
-
-static void rng_seed(int64_t seed) {
-    jr_seed(&rng, seed);
-    rng_aril = 0;
-}
-
-/* An index below n, as TLC draws one: floor(nextDouble() * n). */
-static int rng_index(int n) {
-    rng_aril++;
-    return (int)(jr_double(&rng) * n);   /* >= 0: truncation is floor */
-}
-
-/* One of TLC's primes, its step through the actions. */
-static int rng_prime(void) {
-    int i = 1341;
-    while (i == 1341) i = rng_index(1341);
-    return tlc_prime(i);
-}
-
 /* States in order, complete or not. A simulation keeps them as values, as
    TLC does: it fingerprints only what it must (a liveness check, a trace),
    so a state may hold a function TLC cannot fingerprint. */
 /* States, each with the action it was reached by, -1 for an initial one. */
 typedef struct { Value ***a; int *act, n, cap; } States;
 static States sim_found;
+static int sim_kept(void) { return sim_found.n > 0; }
 
 static void sim_push(States *s, Value **st, int act) {
     if (s->n == s->cap) {
@@ -10587,7 +10676,7 @@ static void report_exception(int in_behavior) {
         print_error_text();
         return;
     }
-    print_exception(eval_exception() ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
+    print_exception(error_java ? error_java : eval_exception() ? "tlc2.tool.EvalException" : "java.lang.RuntimeException", ": ");
     print_error_text();
 }
 
@@ -13376,6 +13465,7 @@ int tpp_check(const TPPOptions *o) {
     starting = 0;
     started = time(NULL);
     simulating = o->simulate;   /* the assumptions see a simulation's TLCGet */
+    generating = o->generate;
     if (o->simulate) {
         sim_traces_max = o->traces ? o->traces : -1;
         sim_depth = o->depth ? o->depth : 100;
@@ -13451,13 +13541,14 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
         else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
-        else if (strcmp(argv[i], "-simulate") == 0) {
+        else if (strcmp(argv[i], "-simulate") == 0 || strcmp(argv[i], "-generate") == 0) {
             o.simulate = 1;
+            o.generate = argv[i][1] == 'g';
             if (i + 1 < argc && (strstr(argv[i + 1], "num=") || strstr(argv[i + 1], "file="))) {
                 for (char *arg = strtok(argv[++i], ","); arg; arg = strtok(NULL, ","))
                     if (strncmp(arg, "num=", 4) == 0) o.traces = atol(arg + 4);
                     else if (strncmp(arg, "file=", 5) == 0) o.trace_file = arg + 5;
-                    else { fprintf(stderr, "tpp: -simulate %s is not supported\n", arg); return TPP_ERROR; }
+                    else { fprintf(stderr, "tpp: %s %s is not supported\n", o.generate ? "-generate" : "-simulate", arg); return TPP_ERROR; }
             }
         }
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
