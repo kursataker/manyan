@@ -34,7 +34,10 @@ instantiates are read from the same directory; the standard modules
 Randomization, RealTime, Toolbox, TLCExt) are built in. A module named
 as one of CommunityModules, beside the spec, gets the operators TLC
 implements in Java for it from its jar: IOUtils' `IOEnv`, `atoi`,
-`IOExec` and `IOEnvExec`, and UndirectedGraphs' `ConnectedComponents`.
+`IOExec`, `IOEnvExec` and `Serialize` (format `TXT`), SequencesExt's
+`SetToSeq`, SVG's `SVGElemToString` and UndirectedGraphs'
+`ConnectedComponents`. Its other modules' operators are computed from their
+definitions.
 
 | option | meaning |
 |---|---|

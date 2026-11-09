@@ -6471,8 +6471,10 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Ctx inner = {env, b->ctx_inst};
         return eval_body(d->body, inner);
     }
-    if (d->native) {
-        if (d->lazy) return call_native(d, call, NULL, c);
+    if (d->native && d->lazy) {
+        Value *v = call_native(d, call, NULL, c);
+        if (v) return v;   /* NULL: as TLC's evaluation methods, it leaves this call to the definition */
+    } else if (d->native) {
         Value **vals = NEWN(Value *, n);
         for (int i = 0; i < n; i++)
             vals[i] = d->params[i]->arity ? eval_operator_arg(args[i], c) : eval(args[i], c);
@@ -7367,7 +7369,18 @@ static char **command_words(Value *v, const char *op) {
     return argv;
 }
 
-/* Runs argv with env's variables added: [exitValue, stdout, stderr]. */
+/* What IOExec and Serialize give: [exitValue, stdout, stderr]. */
+static Value *exec_record(int64_t code, const char *out, const char *err) {
+    List names = {0}, values = {0};
+    const char *fields[] = {"exitValue", "stdout", "stderr"};
+    for (int i = 0; i < 3; i++) list_add(&names, mk_str(intern(fields[i])));
+    list_add(&values, mk_int(code));
+    list_add(&values, mk_str(intern(out)));
+    list_add(&values, mk_str(intern(err)));
+    return mk_fcn_from(&names, &values);
+}
+
+/* Runs argv with env's variables added. */
 static Value *run_process(char **argv, Value *env) {
     int out[2], err[2];
     fflush(stdout);
@@ -7399,15 +7412,11 @@ static Value *run_process(char **argv, Value *env) {
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    List names = {0}, values = {0};
-    const char *fields[] = {"exitValue", "stdout", "stderr"};
-    for (int i = 0; i < 3; i++) list_add(&names, mk_str(intern(fields[i])));
-    list_add(&values, mk_int(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status)));
-    for (int i = 0; i < 2; i++) {
-        list_add(&values, mk_str(intern(text[i].s ? text[i].s : "")));
-        free(text[i].s);
-    }
-    return mk_fcn_from(&names, &values);
+    Value *r = exec_record(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status),
+                           text[0].s ? text[0].s : "", text[1].s ? text[1].s : "");
+    free(text[0].s);
+    free(text[1].s);
+    return r;
 }
 
 /* CommunityModules' UndirectedGraphs, as its Java implements it. */
@@ -7455,6 +7464,95 @@ NATIVE(n_connectedcomponents) {
 }
 
 NATIVE(n_ioexec) { UNUSED; return run_process(command_words(a[0], "IOExec"), NULL); }
+
+/* The field of record r, or NULL. */
+static Value *field_of(Value *r, const char *name) {
+    int i = is_fcn(r) ? fcn_index(r, mk_str(intern(name))) : -1;
+    return i < 0 ? NULL : r->u.fcn.vals[i];
+}
+
+/* Serialize(payload, file, [format |-> "TXT", charset |-> ..., openOptions |-> ...])
+   writes the string payload to file, with Java's StandardOpenOptions; TLC
+   leaves another format to the definition. */
+NATIVE(n_serialize) {
+    UNUSED;
+    Value *opts = realize(eval(call->args[2], c)), *format = field_of(opts, "format");
+    if (!format || format->kind != V_STR || strcmp(S(format->u.i), "TXT")) return NULL;
+    Value *payload = eval(call->args[0], c), *file = eval(call->args[1], c);
+    Value *options = field_of(opts, "openOptions"), *charset = field_of(opts, "charset");
+    options = options ? realize(options) : NULL;
+    int ok = payload->kind == V_STR && file->kind == V_STR && options && options->kind == V_TUPLE && charset && charset->kind == V_STR;
+    int flags = options && options->n ? 0 : O_WRONLY | O_CREAT | O_TRUNC;
+    static const struct { const char *name; int flags; } open_options[] = {
+        {"READ", 0}, {"WRITE", O_WRONLY}, {"APPEND", O_WRONLY | O_APPEND}, {"TRUNCATE_EXISTING", O_TRUNC},
+        {"CREATE", O_CREAT}, {"CREATE_NEW", O_CREAT | O_EXCL}, {"DSYNC", O_DSYNC}, {"SYNC", O_SYNC}, {NULL, 0}};
+    for (int i = 0; ok && i < options->n; i++) {
+        Value *o = options->u.fcn.vals[i];
+        int k = 0;
+        while (open_options[k].name && (o->kind != V_STR || strcmp(open_options[k].name, S(o->u.i)))) k++;
+        ok = open_options[k].name != NULL;
+        flags |= ok ? open_options[k].flags : 0;
+    }
+    if (!ok) return exec_record(1, "", "Serialize error invalid parameters");
+    int fd = open(S(file->u.i), flags, 0644);
+    size_t n = (size_t)strs[payload->u.i].len;
+    int written = fd >= 0 && write(fd, S(payload->u.i), n) == (ssize_t)n;
+    int err = errno;
+    if (fd >= 0) close(fd);
+    if (!written) {
+        Buf b = {0};
+        buf_printf(&b, "Serialize error writing to the file: %s: %s", S(file->u.i), strerror(err));
+        Value *r = exec_record(1, "", b.s);
+        free(b.s);
+        return r;
+    }
+    return exec_record(0, "Finish writing to the file with success!", "");
+}
+
+/* CommunityModules' SequencesExt: a finite set's elements in order. */
+NATIVE(n_settoseq) {
+    UNUSED;
+    Value *set = enumerate(a[0]), *t = mk_tuple(set->n);
+    for (int i = 0; i < set->n; i++) t->u.fcn.vals[i] = set->u.set.elems[i];
+    return t;
+}
+
+/* CommunityModules' SVG: an element [name, attrs, children, innerText] as
+   its markup, as its Java writes it. */
+static void svg_markup(Buf *b, Value *elem) {
+    elem = realize(elem);
+    Value *name = field_of(elem, "name"), *attrs = field_of(elem, "attrs");
+    Value *children = field_of(elem, "children"), *text = field_of(elem, "innerText");
+    attrs = attrs ? realize(attrs) : NULL;
+    children = children ? realize(children) : NULL;
+    if (!name || name->kind != V_STR || !attrs || !is_fcn(attrs) || !children || !is_fcn(children) || !text || text->kind != V_STR)
+        fail_module("An SVG element must be a record of name, attrs, children and innerText:\n%s", pretty(elem));
+    buf_printf(b, "<%s", S(name->u.i));
+    for (int i = 0; i < attrs->n && attrs->kind != V_TUPLE; i++) {
+        Value *k = attrs->u.fcn.keys[i], *v = attrs->u.fcn.vals[i];
+        if (k->kind != V_STR || v->kind != V_STR) fail_module("An SVG attribute must be a string:\n%s", pretty(attrs));
+        buf_puts(b, " ");
+        for (const char *c = S(k->u.i); *c; c++) buf_printf(b, "%c", *c == '_' ? '-' : *c);
+        buf_printf(b, "='%s'", S(v->u.i));
+    }
+    buf_puts(b, ">");
+    for (const char *c = S(text->u.i); *c; c++) {   /* a tuple <<1, 2>> in the text */
+        if (!strncmp(c, "<<", 2)) buf_puts(b, "&lt;&lt;"), c++;
+        else if (!strncmp(c, ">>", 2)) buf_puts(b, "&gt;&gt;"), c++;
+        else buf_printf(b, "%c", *c);
+    }
+    for (int i = 0; i < children->n; i++) svg_markup(b, children->u.fcn.vals[i]);
+    buf_printf(b, "</%s>", S(name->u.i));
+}
+
+NATIVE(n_svgelemtostring) {
+    UNUSED;
+    Buf b = {0};
+    svg_markup(&b, a[0]);
+    Value *v = mk_str(intern(b.s ? b.s : ""));
+    free(b.s);
+    return v;
+}
 
 NATIVE(n_ioenvexec) {
     UNUSED;
@@ -7607,6 +7705,9 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
     {"UndirectedGraphs", "ConnectedComponents", n_connectedcomponents, J_V, "tlc2.overrides.UndirectedGraphs.connectedComponents(" J_V ")"},
+    {"SequencesExt", "SetToSeq", n_settoseq, J_V, "tlc2.overrides.SequencesExt.SetToSeq(" J_V ")"},
+    {"SVG", "SVGElemToString", n_svgelemtostring, J_V, "tlc2.overrides.SVG.SVGElemToString(" J_V ")"},
+    {"IOUtils", "Serialize", n_serialize, "synchronized " J_V, "tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
     {"IOUtils", "IOEnv", n_ioenv, J_V, "tlc2.overrides.IOUtils.ioEnv()"},
     {"IOUtils", "atoi", n_atoi, J_V, "tlc2.overrides.IOUtils.atoi(" J_V ")"},
     {"IOUtils", "IOExec", n_ioexec, J_V, "tlc2.overrides.IOUtils.ioExec(" J_V ")"},
@@ -7638,12 +7739,14 @@ static void bind_natives(void) {
                     d->native = natives[k].fn;
                     d->lazy = native_arity(natives[k].method) < 0;
                     /* TLC always loads Integers (its trace modules use it), and takes
-                       Naturals' operators from its class; a method may name its own. */
+                       Naturals' operators from its class; a method may name its own
+                       class in tlc2.module, or a class elsewhere in full. */
                     const char *m = natives[k].method;
                     const char *cls = strcmp(natives[k].module, "Naturals") == 0 ? "Integers" : natives[k].module;
-                    int named = memchr(m, '.', (size_t)(strchr(m, '(') - m)) != NULL;
+                    int named = memchr(m, '.', (size_t)(strchr(m, '(') - m)) != NULL, full = !strncmp(m, "tlc2.", 5);
                     Buf b = {0};
-                    buf_printf(&b, "public static %s tlc2.module.%s%s%s", natives[k].ret, named ? "" : cls, named ? "" : ".", m);
+                    buf_printf(&b, "public static %s %s%s%s%s", natives[k].ret, full ? "" : "tlc2.module.",
+                               named ? "" : cls, named ? "" : ".", m);
                     d->java = buf_take(&b);
                 }
         }
