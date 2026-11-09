@@ -46,7 +46,7 @@ typedef struct Inst Inst;
    modules and everything computed before the search; the scratch arena
    holds what the search computes for one state and is reset after it. */
 typedef struct Chunk { struct Chunk *next; size_t used, size; char data[]; } Chunk;
-typedef struct { Chunk *head; } Arena;
+typedef struct { Chunk *head, *spare; } Arena;   /* spare: a chunk a region dropped, for the next */
 
 static Arena perm_arena, scratch_arena;
 static Arena *arena = &perm_arena;
@@ -69,7 +69,8 @@ static void *alloc_raw(size_t n) {
     Chunk *c = arena->head;
     if (!c || c->used + n > c->size) {
         size_t size = n > 1 << 20 ? n : 1 << 20;
-        Chunk *fresh = xmalloc(sizeof(Chunk) + size);
+        Chunk *fresh = size == 1 << 20 && arena->spare ? arena->spare : xmalloc(sizeof(Chunk) + size);
+        if (fresh == arena->spare) arena->spare = NULL;
 
         fresh->next = c; fresh->used = 0; fresh->size = size;
         arena->head = c = fresh;
@@ -107,7 +108,8 @@ static void arena_reset(Arena *a) {
 static void arena_free(Arena *a) {
     arena_reset(a);
     free(a->head);
-    a->head = NULL;
+    free(a->spare);
+    a->head = a->spare = NULL;
 }
 
 static size_t arena_bytes(Arena *a) {
@@ -116,14 +118,13 @@ static size_t arena_bytes(Arena *a) {
     return n;
 }
 
-/* What one iteration of a loop computing a constant made, from where its
-   arena stood: dropped after it, unless a value made before it was given
-   one it made. Neither arena of the search has them: the permanent one
-   keeps what is computed once, and the scratch one is dropped by state. */
+/* What one iteration of a loop made, a quantifier's body or a filter's
+   test, from where its arena stood: dropped after it, unless a value made
+   before it was given one it made. The permanent arena has none: it keeps
+   what is computed once. */
 typedef struct { Arena *a; Chunk *c; size_t used; int kept; } Region;
 static Region regions[64];
 static int nregions;
-static int init_regions;   /* computing the initial states, whose guards the scratch arena may drop */
 
 static int in_region(Region *r, void *p) {
     for (Chunk *c = r->a->head; c; c = c->next) {
@@ -140,7 +141,7 @@ static void held_by(void *holder) {
 }
 
 static Region *region_open(void) {
-    if (arena == &perm_arena || (arena == &scratch_arena && !init_regions) || nregions == 64) return NULL;
+    if (arena == &perm_arena || nregions == 64) return NULL;
     Region *r = &regions[nregions++];
     *r = (Region){arena, arena->head, arena->head ? arena->head->used : 0, 0};
     return r;
@@ -150,7 +151,12 @@ static void region_close(Region *r) {
     if (!r) return;
     nregions--;
     if (r->kept) return;
-    while (r->a->head != r->c) { Chunk *next = r->a->head->next; free(r->a->head); r->a->head = next; }
+    while (r->a->head != r->c) {   /* one is kept: a loop crossing a chunk's end crosses it each time */
+        Chunk *c = r->a->head;
+        r->a->head = c->next;
+        if (!r->a->spare && c->size == 1 << 20) r->a->spare = c;
+        else free(c);
+    }
     if (r->c) r->c->used = r->used;
 }
 
@@ -5518,9 +5524,11 @@ static Value *filter_member_test(Value *s, Value *v) {
     Ctx c = {env, s->u.l.inst};
     Value **cur = cur_state, **next = next_state;
     if (s->u.l.made_in) cur_state = s->u.l.made_in[0], next_state = s->u.l.made_in[1];
+    Region *r = region_open();
     Value *holds = eval(e->args[0], c);
     if (holds->kind != V_BOOL)
         fail_at(e->args[0], "Attempted to evaluate an expression of form {x \\in S : P(x)} when P was %s.", kind_string(holds));
+    region_close(r);
     cur_state = cur;
     next_state = next;
     return holds;
@@ -10369,9 +10377,7 @@ static int search(void) {
     arena = &scratch_arena;
     init_draws = draw_model;
     draw_restart(NULL);
-    init_regions = 1;
     gen(init_expr, root_ctx, NULL);
-    init_regions = 0;
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
@@ -12494,6 +12500,10 @@ static void collect_fairness(Expr *e, Ctx c) {
         fairs[nfairs].step = angle;
         fairs[nfairs].c = c;
         nfairs++;
+        return;
+    }
+    if (e->kind == K_IMPLIES && expr_level(e->args[0]) == 0) {   /* TLC evaluates a constant P of P => F */
+        if (eval_bool(e->args[0], c)) collect_fairness(e->args[1], c);
         return;
     }
     if (e->kind == K_CALL && e->def->kind == D_OP && !e->def->native) {
