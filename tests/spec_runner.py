@@ -38,11 +38,17 @@ NOISE = re.compile(
     r"Warning: Please run the Java VM|GuardMalloc\[|"
     r"Progress: \d+ states checked|The number of states generated: |Simulation using seed |"
     r"Linting of module|Trace exploration spec path: )")
+# TLC's warning that its heap is small depends on the machine.
+LOW_MEMORY = re.compile(
+    r"^Warning: Liveness checking will be extremely slow because TLC is running low on memory\.\n"
+    r"Try allocating more memory to the Java pool \(heap\) in future TLC runs\.\n"
+    r"(\(Use the -nowarning option to disable this warning\.\)\n)?", re.M)
 
 
 def normalize(output, directory):
     if "Error: Parsing or semantic analysis failed." in output:
         return "Error: Parsing or semantic analysis failed.\n"
+    output = LOW_MEMORY.sub("", output)
     lines = []
     nested = False
     for line in output.replace(str(directory) + "/", "").splitlines():

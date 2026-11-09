@@ -9,7 +9,7 @@ Every exhaustive-search model whose recorded runtime is at most
 Each library's modules are staged beside the spec unless the spec has one
 of that name or tpp builds it in, as TLC finds them on its class path.
 TLC's results are cached next to the Examples checkout: they change only
-with the pins. The diffs of the models that differ go to fullbench.diff.
+with the pins, and normalizing them again follows changes to normalize. The diffs of the models that differ go to fullbench.diff.
 """
 import argparse
 import difflib
@@ -137,7 +137,7 @@ def main():
             verdict = f"TLC {theirs['killed']}"
         elif killed:
             verdict = f"tpp {killed}"
-        elif ours != theirs["output"]:
+        elif ours != spec_runner.normalize(theirs["output"], directory):
             verdict = "differs"
             diffs.write(f"=== {name}\n" + "".join(difflib.unified_diff(
                 theirs["output"].splitlines(True), ours.splitlines(True), "TLC", "tpp", n=2)))
