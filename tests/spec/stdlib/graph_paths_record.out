@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 64 of module graph_paths_record failed.
+The third argument of AreConnectedIn should be a graph record whose edge field is a set, but instead it is:
+[node |-> 1..3, edge |-> 7]
+exit 10

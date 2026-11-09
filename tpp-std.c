@@ -227,11 +227,21 @@ static TPPValue *svg_elem_to_string(TPPCall *call, TPPValue **a) {
     return v;
 }
 
-/* ---------------------------------------------------------------- UndirectedGraphs */
+/* ---------------------------------------------------------------- Graphs, UndirectedGraphs */
 
 static TPPValue *graph_set(TPPValue *g, const char *field) {
     TPPValue *v = tpp_field(g, field);
     return v ? tpp_elements(v) : NULL;
+}
+
+/* G's nodes and edges, enumerated, if G is a graph record; else the error
+   TLC gives for argument POS of OP, a KIND. */
+static void to_graph(TPPCall *call, const char *op, const char *pos, const char *kind, TPPValue *g,
+                     TPPValue **nodes, TPPValue **edges) {
+    const char *bad = !is_record(g) ? "record with a node and an edge field"
+                    : !(*nodes = graph_set(g, "node")) ? "record whose node field is a set"
+                    : !(*edges = graph_set(g, "edge")) ? "record whose edge field is a set" : NULL;
+    if (bad) tpp_fail(call, "The %s argument of %s should be a %s %s, but instead it is:\n%s", pos, op, kind, bad, tpp_print(g));
 }
 
 static long position(TPPValue *set, TPPValue *v) {
@@ -252,11 +262,8 @@ static size_t root(size_t *parent, size_t i) {
 /* The components as TLC's union-find finds them: an edge is a set of one
    or two nodes, and other edges, or those leaving the nodes, join nothing. */
 static TPPValue *connected_components(TPPCall *call, TPPValue **a) {
-    TPPValue *g = a[0], *nodes = NULL, *edges = NULL;
-    const char *bad = !is_record(g) ? "record with a node and an edge field"
-                    : !(nodes = graph_set(g, "node")) ? "record whose node field is a set"
-                    : !(edges = graph_set(g, "edge")) ? "record whose edge field is a set" : NULL;
-    if (bad) tpp_fail(call, "The first argument of ConnectedComponents should be a undirected graph %s, but instead it is:\n%s", bad, tpp_print(g));
+    TPPValue *nodes, *edges;
+    to_graph(call, "ConnectedComponents", "first", "undirected graph", a[0], &nodes, &edges);
     size_t n = tpp_size(nodes), *parent = malloc(sizeof(size_t) * (n + 1));
     for (size_t i = 0; i < n; i++) parent[i] = i;
     for (size_t k = 0; k < tpp_size(edges); k++) {
@@ -274,6 +281,95 @@ static TPPValue *connected_components(TPPCall *call, TPPValue **a) {
     return r;
 }
 
+/* A directed graph's arcs, by the positions of its nodes: those of node i
+   go to to[start[i]] .. to[start[i + 1] - 1]. An edge is a pair of nodes;
+   another, or one leaving the nodes, is none, as in Graphs' definitions. */
+typedef struct { size_t n, *start, *to; } Arcs;
+
+static Arcs arcs_of(TPPValue *nodes, TPPValue *edges, int transpose) {
+    size_t n = tpp_size(nodes), m = tpp_size(edges), k = 0;
+    long *from = malloc(sizeof(long) * (m + 1)), *to = malloc(sizeof(long) * (m + 1));
+    Arcs a = {n, calloc(n + 2, sizeof(size_t)), malloc(sizeof(size_t) * (m + 1))};
+    for (size_t i = 0; i < m; i++) {
+        TPPValue *e = tpp_element(edges, i);
+        if (tpp_kind(e) != TPP_TUPLE || tpp_size(e) != 2) continue;
+        from[k] = position(nodes, tpp_value(e, transpose)), to[k] = position(nodes, tpp_value(e, !transpose));
+        if (from[k] >= 0 && to[k] >= 0) a.start[from[k] + 2]++, k++;
+    }
+    for (size_t i = 2; i <= n + 1; i++) a.start[i] += a.start[i - 1];
+    for (size_t i = 0; i < k; i++) a.to[a.start[from[i] + 1]++] = (size_t)to[i];   /* start[f + 1]: f's next arc */
+    free(from), free(to);
+    return a;
+}
+
+static void arcs_free(Arcs a) { free(a.start), free(a.to); }
+
+/* How many nodes are reachable from node s, each marked in seen. */
+static size_t reach(Arcs a, size_t s, char *seen) {
+    size_t *queue = malloc(sizeof(size_t) * (a.n + 1)), head = 0, tail = 0;
+    seen[s] = 1, queue[tail++] = s;
+    while (head < tail)
+        for (size_t i = queue[head++], k = a.start[i]; k < a.start[i + 1]; k++)
+            if (!seen[a.to[k]]) seen[a.to[k]] = 1, queue[tail++] = a.to[k];
+    free(queue);
+    return tail;
+}
+
+static TPPValue *are_connected_in(TPPCall *call, TPPValue **a) {
+    TPPValue *nodes, *edges;
+    to_graph(call, "AreConnectedIn", "third", "graph", a[2], &nodes, &edges);
+    long m = position(nodes, a[0]), n = position(nodes, a[1]);
+    if (m < 0 || n < 0) return tpp_bool(0);
+    if (m == n) return tpp_bool(1);
+    Arcs arcs = arcs_of(nodes, edges, 0);
+    char *seen = calloc(arcs.n, 1);
+    reach(arcs, (size_t)m, seen);
+    int r = seen[n];
+    free(seen), arcs_free(arcs);
+    return tpp_bool(r);
+}
+
+/* Every node reaches the first, and the first every node. */
+static TPPValue *is_strongly_connected(TPPCall *call, TPPValue **a) {
+    TPPValue *nodes, *edges;
+    to_graph(call, "IsStronglyConnected", "first", "graph", a[0], &nodes, &edges);
+    int r = 1;
+    for (int transpose = 0; transpose < 2 && r && tpp_size(nodes); transpose++) {
+        Arcs arcs = arcs_of(nodes, edges, transpose);
+        char *seen = calloc(arcs.n, 1);
+        r = reach(arcs, 0, seen) == arcs.n;
+        free(seen), arcs_free(arcs);
+    }
+    return tpp_bool(r);
+}
+
+/* Each simple path that path, of n nodes, starts. */
+static void simple_paths(Arcs a, size_t *path, size_t n, char *on, TPPValue *nodes, Values *out) {
+    TPPValue **elems = malloc(sizeof(TPPValue *) * n);
+    for (size_t i = 0; i < n; i++) elems[i] = tpp_element(nodes, path[i]);
+    add(out, tpp_tuple(n, elems));
+    free(elems);
+    for (size_t k = a.start[path[n - 1]]; k < a.start[path[n - 1] + 1]; k++)
+        if (!on[a.to[k]]) {
+            on[path[n] = a.to[k]] = 1;
+            simple_paths(a, path, n + 1, on, nodes, out);
+            on[a.to[k]] = 0;
+        }
+}
+
+static TPPValue *simple_path(TPPCall *call, TPPValue **a) {
+    TPPValue *nodes, *edges;
+    to_graph(call, "SimplePath", "first", "graph", a[0], &nodes, &edges);
+    Arcs arcs = arcs_of(nodes, edges, 0);
+    size_t *path = malloc(sizeof(size_t) * (arcs.n + 1));
+    char *on = calloc(arcs.n + 1, 1);
+    Values out = {0};
+    for (size_t s = 0; s < arcs.n; s++) on[path[0] = s] = 1, simple_paths(arcs, path, 1, on, nodes, &out), on[s] = 0;
+    TPPValue *r = tpp_set(out.n, out.v);
+    free(out.v), free(on), free(path), arcs_free(arcs);
+    return r;
+}
+
 /* ---------------------------------------------------------------- the table */
 
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
@@ -288,6 +384,9 @@ int tpp_std_init(void) {
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
         {"SVG", "SVGElemToString", 1, svg_elem_to_string, OVERRIDE("SVG", "SVGElemToString(" J_V ")")},
+        {"Graphs", "SimplePath", 1, simple_path, OVERRIDE("Graphs", "simplePath(" J_V ")")},
+        {"Graphs", "AreConnectedIn", 3, are_connected_in, OVERRIDE("Graphs", "areConnectedIn(" J_V "," J_V "," J_V ")")},
+        {"Graphs", "IsStronglyConnected", 1, is_strongly_connected, OVERRIDE("Graphs", "isStronglyConnected(" J_V ")")},
         {"UndirectedGraphs", "ConnectedComponents", 1, connected_components,
          OVERRIDE("UndirectedGraphs", "connectedComponents(" J_V ")")},
     };

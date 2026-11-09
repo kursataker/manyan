@@ -21,6 +21,7 @@ gives, error messages included.
 
 | module | operators |
 |---|---|
+| Graphs | `SimplePath`, `AreConnectedIn`, `IsStronglyConnected` |
 | IOUtils | `IOEnv`, `atoi`, `IOExec`, `IOEnvExec`, `Serialize` (format `TXT`; another format is the definition's) |
 | SequencesExt | `SetToSeq` |
 | SVG | `SVGElemToString` |
