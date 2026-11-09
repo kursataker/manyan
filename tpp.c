@@ -5312,12 +5312,16 @@ static __attribute__((noinline)) Value *substitution_value(Inst *in, int i) {
     if (!id->subst_kept[i]) id->subst_kept[i] = x->kind != K_DECL && expr_level(x) == 1 ? 1 : 2;
     if (id->subst_kept[i] == 2) return eval(x, outer);
     if (!in->state || in->resets != scratch_resets || memcmp(in->state, cur_state, sizeof(Value *) * (size_t)nvars)) {
+        held_by(in);
         in->resets = scratch_resets;
         in->state = NEWN(Value *, nvars);
         memcpy(in->state, cur_state, sizeof(Value *) * (size_t)nvars);
         in->kept = NEWN(Value *, id->nsubst);
     }
-    return in->kept[i] ? in->kept[i] : (in->kept[i] = eval(x, outer));
+    if (in->kept[i]) return in->kept[i];
+    Value *v = eval(x, outer);
+    held_by(in);
+    return in->kept[i] = v;
 }
 
 /* The value of d through the substitutions of c's instances, or NULL if
