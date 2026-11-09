@@ -7410,6 +7410,50 @@ static Value *run_process(char **argv, Value *env) {
     return mk_fcn_from(&names, &values);
 }
 
+/* CommunityModules' UndirectedGraphs, as its Java implements it. */
+static int set_position(Value *s, Value *v) {
+    for (int lo = 0, hi = s->n - 1; lo <= hi;) {
+        int m = (lo + hi) / 2, c = vcmp(s->u.set.elems[m], v);
+        if (!c) return m;
+        if (c < 0) lo = m + 1; else hi = m - 1;
+    }
+    return -1;
+}
+
+static Value *graph_set(Value *g, const char *field) {
+    int i = fcn_index(g, mk_str(intern(field)));
+    Value *v = i < 0 ? NULL : realize(g->u.fcn.vals[i]);
+    return v && is_set(v) && !user_set(v) ? enumerate(v) : NULL;
+}
+
+static int component_root(int *parent, int i) {
+    while (parent[i] != i) i = parent[i] = parent[parent[i]];
+    return i;
+}
+
+NATIVE(n_connectedcomponents) {
+    UNUSED;
+    Value *g = realize(a[0]), *nodes = NULL, *edges = NULL;
+    int record = is_fcn(g);
+    for (int i = 0; record && i < g->n && g->kind != V_TUPLE; i++) record = g->u.fcn.keys[i]->kind == V_STR;
+    const char *bad = !record ? "record with a node and an edge field"
+                    : !(nodes = graph_set(g, "node")) ? "record whose node field is a set"
+                    : !(edges = graph_set(g, "edge")) ? "record whose edge field is a set" : NULL;
+    if (bad) fail_module("The first argument of ConnectedComponents should be a undirected graph %s, but instead it is:\n%s", bad, pretty(a[0]));
+    int *parent = NEWN(int, nodes->n);
+    for (int i = 0; i < nodes->n; i++) parent[i] = i;
+    for (int k = 0; k < edges->n; k++) {   /* an edge is a set of one or two nodes; others join nothing */
+        Value *e = realize(edges->u.set.elems[k]);
+        if (!is_set(e) || user_set(e) || (e = enumerate(e))->n == 0 || e->n > 2) continue;
+        int i = set_position(nodes, e->u.set.elems[0]), j = set_position(nodes, e->u.set.elems[e->n - 1]);
+        if (i >= 0 && j >= 0) parent[component_root(parent, j)] = component_root(parent, i);
+    }
+    List *members = memset(NEWN(List, nodes->n), 0, sizeof(List) * (size_t)nodes->n), out = {0};
+    for (int i = 0; i < nodes->n; i++) list_add(&members[component_root(parent, i)], nodes->u.set.elems[i]);
+    for (int i = 0; i < nodes->n; i++) if (members[i].n) list_add(&out, list_set(&members[i]));
+    return list_set(&out);
+}
+
 NATIVE(n_ioexec) { UNUSED; return run_process(command_words(a[0], "IOExec"), NULL); }
 
 NATIVE(n_ioenvexec) {
@@ -7562,6 +7606,7 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"Randomization", "RandomSetOfSubsets", n_randomsetofsubsets, J_V, "RandomSetOfSubsets(" J_V "," J_V "," J_V ")"},
     {"TLC", "ToString", n_tostring, J_V, "ToString(" J_V ")"},
     {"TLC", "TLCEval", n_tlceval, J_V, "TLCEval(" J_V ")"},
+    {"UndirectedGraphs", "ConnectedComponents", n_connectedcomponents, J_V, "tlc2.overrides.UndirectedGraphs.connectedComponents(" J_V ")"},
     {"IOUtils", "IOEnv", n_ioenv, J_V, "tlc2.overrides.IOUtils.ioEnv()"},
     {"IOUtils", "atoi", n_atoi, J_V, "tlc2.overrides.IOUtils.atoi(" J_V ")"},
     {"IOUtils", "IOExec", n_ioexec, J_V, "tlc2.overrides.IOUtils.ioExec(" J_V ")"},

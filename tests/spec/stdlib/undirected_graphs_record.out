@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 51 of module undirected_graphs_record failed.
+The first argument of ConnectedComponents should be a undirected graph record whose edge field is a set, but instead it is:
+[node |-> 1..3]
+exit 10
