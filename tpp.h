@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TPP_VERSION "0.6.1"
+#define TPP_VERSION "0.7.0"
 
 /* Exit statuses, as TLC reports them (docs/standards/tla2.md, 11.3). */
 enum {

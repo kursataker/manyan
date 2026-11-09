@@ -1,3 +1,16 @@
+2026-11-10 0.7.0:
+
+- make full-bench checks tlaplus/Examples against TLC (docs/fullbench.md)
+- tpp-std.c: the operators TLC computes in Java, on a public native API in
+  tpp.h (tpp_define); CommunityModules' IOUtils, Json deserializers,
+  Graphs, UndirectedGraphs, SequencesExt's SetToSeq and SVG (docs/std.md)
+- action composition (\cdot, with -Dtlc2.tool.impl.Tool.cdot=true) and
+  -Dk=v; fairness of the form <>[][A]_v and P => WF_v(A) with P constant
+- under a VIEW, a property's actions are evaluated on the real steps; a
+  property that is an instance's operator is named by the call
+- the search drops what each quantifier's body and filter's test made
+  (MCInnerSerial over 4 GB -> 0.47 GB), at 2-4% of the closure bench
+
 2026-11-08 0.6.1:
 
 - edge cases from tlaplus/Examples and TLC's own test models: instances,
