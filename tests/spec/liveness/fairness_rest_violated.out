@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Done was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Up line 6, col 7 to line 6, col 25 of module fairness_rest_violated>
+x = 1
+
+State 3: <Up line 6, col 7 to line 6, col 25 of module fairness_rest_violated>
+x = 2
+
+State 4: Stuttering
+8 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

@@ -39,6 +39,7 @@ typedef struct {
     int seed_given;
     long long aril;      /* simulation: draws to skip after seeding (-aril) */
     const char *trace_file;  /* simulation: write behavior N to FILE_0_N, or NULL (-simulate file=FILE) */
+    const char *const *properties;  /* Java system properties, "k=v" each, NULL-terminated (-Dk=v) */
 } TPPOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an

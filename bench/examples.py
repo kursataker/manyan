@@ -120,19 +120,17 @@ def main():
         path = model["path"]
         name = path.removeprefix("specifications/").removesuffix(".cfg")
         command = ["-config", Path(path).name, Path(module["path"]).stem]
+        java = ["-Dtlc2.tool.impl.Tool.cdot=true"] if "action composition" in module["features"] else []
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp).resolve() / "spec"
             stage(examples / Path(path).parent, args.library, directory)
             if path not in cache:
-                tlc = args.tlc.split()
-                if "action composition" in module["features"]:
-                    tlc.insert(tlc.index("tlc2.TLC"), "-Dtlc2.tool.impl.Tool.cdot=true")
-                tlc += ["-workers", "1", "-metadir", str(Path(tmp) / "meta")]
+                tlc = spec_runner.place(args.tlc.split(), java + ["-workers", "1", "-metadir", str(Path(tmp) / "meta")])
                 seconds, output, killed = run(tlc + command, directory, args.timeout, args.memory)
                 cache[path] = {"seconds": seconds, "output": output, "killed": killed}
                 cache_path.write_text(json.dumps(cache, indent=1))
             theirs = cache[path]
-            ours_seconds, ours, killed = run([engine] + command, directory, args.timeout, args.memory)
+            ours_seconds, ours, killed = run(spec_runner.place([engine], java) + command, directory, args.timeout, args.memory)
         if theirs["killed"]:
             verdict = f"TLC {theirs['killed']}"
         elif killed:

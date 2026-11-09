@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
@@ -6216,6 +6217,8 @@ EVAL(ev_decl) { return decl_value(e->def, c, e); }
 EVAL(ev_and) { return junction(e, c, 1); }
 EVAL(ev_or) { return junction(e, c, 0); }
 EVAL(ev_enabled) { return BOOLV(enabled(e->args[0], c)); }
+static Value *eval_cdot(Expr *e, Ctx c);
+EVAL(ev_cdot) { return eval_cdot(e, c); }
 EVAL(ev_lambda) { return mk_oper(e->def, c); }
 EVAL(ev_opref) { return mk_oper(e->def, (Ctx){NULL, c.inst}); }
 EVAL(ev_temporal) {
@@ -6225,7 +6228,6 @@ EVAL(ev_temporal) {
                      : e->kind == X_TFORALL ? "\\AA" : "\\EE";
     fail_runtime(e, TPP_ERROR, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
 }
-EVAL(ev_cdot) { UNUSED_C; (void)e; fail("The current version of TLC does not support action composition.  An incomplete implementation can be enabled via the tlc2.tool.impl.Tool.cdot=true java property."); }
 #undef UNUSED_C
 #undef EVAL
 
@@ -7510,6 +7512,7 @@ typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont; 
 
 static Value **gen_target;      /* the state being assigned */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
+static long generated;          /* states generated, as TLC counts them */
 
 static inline int gen(Expr *e, Ctx c, Cont *k);
 static int gen_unchanged(Expr *e, Ctx c, Cont *k);
@@ -7886,6 +7889,100 @@ static Ctx instance_ctx(Expr *e, Ctx c) {
 }
 
 static int gen_untracked(Expr *e, Ctx c, Cont *k);
+
+/* TLC's incomplete action composition, behind its Java property: s goes
+   to u by A \cdot B when s goes to some t by A and t to u by B. As TLC,
+   t starts with s's values of the variables already assigned, and the
+   conjuncts after A \cdot B follow both A and B. */
+static void cdot_enabled(void) {
+    if (strcasecmp(S(*prop("-Dtlc2.tool.impl.Tool.cdot")), "true"))
+        fail("The current version of TLC does not support action composition.  An incomplete implementation can be enabled via the tlc2.tool.impl.Tool.cdot=true java property.");
+}
+
+typedef struct { Value ***v; int n, cap; } Middles;
+static Middles *cdot_middle;
+static int middle_emit(void) {
+    Middles *m = cdot_middle;
+    if (m->n == m->cap) {
+        Value ***v = NEWN(Value **, m->cap = m->cap ? 2 * m->cap : 8);
+        if (m->n) memcpy(v, m->v, sizeof(Value **) * (size_t)m->n);
+        m->v = v;
+    }
+    m->v[m->n++] = snapshot(gen_target);
+    return 0;
+}
+
+/* The states t that A goes to from the current state, starting from t. */
+static Middles cdot_first(Expr *a, Ctx c, Value **t, Cont *k) {
+    Value **saved_target = gen_target, **saved_next = next_state;
+    int (*saved_emit)(void) = gen_emit;
+    Middles m = {0}, *saved_middle = cdot_middle;
+    gen_target = next_state = t;
+    gen_emit = middle_emit;
+    cdot_middle = &m;
+    gen(a, c, k);
+    cdot_middle = saved_middle;
+    gen_target = saved_target;
+    next_state = saved_next;
+    gen_emit = saved_emit;
+    return m;
+}
+
+static Value **cdot_from;          /* s, while B goes on from t */
+static int (*cdot_emit)(void);     /* the emit of A \cdot B */
+static int last_emit(void) {
+    Value **t = cur_state;
+    cur_state = cdot_from;
+    int r = cdot_emit();
+    cur_state = t;
+    return r;
+}
+
+static int gen_cdot(Expr *e, Ctx c, Cont *k) {
+    cdot_enabled();
+    Value **s = cur_state, **t = NEWN(Value *, nvars);
+    for (int i = 0; i < nvars; i++) t[i] = gen_target[i] ? s[i] : NULL;
+    int enabling = gen_emit == enabled_emit;
+    Middles m = cdot_first(e->args[0], c, t, enabling ? NULL : k);
+    Value **saved_from = cdot_from;
+    int (*saved_emit)(void) = gen_emit, (*saved_cdot)(void) = cdot_emit;
+    if (!enabling) {
+        generated += m.n;
+        cdot_from = s;
+        cdot_emit = gen_emit;
+        gen_emit = last_emit;
+    }
+    int found = 0;
+    for (int i = 0; i < m.n && !found; i++) {
+        cur_state = m.v[i];
+        found = gen(e->args[1], c, k);
+    }
+    cur_state = s;
+    gen_emit = saved_emit;
+    cdot_emit = saved_cdot;
+    cdot_from = saved_from;
+    return found;
+}
+
+/* A \cdot B as a formula, as TLC: some t that A goes to from the current
+   state, starting from no values, goes to the next state by B. */
+static Value *eval_cdot(Expr *e, Ctx c) {
+    cdot_enabled();
+    int saved_init = gen_init, saved_primed = primed;
+    gen_init = primed = 0;
+    Middles m = cdot_first(e->args[0], c, NEWN(Value *, nvars), NULL);
+    gen_init = saved_init;
+    primed = saved_primed;
+    Value **s = cur_state, *v = FALSEV;
+    for (int i = 0; i < m.n && v != TRUEV; i++) {
+        cur_state = m.v[i];
+        v = eval(e->args[1], c);
+        if (v->kind != V_BOOL) not_boolean(e->args[1], v);
+    }
+    cur_state = s;
+    return v;
+}
+
 static int gen_tracked(Expr *e, Ctx c, Cont *k) {
     int n = nframes;
     frames_push(e);
@@ -8051,6 +8148,8 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     }
     case K_UNCHANGED:
         return gen_unchanged(e->args[0], c, k);
+    case K_CDOT:
+        return gen_cdot(e, c, k);
     case X_SQACT: {
         if (gen(e->args[0], c, k)) return 1;
         return gen_unchanged(e->args[1], c, k);
@@ -8776,7 +8875,6 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
 
 /* ---------------------------------------------------------------- reporting */
 
-static long generated;
 static int max_depth = 1;
 static int expanded;          /* states taken off the queue */
 
@@ -12253,6 +12351,12 @@ typedef struct { int strong; Expr *enabled, *step; Ctx c; } Fair;
 static Fair *fairs;
 static int nfairs;
 
+/* The rest of the fairness, such as <>[][A]_v, which TLC checks as a
+   conjunct of each negated property. */
+static Expr **fair_rest;
+static Ctx *fair_rest_c;
+static int nfair_rest;
+
 static int fair_enabled(Fair *f, int s) { return holds_in(f->enabled, f->c, state_values(s), next_state); }
 
 static int fair_step(Fair *f, int s, int to) {
@@ -12291,7 +12395,11 @@ static void collect_fairness(Expr *e, Ctx c) {
         collect_fairness(e->def->body, instance_ctx(e, c));
         return;
     }
-    fail_at(e, "TLC cannot handle the fairness condition.");
+    if (e->kind != K_ALWAYS && e->kind != K_EVENTUALLY && e->kind != K_LEADSTO) fail_at(e, "TLC cannot handle the fairness condition.");
+    fair_rest = xrealloc(fair_rest, sizeof(Expr *) * (size_t)(nfair_rest + 1));
+    fair_rest_c = xrealloc(fair_rest_c, sizeof(Ctx) * (size_t)(nfair_rest + 1));
+    fair_rest[nfair_rest] = e;
+    fair_rest_c[nfair_rest++] = c;
 }
 
 static int accept_component(int *nodes, int n);
@@ -12728,7 +12836,7 @@ static int tf_cycle_free(TF *f) {
    there (§10.7). Returns the state being expanded then, or -1; *at is
    the node. */
 static int live_cut_at(TF *negated, int *at) {
-    if (sim_n || nfairs || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
+    if (sim_n || nfairs || nfair_rest || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
     int *stack = NULL, n = 0, *roots;
     live_roots(negated, &roots);   /* the graph starts with them */
     for (int s0 = 0; s0 < expanded; s0++)
@@ -12888,7 +12996,7 @@ static int live_error(void) {
 }
 
 static void collect_fairnesses(void) {
-    nfairs = 0;
+    nfairs = nfair_rest = 0;
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
 }
 
@@ -12900,6 +13008,7 @@ static TF *live_setup(int p) {
     free(pnodes_of);
     pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+    for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
     free(state_atom_cache);
     state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
     return live_negated = neg;
@@ -12990,7 +13099,7 @@ static int dnf_too_large(TF **negated) {
     if (!sigsetjmp(here, 0)) collect_fairnesses();
     eval_restore(s);
     for (int i = 0; i < nfairs; i++) size *= 1 + fairs[i].strong;
-    nfairs = 0;
+    nfairs = nfair_rest = 0;
     return size > INT32_MAX;
 }
 
@@ -13083,6 +13192,13 @@ int tpp_check(const TPPOptions *o) {
     diff_trace = o->difftrace;
     view_trace = o->view;
     keep_going = o->keep_going;
+    for (const char *const *p = o->properties; p && *p; p++) {
+        int n = (int)(strchr(*p, '=') - *p);
+        char *key = xmalloc((size_t)n + 3);
+        sprintf(key, "-D%.*s", n, *p);
+        *prop(key) = intern(*p + n + 1);
+        free(key);
+    }
     if (user_file) fclose(user_file);   /* each write is flushed: a run may end anywhere */
     user_file = NULL;
     if (o->user_file && !(user_file = fopen(o->user_file, "w"))) {
@@ -13188,6 +13304,9 @@ int tpp_check(const TPPOptions *o) {
 int main(int argc, char **argv) {
     TPPOptions o = {0};
     o.check_deadlock = 1;
+    const char **properties = calloc((size_t)argc, sizeof(char *));
+    int nproperties = 0;
+    o.properties = properties;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
         else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
@@ -13225,6 +13344,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-continue") == 0) o.keep_going = 1;
         else if (strcmp(argv[i], "-view") == 0) o.view = 1;
         else if (strcmp(argv[i], "-userFile") == 0 && i + 1 < argc) o.user_file = argv[++i];
+        else if (!strncmp(argv[i], "-D", 2) && strchr(argv[i], '=')) properties[nproperties++] = argv[i] + 2;
         /* TLC's, for its own files and fingerprints: tpp has neither */
         else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits")) && i + 1 < argc) i++;
         else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}

@@ -446,7 +446,15 @@ parameters, `LET`, instances and their substitutions, is `x'` or
 `(d)'` with `d` reaching `x` likewise, as TLC's getPrimedVar finds it; `UNCHANGED e` is
 `e' = e`; `[A]_e` is `A \/ UNCHANGED e`; `<<A>>_e` is `A /\ ~UNCHANGED e`;
 `ENABLED A` is true in a state from which `A` has a successor; `A \cdot B`
-is composition.
+is composition, an error unless the Java property
+`tlc2.tool.impl.Tool.cdot` is `true`. Then, as TLC: from `s`, the states
+`t` that `A` goes to start with `s`'s values of the variables already
+assigned and must satisfy the conjuncts after `A \cdot B`, and count as
+generated; from each `t`, `B` gives the successors, with those conjuncts
+too, each a successor of `s`. As a formula, `A \cdot B` holds of a step
+to `u` when `A` goes from `s` to some `t`, starting from no values, from
+which the step to `u` satisfies `B`; in `ENABLED`, when `B` is enabled
+from some `t`.
 
 Inside `ENABLED`, as in TLC, a primed variable of an instantiated module
 written in `A` itself is not replaced by its substitution: `x' = e` gives
@@ -725,7 +733,9 @@ path from an initial state, counted in states.
 A `PROPERTY` holds when every behavior of the specification satisfies it.
 A behavior is an infinite sequence of states, each transition of which is a
 step of the next-state action or a stuttering step, that satisfies the
-specification's fairness conditions. A property of the form `[]P` with `P`
+specification's fairness conditions: its `WF` and `SF` conjuncts and the
+other temporal conjuncts, such as `<>[][A]_v`, which TLC checks as
+conjuncts of the negated property. A property of the form `[]P` with `P`
 a state predicate is checked as an invariant; a state predicate `P` is
 checked on each initial state, after the invariants, as TLC checks it
 while it computes them: `Error: Property P is violated by the initial

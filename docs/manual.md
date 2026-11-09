@@ -47,6 +47,7 @@ Randomization, RealTime, Toolbox, TLCExt) are built in.
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
 | `-view` | print each state an error reports as the value of the configuration's `VIEW`, as TLC does |
+| `-Dk=v` | set Java's system property `k`, which `TLCGet("-Dk")` reads, as `java -Dk=v` does; `-Dtlc2.tool.impl.Tool.cdot=true` turns on TLC's incomplete action composition `A \cdot B` |
 | `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
 | `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: tpp writes no metadata and has its own fingerprints |
@@ -80,8 +81,8 @@ CHECK_DEADLOCK FALSE
 `CONSTANT D <- [M] Def` or `D = [M] v` a definition `D` of module `M`.
 `SPECIFICATION` takes a
 formula `Init /\ [][Next]_vars /\ Fairness`; its `WF_` and `SF_`
-conjuncts are the fairness assumptions temporal properties are checked
-under.
+conjuncts, and others such as `<>[][A]_vars`, are the fairness assumptions
+temporal properties are checked under.
 
 ## What is checked
 

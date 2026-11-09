@@ -101,12 +101,21 @@ def options(path):
     return shlex.split(found.group(1)) if found else []
 
 
+def place(command, options):
+    """command with options: TLC takes Java's -Dk=v before its class."""
+    if "tlc2.TLC" not in command:
+        return command + options
+    at = command.index("tlc2.TLC")
+    java = [o for o in options if o.startswith("-D")]
+    return command[:at] + java + command[at:] + [o for o in options if o not in java]
+
+
 def run(command, path):
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
         try:
-            done = subprocess.run(command + options(path) + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
+            done = subprocess.run(place(command, options(path)) + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
             output, code = done.stdout, done.returncode
         except subprocess.TimeoutExpired:
