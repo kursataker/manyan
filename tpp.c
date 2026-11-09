@@ -12195,8 +12195,9 @@ static int atom_holds_on(TF *t, int s, Value **next) {
     return v != t->neg;
 }
 
-/* Under symmetry a state's successor is kept as the state found first
-   with its fingerprint, which may be a permutation of it, so an action
+/* Under symmetry or a view a state's successor is kept as the state found
+   first with its fingerprint, which may be a permutation of it or another
+   state with its view, so an action
    is evaluated, as TLC does, on the successors themselves: a state's
    successors, regenerated once, with their fingerprints. */
 typedef struct { int n; Value ***v; uint64_t *fp; } Successors;
@@ -12241,10 +12242,10 @@ static int tnode_admits(int n, int s) {
 }
 
 /* Whether the step from s to `to` can satisfy tableau node n's actions:
-   under symmetry, some step of s to a state with to's fingerprint, or
-   s stuttering, does. */
+   under symmetry or a view, some step of s to a state with to's
+   fingerprint, or s stuttering, does. */
 static int tnode_step(int n, int s, int to) {
-    if (!nsymmetry) {
+    if (!nsymmetry && !view_expr) {
         for (int i = 0; i < tnodes[n].nlits; i++) {
             TF *t = tnodes[n].lits[i];
             if (t->action && !atom_holds(t, s, to)) return 0;
