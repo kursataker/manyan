@@ -12,6 +12,9 @@ cached under `.obj` and the diffs of the models that differ are written to
 `.obj/fullbench.diff`. `ONLY=DieHard` runs the models whose path contains
 DieHard; `MAX_RUNTIME=00:00:30` keeps those recorded to run in 30 seconds.
 
+SpanningTree/SpanTreeRandom draws its graph with `RandomElement` in a
+constant, which TLC draws anew each run, so its output is TLC's of one run.
+
 <!-- results -->
 
 tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run in at most 00:10:00. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
