@@ -1,0 +1,8 @@
+Finished computing initial states: 1 distinct state generated.
+Error: In computing next states, TLC expected a boolean expression,
+but instead found 0.
+line 8, col 23 to line 8, col 23 of module next_not_boolean
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 9 to line 7, col 13 of module next_not_boolean>
+x = 0
+exit 255

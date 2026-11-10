@@ -8166,8 +8166,9 @@ static const char *gen_what(void) {
     return gen_init ? "initial states" : gen_emit == enabled_emit ? "ENABLED" : "next states";
 }
 
+/* A conjunct that is no boolean: TLC's Assert.fail, a TLCRuntimeException. */
 static _Noreturn void not_boolean(Expr *e, Value *v) {
-    fail_at(e, "In computing %s, TLC expected a boolean expression,\nbut instead found %s.", gen_what(), pretty(v));
+    fail_runtime(e, MANYAN_ERROR,"In computing %s, TLC expected a boolean expression,\nbut instead found %s.", gen_what(), pretty(v));
 }
 
 /* A number or string where TLC expects an action. */
