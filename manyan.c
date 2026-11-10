@@ -112,6 +112,16 @@ static void arena_free(Arena *a) {
     a->head = a->spare = NULL;
 }
 
+/* a takes b's chunks: what b made lives on in a. */
+static void arena_join(Arena *a, Arena *b) {
+    Chunk *last = b->head;
+    while (last && last->next) last = last->next;
+    if (last && a->head) last->next = a->head->next, a->head->next = b->head;
+    else if (last) a->head = b->head;
+    free(b->spare);
+    b->head = b->spare = NULL;
+}
+
 static size_t arena_bytes(Arena *a) {
     size_t n = 0;
     for (Chunk *c = a->head; c; c = c->next) n += c->used;
@@ -3724,6 +3734,7 @@ static void check_file_name(Module *m, const char *name) {
 }
 
 static const char *root_text;   /* the root module's file */
+static char *config_text;       /* the configuration file's */
 
 /* Whether line, up to end, is ----* MODULE name ---- as SANY reads one. */
 static int module_marker(const char *line, const char *end, const char *name) {
@@ -3780,6 +3791,7 @@ static Module *load_module(int name, Module *from) {
         exit(MANYAN_ERROR_PARSE);
     }
     m = parse_text(text, path);
+    free(file);
     m->standard = standard;
     check_file_name(m, S(name));
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
@@ -3807,6 +3819,10 @@ static void node_text(Buf *b, Expr *e) {
     else loc_text(b, e);
 }
 
+/* Their texts in the arena, for a message an error may never free. */
+static const char *loc_str(Expr *e) { Buf b = {0}; loc_text(&b, e); return buf_take(&b); }
+static const char *node_str(Expr *e) { Buf b = {0}; node_text(&b, e); return buf_take(&b); }
+
 /* A new line naming e, if it has a location. */
 static void loc_line(Buf *b, Expr *e) {
     if (!e || !e->mod) return;
@@ -3820,9 +3836,7 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    Buf b = {0};
-    loc_text(&b, where);
-    printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", b.s, msg);
+    printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", loc_str(where), msg);
     printf("Error: Parsing or semantic analysis failed.\n");
     exit(MANYAN_ERROR_PARSE);
 }
@@ -3881,6 +3895,8 @@ static void check_outer(Module *m, Def *d) {
     buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
                here.s, S(d->name), there.s);
     file->nwarnings++;
+    free(here.s);
+    free(there.s);
 }
 
 /* SANY's warnings so far, all of them printed as each file's module is
@@ -4733,9 +4749,7 @@ static void check_levels(Expr *e, int max) {
             Bound *b = &e->bounds[i];
             if (op && b->set && expr_level(b->set) > 2) {
                 Expr at = {.mod = e->mod, .l1 = b->line, .c1 = b->col, .l2 = b->line, .c2 = b->col + (int)strlen(S(b->names[0])) - 1};
-                Buf loc = {0};
-                loc_text(&loc, &at);
-                semantic_error(e, "Level error in applying operator %s:\nThe level of the range for the bounded variable %s \nexceeds the maximum level allowed by the operator.", op, loc.s);
+                semantic_error(e, "Level error in applying operator %s:\nThe level of the range for the bounded variable %s \nexceeds the maximum level allowed by the operator.", op, loc_str(&at));
             }
             check_levels(b->set, inner);
         }
@@ -5412,7 +5426,7 @@ static _Noreturn void non_enumerable_bound(Value *s, Expr *bound) {
                    "universally (\\A) or existentially (\\E) quantify over %s, because this would require checking an\n"
                    "infinite number of cases. Note that for a finite set of sequences s, TLC handles s \\subseteq Seq(S).\n"
                    "See https://explain.tlapl.us/seq-unenumerable for additional details.", v);
-    fail("%s", b.s);
+    fail("%s", buf_take(&b));
 }
 
 /* The set a bound ranges over, enumerated. */
@@ -5478,9 +5492,7 @@ typedef struct { Expr *body; int value; Expr *where; } QuantData;
 /* v, the body of the quantifier or CHOOSE e: TLC's error unless boolean. */
 static int expected_bool(Value *v, Expr *e) {
     if (v->kind != V_BOOL) {
-        Buf b = {0};
-        node_text(&b, e);
-        fail("TLC expected a boolean value, but did not find one. %s", b.s);
+        fail("TLC expected a boolean value, but did not find one. %s", node_str(e));
     }
     return (int)v->u.i;
 }
@@ -6187,9 +6199,7 @@ static __attribute__((noinline)) Value *ev_case(Expr *e, Ctx c) {
         if (!e->args[i]) return eval(e->args[i + 1], c);
         Value *v = eval(e->args[i], c);
         if (v->kind != V_BOOL) {
-            Buf b = {0};
-            node_text(&b, e->args[i]);
-            fail("A non-boolean expression (%s) was used as a condition of a CASE. %s", kind_string(v), b.s);
+            fail("A non-boolean expression (%s) was used as a condition of a CASE. %s", kind_string(v), node_str(e->args[i]));
         }
         if (v->u.i) return eval(e->args[i + 1], c);
     }
@@ -6384,7 +6394,7 @@ static Value *table_apply(Value *op, Value **args, int n) {
     }
     Buf b = {0};
     for (int i = 0; i < n; i++) { if (i) buf_puts(&b, ", "); print_value(&b, args[i]); }
-    fail("Attempted to apply operator:\n%s\nto arguments (%s), which is undefined.", pretty(op), b.s ? b.s : "");
+    fail("Attempted to apply operator:\n%s\nto arguments (%s), which is undefined.", pretty(op), buf_take(&b));
 }
 
 static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
@@ -6625,6 +6635,7 @@ Value *manyan_field(Value *r, const char *name) {
 Value *manyan_elements(Value *s) { return is_set(s) && enumerable(s) ? enumerate(s) : NULL; }
 Value *manyan_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
 int manyan_compare(Value *a, Value *b) { return vcmp(a, b); }
+void *manyan_alloc(size_t n) { return alloc(n); }
 
 /* Java's String.format(f, args), each argument a string: %s and %S, with
    flag -, a width and a precision, %b, %h, %n and %%, an argument by its
@@ -7886,9 +7897,7 @@ NATIVE(n_asserterror) {
     if (a) return FALSEV;   /* its arguments evaluated */
     Expr *err = call->args[0];
     if (err->kind != X_STR) {
-        Buf b = {0};
-        node_text(&b, err);
-        fail("In computing AssertError, a non-string expression (%s) was used as the err of an AssertError(err, exp).", b.s);
+        fail("In computing AssertError, a non-string expression (%s) was used as the err of an AssertError(err, exp).", node_str(err));
     }
     if (in_worker) worker_cannot();
     EvalState s = eval_save();
@@ -7996,11 +8005,9 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Exp
     }
     if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s\n", pretty(f), part, pretty(a), wrong);
     /* Computing states, TLC binds the argument itself (Tool.getFcnContext). */
-    Buf b = {0};
-    loc_text(&b, where);
-    if (argno < 0) fail("Attempted to apply a function to an argument not in its domain.\n%s", b.s);
+    if (argno < 0) fail("Attempted to apply a function to an argument not in its domain.\n%s", loc_str(where));
     fail("In applying the function\n%s,\n%s is:\n%s%s%s\n%s", pretty(f), argno || why != 2 ? part : "the argument",
-         pretty(a), why == 3 ? "\n" : "", wrong, b.s);
+         pretty(a), why == 3 ? "\n" : "", wrong, loc_str(where));
 }
 
 /* The variable an expression assigns: v (initial predicate) or v'
@@ -8377,20 +8384,16 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     case X_IF: {
         Value *v = eval(e->args[0], c);
         if (v->kind != V_BOOL) {
-            Buf b = {0};
-            loc_text(&b, e);
             if (gen_emit == enabled_emit)
-                fail("In computing ENABLED, a non-boolean expression(%s) was used as the guard condition of an IF.\n%s", article_kind(v), b.s);
-            fail("In computing %s, a non-boolean expression (%s) was used as the condition of an IF.%s%s", gen_what(), article_kind(v), gen_init ? "\n" : "", b.s);
+                fail("In computing ENABLED, a non-boolean expression(%s) was used as the guard condition of an IF.\n%s", article_kind(v), loc_str(e));
+            fail("In computing %s, a non-boolean expression (%s) was used as the condition of an IF.%s%s", gen_what(), article_kind(v), gen_init ? "\n" : "", loc_str(e));
         }
         return gen(e->args[v->u.i ? 1 : 2], c, k);
     }
     case K_IMPLIES: {
         Value *v = eval(e->args[0], c);
         if (v->kind != V_BOOL && gen_init) {
-            Buf b = {0};
-            loc_text(&b, e);
-            fail("In computing initial states of a predicate of form P => Q, P was %s\n.%s", article_kind(v), b.s);
+            fail("In computing initial states of a predicate of form P => Q, P was %s\n.%s", article_kind(v), loc_str(e));
         }
         if (v->kind != V_BOOL) fail_at(e, "In computing next states of a predicate of the form P => Q, P was\n%s.", article_kind(v));
         return v->u.i ? gen(e->args[1], c, k) : gen_cont(k);
@@ -9480,7 +9483,9 @@ static void print_trace_state(Value **st, Value **next, int level) {
 }
 
 static void print_numbered(int number, int action, Value **st, Value **prev, Value **next) {
-    Buf b = {0};   /* TLC makes the state's text before it prints its number */
+    static Buf b;   /* TLC makes the state's text before it prints its number; an error may end it */
+    b.n = 0;
+    if (b.s) b.s[0] = 0;
     int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr;
     if (!diff && !shown) trace_state_text(&b, st, next, number);
     printf("State %d: ", number);
@@ -9493,7 +9498,6 @@ static void print_numbered(int number, int action, Value **st, Value **prev, Val
                 printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
     }
     printf("%s\n", b.s ? b.s : "");
-    free(b.s);
 }
 
 /* TLC's report of a Java exception, up to its message. */
@@ -10950,7 +10954,7 @@ static int simulate(const ManyanOptions *o) {
     sim_found = (States){0};
     generated = init.n;
     printf("Computed %d initial states...\n", init.n);
-    States in_model = {0};   /* as TLC, the behaviors start in the model */
+    int in_model = 0;   /* as TLC, the behaviors start in the model: those kept first */
     for (int i = 0; i < init.n; i++) {
         Value **st = init.a[i];
         for (int v = 0; v < nvars; v++)
@@ -10968,17 +10972,17 @@ static int simulate(const ManyanOptions *o) {
             return MANYAN_ERROR;
         }
         if (violated) return violated;
-        if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st, -1);
+        if (check_list(constraints, nconstraints, st) < 0) init.a[in_model++] = st;
     }
     if (!init.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
         return MANYAN_ERROR;
     }
-    if (!in_model.n) {
+    if (!in_model) {
         printf("Error: There is no state satisfying the initial state predicate and the state-constraint(s).\n");
         return MANYAN_ERROR;
     }
-    init = in_model;
+    init.n = in_model;
     printf("Finished computing initial states: %d distinct state generated.\n", init.n);
     arena = &perm_arena;
     collect_fairnesses();
@@ -11552,14 +11556,11 @@ static void use_specification(Expr *spec) {
             }
             free(in);
         } else if (expr_level(e) == 2) {
-            Buf b = {0};
-            loc_text(&b, e);
-            config_error("TLC cannot handle this conjunct of the spec:\n%s", b.s);
+            config_error("TLC cannot handle this conjunct of the spec:\n%s", loc_str(e));
         } else if (e->kind == K_ALWAYS && expr_level(e->args[0]) <= 1 && e->args[0]->kind != X_NUM &&
                    e->args[0]->kind != X_STR && e->args[0]->kind != X_LET) {
-            Buf b = {0};   /* []S, S an operator applied with no action: SANY's OpApplNode */
-            loc_text(&b, e->args[0]);
-            printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
+            /* []S, S an operator applied with no action: SANY's OpApplNode */
+            printf("Error: TLC cannot handle the temporal formula %s\n", loc_str(e->args[0]));
             exit(MANYAN_ERROR);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
@@ -11663,9 +11664,7 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
 
 /* A property's part that is an action, not under []. */
 static void action_property(Expr *e, int name) {
-    Buf at = {0};
-    loc_text(&at, e);
-    const char *n = S(name), *l = at.s;
+    const char *n = S(name), *l = loc_str(e);
     const char *level = "is an action-level formula (i.e., it contains no temporal operators). "
                         "Only temporal-level (or state-level) formulas are allowed under PROPERTY or PROPERTIES.";
     const char *book = "Specifying Systems at https://lamport.azurewebsites.net/tla/book.html";
@@ -11716,7 +11715,11 @@ static Value *def_value(Def *d) {
     int due = draw_due, loops = nregions, quiet = reprinting;
     sigjmp_buf *outer = handler, here;
     handler = &here;
-    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; nregions = loops; reprinting = quiet; raise_error(); }
+    if (sigsetjmp(here, 0)) {
+        handler = outer; arena = saved; nregions = loops; reprinting = quiet;
+        arena_join(&perm_arena, &made);
+        raise_error();
+    }
     arena = &made;
     Value *v = def_body(d);
     materialize(v);
@@ -11770,11 +11773,9 @@ static void evaluate_constants(Module *m) {
             handler = NULL;
             /* A constant definition that fails is reported as the model is checked. */
             if (level_bound(c->replacement->body) == 0) continue;
-            Buf b = {0};
-            node_text(&b, error_expr);
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
                          S(c->replacement->name), error_module == 1 ? "" : " - specifically: ",
-                         error_module == 1 ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? b.s : "");
+                         error_module == 1 ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? node_str(error_expr) : "");
         }
         call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
         handler = NULL;
@@ -11792,15 +11793,10 @@ static int check_assumption(Unit *u) {
     if (sigsetjmp(here, 0)) {
         handler = NULL;
         arena = saved;
-        Buf b = {0};
-        loc_text(&b, u->expr);
-        printf("Error: Evaluating assumption %s failed.\n%s", b.s, error_message.s ? error_message.s : "");
-        if (error_expr && error_expr->mod) {
-            Buf l = {0};
-            node_text(&l, error_expr);
-            printf("\n%s", l.s);
-        }
+        printf("Error: Evaluating assumption %s failed.\n%s", loc_str(u->expr), error_message.s ? error_message.s : "");
+        if (error_expr && error_expr->mod) printf("\n%s", node_str(error_expr));
         printf("\n");
+        arena_free(&made);
         return MANYAN_VIOLATION_ASSUMPTION;
     }
     arena = &made;
@@ -11810,9 +11806,7 @@ static int check_assumption(Unit *u) {
     int holds = v->kind == V_BOOL && v->u.i;
     arena_free(&made);
     if (!holds) {
-        Buf b = {0};
-        loc_text(&b, u->expr);
-        printf("Error: Assumption %s is false.\n", b.s);
+        printf("Error: Assumption %s is false.\n", loc_str(u->expr));
         return MANYAN_VIOLATION_ASSUMPTION;
     }
     return 0;
@@ -11885,9 +11879,10 @@ static CtxNames context_names(Module *m) {
                     int op = kind == D_OP || kind == D_FCN || kind == D_RECURSIVE || (kind == D_INST && u->kind == 0);
                     if (pass == 0 ? !op : kind != D_THM) continue;
                     if (u->kind == 0) {
-                        char *name = xmalloc(strlen(S(d->name)) + strlen(e.name) + 2);
-                        sprintf(name, "%s!%s", S(d->name), e.name);
-                        e.name = name;
+                        Buf name = {0};
+                        buf_printf(&name, "%s!%s", S(d->name), e.name);
+                        e.name = S(intern(name.s));
+                        free(name.s);
                     }
                     e.local = u->local;
                     ctx_put(&c, e);
@@ -12431,7 +12426,8 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
             Buf why = {0};
             buf_puts(&why, error_message.s ? error_message.s : "");
             loc_line(&why, error_expr);
-            cannot_handle(e, e->kind == X_FORALL ? why.s : NULL);
+            const char *text = buf_take(&why);
+            cannot_handle(e, e->kind == X_FORALL ? text : NULL);
         }
         for_bindings(e->bounds, e->nb, c, tf_bound_fn, &d);
         eval_restore(es);
@@ -12790,16 +12786,30 @@ static void collect_fairness(Expr *e, Ctx c) {
 
 static int accept_component(int *nodes, int n);
 
+/* The search's arrays, dropped when the next one starts: an evaluation
+   error may end it anywhere. */
+static Arena search_arena;
+
+static int *search_ints(int n, const int *from, int nfrom) {
+    Arena *saved = arena;
+    arena = &search_arena;
+    int *a = alloc_raw(sizeof(int) * (size_t)n);
+    arena = saved;
+    if (nfrom) memcpy(a, from, sizeof(int) * (size_t)nfrom);
+    return a;
+}
+
 /* Tarjan's algorithm over the product nodes reachable from roots whose
    mark equals `mark`; each component goes to accept_component in
    completion order. Returns the first accepted node or -1. */
 /* The product grows as it is explored; the stacks hold at most every node. */
 static void grow_stacks(int **stack, int **cstack, int **cedge, int *cap) {
     if (*cap > npnodes) return;
+    int was = *cap;
     *cap = npnodes * 2 + 16;
-    *stack = xrealloc(*stack, sizeof(int) * (size_t)*cap);
-    *cstack = xrealloc(*cstack, sizeof(int) * (size_t)*cap);
-    *cedge = xrealloc(*cedge, sizeof(int) * (size_t)*cap);
+    *stack = search_ints(*cap, *stack, was);
+    *cstack = search_ints(*cap, *cstack, was);
+    *cedge = search_ints(*cap, *cedge, was);
 }
 
 static int scc_search(int *roots, int nroots, int mark) {
@@ -12840,16 +12850,12 @@ static int scc_search(int *roots, int nroots, int mark) {
                 int start = sp;
                 do start--; while (stack[start] != v);
                 int n = sp - start;
-                int *comp = xmalloc(sizeof(int) * (size_t)n);
-                memcpy(comp, stack + start, sizeof(int) * (size_t)n);
-                for (int i = 0; i < n; i++) pnodes[comp[i]].onstack = 0;
+                for (int i = start; i < sp; i++) pnodes[stack[i]].onstack = 0;
                 sp = start;
-                found = accept_component(comp, n);
-                free(comp);
+                found = accept_component(stack + start, n);   /* a nested search has its own stacks */
             }
         }
     }
-    free(stack); free(cstack); free(cedge);
     return found;
 }
 
@@ -12889,21 +12895,19 @@ static int accept_component(int *nodes, int n) {
         /* Strong fairness: drop the states where the action is enabled and
            look for components among the rest. */
         int mark = f + 1;
-        int *roots = xmalloc(sizeof(int) * (size_t)n);
+        int *roots = search_ints(n, NULL, 0);
         int nroots = 0;
         for (int i = 0; i < n; i++)
             if (!fair_enabled(fr, pnodes[nodes[i]].state)) { pnodes[nodes[i]].mark = mark; roots[nroots++] = nodes[i]; }
         int found = -1;
         if (nroots) {
             /* The outer search is done with these nodes; search them afresh. */
-            int *saved = xmalloc(sizeof(int) * (size_t)nroots);
+            int *saved = search_ints(nroots, NULL, 0);
             for (int i = 0; i < nroots; i++) { saved[i] = pnodes[roots[i]].index; pnodes[roots[i]].index = -1; }
             found = scc_search(roots, nroots, mark);
             for (int i = 0; i < nroots; i++) pnodes[roots[i]].index = saved[i];
-            free(saved);
         }
         for (int i = 0; i < nroots; i++) pnodes[roots[i]].mark = 0;
-        free(roots);
         return found;
     }
     accepted = xmalloc(sizeof(int) * (size_t)n);
@@ -13198,6 +13202,7 @@ static int check_property(TF *negated) {
     live_negated = negated;
     int *r, n = live_roots(negated, &r);
     if (sim_n && tf_tableau(negated)) sim_product();
+    arena_reset(&search_arena);
     if (scc_search(r, n, 0) >= 0) {
         print_counterexample(r, n);
         return 1;
@@ -13552,7 +13557,7 @@ int manyan_check(const ManyanOptions *o) {
         strcpy(config_path, path);
         strcpy(config_path + strlen(config_path) - 4, ".cfg");
     }
-    char *config_text = read_file(config_path);
+    config_text = read_file(config_path);
     if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
     read_config(config_text, 1);
     char *text = read_file(path);
@@ -13689,6 +13694,9 @@ int manyan_check(const ManyanOptions *o) {
 
 #ifndef MANYAN_NO_MAIN
 #include "manyan-std.h"
+#ifdef MANYAN_LEAK_CHECK
+#include <sanitizer/lsan_interface.h>
+#endif
 
 int main(int argc, char **argv) {
     if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }
@@ -13746,6 +13754,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n");
         return MANYAN_ERROR;
     }
-    return manyan_check(&o);
+    int status = manyan_check(&o);
+#ifdef MANYAN_LEAK_CHECK
+    __lsan_do_leak_check();   /* what manyan_check made and returned without is lost */
+#endif
+    return status;
 }
 #endif

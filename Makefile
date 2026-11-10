@@ -12,7 +12,12 @@ ifeq ($(shell uname),Darwin)
 SANITIZERS = undefined
 SANITIZE_ENV = DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib
 else
+# Leaks are checked as manyan_check returns, not at an exit from an error;
+# AddressSanitizer's larger frames need more than 8 MB of stack for 5000
+# nested definitions.
 SANITIZERS = address,undefined
+SANITIZE_DEFS = -DMANYAN_LEAK_CHECK
+SANITIZE_ENV = ulimit -s 65536 && ASAN_OPTIONS=leak_check_at_exit=0
 endif
 PREFIX ?= /usr/local
 OBJDIR = .obj
@@ -94,7 +99,7 @@ $(TLA_JAR):
 
 $(OBJDIR)/manyan-sanitize: $(SRC) $(HDR)
 	mkdir -p $(OBJDIR)
-	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all $(SRC) $(LDLIBS) -o $@
+	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all $(SANITIZE_DEFS) $(SRC) $(LDLIBS) -o $@
 
 sanitize: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/manyan-sanitize --strict

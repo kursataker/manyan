@@ -589,10 +589,9 @@ static ManyanValue *csv_write(ManyanCall *call, ManyanValue **a) {
     ManyanValue *vals = to_tuple(a[1]);
     if (!vals) manyan_fail(call, "The argument of CSVWrite should be a sequence, but instead it is:\n%s", manyan_print(a[1]));
     size_t n = manyan_size(vals);
-    const char **args = calloc(n + 1, sizeof *args);
+    const char **args = manyan_alloc(sizeof *args * (n + 1));
     for (size_t i = 0; i < n; i++) args[i] = manyan_to_string(manyan_value(vals, i));
     ManyanValue *line = manyan_format(call, manyan_string_value(a[0], NULL), n, args);
-    free(args);
     append_line(call, a[2], manyan_string_value(line, NULL));
     return manyan_bool(1);
 }
@@ -760,7 +759,7 @@ static double gamma_q(double a, double x) {   /* x >= a + 1: its continued fract
 
 /* A function's values, each an integer, in order, as TLC casts them. */
 static double *counts(ManyanCall *call, ManyanValue *f) {
-    double *v = calloc(manyan_size(f) + 1, sizeof *v);
+    double *v = manyan_alloc(sizeof *v * (manyan_size(f) + 1));
     for (size_t i = 0; i < manyan_size(f); i++) {
         ManyanValue *x = manyan_value(f, i);
         if (manyan_kind(x) != MANYAN_INT)
@@ -787,12 +786,12 @@ static ManyanValue *chi_square(ManyanCall *call, ManyanValue **a) {
     while (*s && (unsigned char)*s <= ' ') s++;
     size_t len = strlen(s);
     while (len && (unsigned char)s[len - 1] <= ' ') len--;
-    char *text = strndup(s, len), *end;
+    char *text = manyan_alloc(len + 1), *end;
+    memcpy(text, s, len);
     double alpha = strtod(text, &end);
     if (end > text && strchr("fFdD", *end) && *end) end++;
     int number = end > text && !*end && (isdigit((unsigned char)*text) || strchr("+-.", *text) || !strncmp(text, "NaN", 3) || !strncmp(text, "Infinity", 8));
     if (!number) manyan_throw(call, len ? "For input string: \"%s\"" : "empty String", text);
-    free(text);
     if (alpha <= 0 || alpha > 0.5) manyan_throw(call, "out of bounds significance level %s, must be between 0 and 0.5", java_number(alpha));
     double shape = ((double)n - 1) / 2;
     if (shape <= 0) manyan_throw(call, "shape (%s)", java_number(shape));
@@ -805,7 +804,6 @@ static ManyanValue *chi_square(ManyanCall *call, ManyanValue **a) {
     for (size_t i = 0; i < n; i++) sum_e += e[i], sum_o += o[i];
     if (fabs(sum_e - sum_o) > 1e-5) ratio = sum_o / sum_e;
     for (size_t i = 0; i < n; i++) chi += (o[i] - ratio * e[i]) * (o[i] - ratio * e[i]) / (ratio * e[i]);
-    free(e), free(o);
     double p = 1 - (chi <= 0 ? 0 : gamma_p(shape, chi / 2));
     return manyan_bool(!(p < alpha));
 }
