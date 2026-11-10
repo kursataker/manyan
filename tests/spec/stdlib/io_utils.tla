@@ -3,7 +3,7 @@
 \* IOEnv is the environment, atoi reads a number, IOExec and IOEnvExec run
 \* a command. Found by tlaplus/Examples' TestGraphs.
 EXTENDS IOUtils, TLC
-ASSUME PrintT("TPP_NO_SUCH_VARIABLE" \in DOMAIN IOEnv)
+ASSUME PrintT("MANYAN_NO_SUCH_VARIABLE" \in DOMAIN IOEnv)
 ASSUME PrintT(<<atoi("42"), atoi("-17"), atoi("+3")>>)
 ASSUME PrintT(IOExec(<<"echo", "out">>))
 ASSUME PrintT(IOExec(<<"sh", "-c", "echo err >&2; exit 3">>))

@@ -1,9 +1,9 @@
-/* tpp-std: the operators TLC computes in Java for its modules and for
-   CommunityModules', written on tpp.h's native operators. Each is TLC's
+/* manyan-std: the operators TLC computes in Java for its modules and for
+   CommunityModules', written on manyan.h's native operators. Each is TLC's
    Java, error messages included (docs/std.md). */
 #define _DEFAULT_SOURCE
 #define _DARWIN_C_SOURCE
-#include "tpp-std.h"
+#include "manyan-std.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -23,36 +23,36 @@
 #define J_EVAL "tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context," \
                "tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel"
 
-static TPPValue *str(const char *s) { return tpp_string(s, strlen(s)); }
+static ManyanValue *str(const char *s) { return manyan_string(s, strlen(s)); }
 
 /* A function whose keys are strings, as <<>> is: a record. */
-static int is_record(TPPValue *v) {
-    if (tpp_kind(v) != TPP_FUNCTION && tpp_kind(v) != TPP_TUPLE) return 0;
-    for (size_t i = 0; i < tpp_size(v); i++) if (tpp_kind(tpp_key(v, i)) != TPP_STRING) return 0;
+static int is_record(ManyanValue *v) {
+    if (manyan_kind(v) != MANYAN_FUNCTION && manyan_kind(v) != MANYAN_TUPLE) return 0;
+    for (size_t i = 0; i < manyan_size(v); i++) if (manyan_kind(manyan_key(v, i)) != MANYAN_STRING) return 0;
     return 1;
 }
 
 /* A function on 1..n as the tuple it is, as TLC's toTuple; NULL for another value. */
-static TPPValue *to_tuple(TPPValue *v) {
-    if (tpp_kind(v) == TPP_TUPLE) return v;
-    if (tpp_kind(v) != TPP_FUNCTION) return NULL;
-    size_t n = tpp_size(v);
+static ManyanValue *to_tuple(ManyanValue *v) {
+    if (manyan_kind(v) == MANYAN_TUPLE) return v;
+    if (manyan_kind(v) != MANYAN_FUNCTION) return NULL;
+    size_t n = manyan_size(v);
     for (size_t i = 0; i < n; i++)
-        if (tpp_kind(tpp_key(v, i)) != TPP_INT || tpp_int_value(tpp_key(v, i)) != (int64_t)i + 1) return NULL;
-    TPPValue **elems = calloc(n + 1, sizeof *elems);
-    for (size_t i = 0; i < n; i++) elems[i] = tpp_value(v, i);
-    TPPValue *t = tpp_tuple(n, elems);
+        if (manyan_kind(manyan_key(v, i)) != MANYAN_INT || manyan_int_value(manyan_key(v, i)) != (int64_t)i + 1) return NULL;
+    ManyanValue **elems = calloc(n + 1, sizeof *elems);
+    for (size_t i = 0; i < n; i++) elems[i] = manyan_value(v, i);
+    ManyanValue *t = manyan_tuple(n, elems);
     free(elems);
     return t;
 }
 
 /* A growing array of values. */
-typedef struct { TPPValue **v; size_t n, cap; } Values;
+typedef struct { ManyanValue **v; size_t n, cap; } Values;
 
-static void add(Values *l, TPPValue *v) {
+static void add(Values *l, ManyanValue *v) {
     if (l->n == l->cap) {
         l->cap = l->cap ? 2 * l->cap : 8;
-        l->v = realloc(l->v, sizeof(TPPValue *) * l->cap);
+        l->v = realloc(l->v, sizeof(ManyanValue *) * l->cap);
         if (!l->v) abort();
     }
     l->v[l->n++] = v;
@@ -62,62 +62,62 @@ static void add(Values *l, TPPValue *v) {
 
 extern char **environ;
 
-static TPPValue *io_env(TPPCall *call, TPPValue **a) {
+static ManyanValue *io_env(ManyanCall *call, ManyanValue **a) {
     (void)call, (void)a;
     Values names = {0}, values = {0};
     for (char **e = environ; *e; e++) {
         const char *eq = strchr(*e, '=');
         if (!eq) continue;
-        add(&names, tpp_string(*e, (size_t)(eq - *e)));
+        add(&names, manyan_string(*e, (size_t)(eq - *e)));
         add(&values, str(eq + 1));
     }
-    TPPValue *r = tpp_record(names.n, names.v, values.v);
+    ManyanValue *r = manyan_record(names.n, names.v, values.v);
     free(names.v), free(values.v);
     return r;
 }
 
-static TPPValue *atoi_(TPPCall *call, TPPValue **a) {
-    if (tpp_kind(a[0]) == TPP_STRING) {   /* Java's Integer.parseInt */
-        const char *t = tpp_string_value(a[0], NULL), *d = t + (*t == '-' || *t == '+');
+static ManyanValue *atoi_(ManyanCall *call, ManyanValue **a) {
+    if (manyan_kind(a[0]) == MANYAN_STRING) {   /* Java's Integer.parseInt */
+        const char *t = manyan_string_value(a[0], NULL), *d = t + (*t == '-' || *t == '+');
         char *end;
         errno = 0;
         long long i = *d >= '0' && *d <= '9' ? strtoll(t, &end, 10) : 0;
-        if (*d >= '0' && *d <= '9' && !*end && !errno && i >= INT32_MIN && i <= INT32_MAX) return tpp_int(i);
+        if (*d >= '0' && *d <= '9' && !*end && !errno && i >= INT32_MIN && i <= INT32_MAX) return manyan_int(i);
     }
-    tpp_fail(call, "The argument of atoi should be a string, but instead it is:\n%s", tpp_print(a[0]));
+    manyan_fail(call, "The argument of atoi should be a string, but instead it is:\n%s", manyan_print(a[0]));
 }
 
 /* The command's words, each a string, as IOExec takes them. */
-static char **command_words(TPPCall *call, TPPValue *v, const char *op) {
-    if (tpp_kind(v) != TPP_TUPLE) tpp_fail(call, "The argument of %s should be a sequence, but instead it is:\n%s", op, tpp_print(v));
-    for (size_t i = 0; i < tpp_size(v); i++)
-        if (tpp_kind(tpp_value(v, i)) != TPP_STRING)
-            tpp_fail(call, "The argument of IOExec should be a sequence, but instead it is:\n%s", tpp_print(tpp_value(v, i)));
-    char **argv = calloc(tpp_size(v) + 1, sizeof(char *));
-    for (size_t i = 0; i < tpp_size(v); i++) argv[i] = (char *)tpp_string_value(tpp_value(v, i), NULL);
+static char **command_words(ManyanCall *call, ManyanValue *v, const char *op) {
+    if (manyan_kind(v) != MANYAN_TUPLE) manyan_fail(call, "The argument of %s should be a sequence, but instead it is:\n%s", op, manyan_print(v));
+    for (size_t i = 0; i < manyan_size(v); i++)
+        if (manyan_kind(manyan_value(v, i)) != MANYAN_STRING)
+            manyan_fail(call, "The argument of IOExec should be a sequence, but instead it is:\n%s", manyan_print(manyan_value(v, i)));
+    char **argv = calloc(manyan_size(v) + 1, sizeof(char *));
+    for (size_t i = 0; i < manyan_size(v); i++) argv[i] = (char *)manyan_string_value(manyan_value(v, i), NULL);
     return argv;
 }
 
 /* What IOExec and Serialize give: [exitValue, stdout, stderr]. */
-static TPPValue *exec_record(int64_t code, const char *out, size_t nout, const char *err) {
-    TPPValue *keys[] = {str("exitValue"), str("stdout"), str("stderr")};
-    TPPValue *vals[] = {tpp_int(code), tpp_string(out, nout), str(err)};
-    return tpp_record(3, keys, vals);
+static ManyanValue *exec_record(int64_t code, const char *out, size_t nout, const char *err) {
+    ManyanValue *keys[] = {str("exitValue"), str("stdout"), str("stderr")};
+    ManyanValue *vals[] = {manyan_int(code), manyan_string(out, nout), str(err)};
+    return manyan_record(3, keys, vals);
 }
 
 /* Runs argv with env's variables added, its standard input empty. */
-static TPPValue *run_process(TPPCall *call, char **argv, TPPValue *env) {
+static ManyanValue *run_process(ManyanCall *call, char **argv, ManyanValue *env) {
     int out[2], err[2];
     fflush(stdout);
-    if (pipe(out) || pipe(err)) tpp_fail(call, "Cannot run program \"%s\": %s", argv[0], strerror(errno));
+    if (pipe(out) || pipe(err)) manyan_fail(call, "Cannot run program \"%s\": %s", argv[0], strerror(errno));
     pid_t pid = fork();
     if (pid == 0) {
         int in = open("/dev/null", O_RDONLY);
         dup2(in, 0), dup2(out[1], 1), dup2(err[1], 2);
         close(out[0]), close(err[0]);
-        for (size_t i = 0; env && i < tpp_size(env); i++) {
-            TPPValue *v = tpp_value(env, i);
-            setenv(tpp_string_value(tpp_key(env, i), NULL), tpp_kind(v) == TPP_STRING ? tpp_string_value(v, NULL) : tpp_print(v), 1);
+        for (size_t i = 0; env && i < manyan_size(env); i++) {
+            ManyanValue *v = manyan_value(env, i);
+            setenv(manyan_string_value(manyan_key(env, i), NULL), manyan_kind(v) == MANYAN_STRING ? manyan_string_value(v, NULL) : manyan_print(v), 1);
         }
         execvp(argv[0], argv);
         _exit(127);
@@ -141,44 +141,44 @@ static TPPValue *run_process(TPPCall *call, char **argv, TPPValue *env) {
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    TPPValue *r = exec_record(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status),
+    ManyanValue *r = exec_record(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status),
                               text[0] ? text[0] : "", len[0], text[1] ? text[1] : "");
     free(text[0]), free(text[1]);
     return r;
 }
 
-static TPPValue *io_exec(TPPCall *call, TPPValue **a) { return run_process(call, command_words(call, a[0], "IOExec"), NULL); }
+static ManyanValue *io_exec(ManyanCall *call, ManyanValue **a) { return run_process(call, command_words(call, a[0], "IOExec"), NULL); }
 
-static TPPValue *io_env_exec(TPPCall *call, TPPValue **a) {
-    if (!is_record(a[0])) tpp_fail(call, "The argument of IOEnvExec should be a record, but instead it is:\n%s", tpp_print(a[0]));
+static ManyanValue *io_env_exec(ManyanCall *call, ManyanValue **a) {
+    if (!is_record(a[0])) manyan_fail(call, "The argument of IOEnvExec should be a record, but instead it is:\n%s", manyan_print(a[0]));
     return run_process(call, command_words(call, a[1], "IOEnvExec"), a[0]);
 }
 
 /* Serialize(payload, file, [format |-> "TXT", charset |-> ..., openOptions |-> ...])
    writes the string payload to file, with Java's StandardOpenOptions; TLC
    leaves another format to the definition. */
-static TPPValue *serialize(TPPCall *call, TPPValue **a) {
+static ManyanValue *serialize(ManyanCall *call, ManyanValue **a) {
     (void)a;
-    TPPValue *opts = tpp_arg(call, 2), *format = tpp_field(opts, "format");
-    if (!format || tpp_kind(format) != TPP_STRING || strcmp(tpp_string_value(format, NULL), "TXT")) return NULL;
-    TPPValue *payload = tpp_arg(call, 0), *file = tpp_arg(call, 1);
-    TPPValue *options = tpp_field(opts, "openOptions"), *charset = tpp_field(opts, "charset");
-    int ok = tpp_kind(payload) == TPP_STRING && tpp_kind(file) == TPP_STRING && options && tpp_kind(options) == TPP_TUPLE
-          && charset && tpp_kind(charset) == TPP_STRING;
-    int flags = ok && tpp_size(options) ? 0 : O_WRONLY | O_CREAT | O_TRUNC;
+    ManyanValue *opts = manyan_arg(call, 2), *format = manyan_field(opts, "format");
+    if (!format || manyan_kind(format) != MANYAN_STRING || strcmp(manyan_string_value(format, NULL), "TXT")) return NULL;
+    ManyanValue *payload = manyan_arg(call, 0), *file = manyan_arg(call, 1);
+    ManyanValue *options = manyan_field(opts, "openOptions"), *charset = manyan_field(opts, "charset");
+    int ok = manyan_kind(payload) == MANYAN_STRING && manyan_kind(file) == MANYAN_STRING && options && manyan_kind(options) == MANYAN_TUPLE
+          && charset && manyan_kind(charset) == MANYAN_STRING;
+    int flags = ok && manyan_size(options) ? 0 : O_WRONLY | O_CREAT | O_TRUNC;
     static const struct { const char *name; int flags; } open_options[] = {
         {"READ", 0}, {"WRITE", O_WRONLY}, {"APPEND", O_WRONLY | O_APPEND}, {"TRUNCATE_EXISTING", O_TRUNC},
         {"CREATE", O_CREAT}, {"CREATE_NEW", O_CREAT | O_EXCL}, {"DSYNC", O_DSYNC}, {"SYNC", O_SYNC}, {NULL, 0}};
-    for (size_t i = 0; ok && i < tpp_size(options); i++) {
-        TPPValue *o = tpp_value(options, i);
+    for (size_t i = 0; ok && i < manyan_size(options); i++) {
+        ManyanValue *o = manyan_value(options, i);
         int k = 0;
-        while (open_options[k].name && (tpp_kind(o) != TPP_STRING || strcmp(open_options[k].name, tpp_string_value(o, NULL)))) k++;
+        while (open_options[k].name && (manyan_kind(o) != MANYAN_STRING || strcmp(open_options[k].name, manyan_string_value(o, NULL)))) k++;
         ok = open_options[k].name != NULL;
         flags |= ok ? open_options[k].flags : 0;
     }
     if (!ok) return exec_record(1, "", 0, "Serialize error invalid parameters");
     size_t n;
-    const char *text = tpp_string_value(payload, &n), *path = tpp_string_value(file, NULL);
+    const char *text = manyan_string_value(payload, &n), *path = manyan_string_value(file, NULL);
     int fd = open(path, flags, 0644);
     int written = fd >= 0 && write(fd, text, n) == (ssize_t)n, err = errno;
     if (fd >= 0) close(fd);
@@ -191,12 +191,12 @@ static TPPValue *serialize(TPPCall *call, TPPValue **a) {
 /* ---------------------------------------------------------------- SequencesExt */
 
 /* A finite set's elements in order. */
-static TPPValue *set_to_seq(TPPCall *call, TPPValue **a) {
-    TPPValue *s = tpp_elements(a[0]);
-    if (!s) tpp_fail(call, "Attempted to enumerate a set that is not enumerable:\n%s", tpp_print(a[0]));
+static ManyanValue *set_to_seq(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *s = manyan_elements(a[0]);
+    if (!s) manyan_fail(call, "Attempted to enumerate a set that is not enumerable:\n%s", manyan_print(a[0]));
     Values l = {0};
-    for (size_t i = 0; i < tpp_size(s); i++) add(&l, tpp_element(s, i));
-    TPPValue *t = tpp_tuple(l.n, l.v);
+    for (size_t i = 0; i < manyan_size(s); i++) add(&l, manyan_element(s, i));
+    ManyanValue *t = manyan_tuple(l.n, l.v);
     free(l.v);
     return t;
 }
@@ -213,35 +213,35 @@ static void put(Text *t, const char *s, size_t n) {
 }
 static void puts_(Text *t, const char *s) { put(t, s, strlen(s)); }
 
-static void svg_markup(TPPCall *call, Text *t, TPPValue *elem) {
-    TPPValue *name = tpp_field(elem, "name"), *attrs = tpp_field(elem, "attrs");
-    TPPValue *children = tpp_field(elem, "children"), *text = tpp_field(elem, "innerText");
-    if (!name || tpp_kind(name) != TPP_STRING || !attrs || !children || !text || tpp_kind(text) != TPP_STRING
-        || (tpp_kind(attrs) != TPP_FUNCTION && tpp_kind(attrs) != TPP_TUPLE)
-        || (tpp_kind(children) != TPP_FUNCTION && tpp_kind(children) != TPP_TUPLE))
-        tpp_fail(call, "An SVG element must be a record of name, attrs, children and innerText:\n%s", tpp_print(elem));
-    puts_(t, "<"), puts_(t, tpp_string_value(name, NULL));
-    for (size_t i = 0; tpp_kind(attrs) == TPP_FUNCTION && i < tpp_size(attrs); i++) {
-        TPPValue *k = tpp_key(attrs, i), *v = tpp_value(attrs, i);
-        if (tpp_kind(k) != TPP_STRING || tpp_kind(v) != TPP_STRING) tpp_fail(call, "An SVG attribute must be a string:\n%s", tpp_print(attrs));
+static void svg_markup(ManyanCall *call, Text *t, ManyanValue *elem) {
+    ManyanValue *name = manyan_field(elem, "name"), *attrs = manyan_field(elem, "attrs");
+    ManyanValue *children = manyan_field(elem, "children"), *text = manyan_field(elem, "innerText");
+    if (!name || manyan_kind(name) != MANYAN_STRING || !attrs || !children || !text || manyan_kind(text) != MANYAN_STRING
+        || (manyan_kind(attrs) != MANYAN_FUNCTION && manyan_kind(attrs) != MANYAN_TUPLE)
+        || (manyan_kind(children) != MANYAN_FUNCTION && manyan_kind(children) != MANYAN_TUPLE))
+        manyan_fail(call, "An SVG element must be a record of name, attrs, children and innerText:\n%s", manyan_print(elem));
+    puts_(t, "<"), puts_(t, manyan_string_value(name, NULL));
+    for (size_t i = 0; manyan_kind(attrs) == MANYAN_FUNCTION && i < manyan_size(attrs); i++) {
+        ManyanValue *k = manyan_key(attrs, i), *v = manyan_value(attrs, i);
+        if (manyan_kind(k) != MANYAN_STRING || manyan_kind(v) != MANYAN_STRING) manyan_fail(call, "An SVG attribute must be a string:\n%s", manyan_print(attrs));
         puts_(t, " ");
-        for (const char *c = tpp_string_value(k, NULL); *c; c++) put(t, *c == '_' ? "-" : c, 1);
-        puts_(t, "='"), puts_(t, tpp_string_value(v, NULL)), puts_(t, "'");
+        for (const char *c = manyan_string_value(k, NULL); *c; c++) put(t, *c == '_' ? "-" : c, 1);
+        puts_(t, "='"), puts_(t, manyan_string_value(v, NULL)), puts_(t, "'");
     }
     puts_(t, ">");
-    for (const char *c = tpp_string_value(text, NULL); *c; c++) {   /* a tuple <<1, 2>> in the text */
+    for (const char *c = manyan_string_value(text, NULL); *c; c++) {   /* a tuple <<1, 2>> in the text */
         if (!strncmp(c, "<<", 2)) puts_(t, "&lt;&lt;"), c++;
         else if (!strncmp(c, ">>", 2)) puts_(t, "&gt;&gt;"), c++;
         else put(t, c, 1);
     }
-    for (size_t i = 0; i < tpp_size(children); i++) svg_markup(call, t, tpp_value(children, i));
-    puts_(t, "</"), puts_(t, tpp_string_value(name, NULL)), puts_(t, ">");
+    for (size_t i = 0; i < manyan_size(children); i++) svg_markup(call, t, manyan_value(children, i));
+    puts_(t, "</"), puts_(t, manyan_string_value(name, NULL)), puts_(t, ">");
 }
 
-static TPPValue *svg_elem_to_string(TPPCall *call, TPPValue **a) {
+static ManyanValue *svg_elem_to_string(ManyanCall *call, ManyanValue **a) {
     Text t = {0};
     svg_markup(call, &t, a[0]);
-    TPPValue *v = tpp_string(t.s ? t.s : "", t.n);
+    ManyanValue *v = manyan_string(t.s ? t.s : "", t.n);
     free(t.s);
     return v;
 }
@@ -250,13 +250,13 @@ static TPPValue *svg_elem_to_string(TPPCall *call, TPPValue **a) {
 static int64_t java_d2i(double d) { return d != d ? 0 : d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : (int64_t)d; }
 
 /* NodeOfRingNetwork(cx, cy, r, n, m): node n's place on a ring of m about (cx, cy). */
-static TPPValue *ring_network(TPPCall *call, TPPValue **a) {
+static ManyanValue *ring_network(ManyanCall *call, ManyanValue **a) {
     (void)call;
-    double angle = 6.283185307179586 / (double)tpp_int_value(a[4]) * (double)tpp_int_value(a[3]), r = (double)tpp_int_value(a[2]);
-    TPPValue *names[] = {str("x"), str("y")};
-    TPPValue *at[] = {tpp_int(java_d2i((double)tpp_int_value(a[0]) + r * cos(angle))),
-                      tpp_int(java_d2i((double)tpp_int_value(a[1]) + r * sin(angle)))};
-    return tpp_record(2, names, at);
+    double angle = 6.283185307179586 / (double)manyan_int_value(a[4]) * (double)manyan_int_value(a[3]), r = (double)manyan_int_value(a[2]);
+    ManyanValue *names[] = {str("x"), str("y")};
+    ManyanValue *at[] = {manyan_int(java_d2i((double)manyan_int_value(a[0]) + r * cos(angle))),
+                      manyan_int(java_d2i((double)manyan_int_value(a[1]) + r * sin(angle)))};
+    return manyan_record(2, names, at);
 }
 
 /* ---------------------------------------------------------------- Json */
@@ -264,12 +264,12 @@ static TPPValue *ring_network(TPPCall *call, TPPValue **a) {
 /* JSON text as Json's getValue makes it a value: an array a tuple, an
    object a record, a number Gson's getAsInt, true, false and strings
    themselves; null is no value. */
-typedef struct { TPPCall *call; const char *p, *end; } Json;
+typedef struct { ManyanCall *call; const char *p, *end; } Json;
 
 static void json_space(Json *j) { while (j->p < j->end && strchr(" \t\r\n", *j->p)) j->p++; }
 
 static _Noreturn void json_bad(Json *j) {
-    tpp_throw(j->call, "com.google.gson.JsonSyntaxException: malformed JSON at %.20s", j->p < j->end ? j->p : "end of input");
+    manyan_throw(j->call, "com.google.gson.JsonSyntaxException: malformed JSON at %.20s", j->p < j->end ? j->p : "end of input");
 }
 
 static void json_expect(Json *j, char c) {
@@ -301,7 +301,7 @@ static unsigned json_hex4(Json *j) {
     return u;
 }
 
-static TPPValue *json_string(Json *j) {
+static ManyanValue *json_string(Json *j) {
     json_expect(j, '"');
     Text t = {0};
     put(&t, "", 0);
@@ -330,12 +330,12 @@ static TPPValue *json_string(Json *j) {
     }
     if (j->p == j->end) json_bad(j);
     j->p++;
-    TPPValue *v = tpp_string(t.s, t.n);
+    ManyanValue *v = manyan_string(t.s, t.n);
     free(t.s);
     return v;
 }
 
-static TPPValue *json_value(Json *j) {
+static ManyanValue *json_value(Json *j) {
     json_space(j);
     if (j->p == j->end) json_bad(j);
     if (*j->p == '"') return json_string(j);
@@ -346,10 +346,10 @@ static TPPValue *json_value(Json *j) {
         if (j->p < j->end && *j->p == (object ? '}' : ']')) j->p++;
         else for (;;) {
             if (object) {   /* Gson keeps a key's last value */
-                TPPValue *k = json_string(j);
+                ManyanValue *k = json_string(j);
                 json_expect(j, ':');
                 size_t i = 0;
-                while (i < keys.n && tpp_compare(keys.v[i], k)) i++;
+                while (i < keys.n && manyan_compare(keys.v[i], k)) i++;
                 if (i == keys.n) add(&keys, k), add(&values, NULL);
                 values.v[i] = json_value(j);
             } else {
@@ -360,17 +360,17 @@ static TPPValue *json_value(Json *j) {
             json_expect(j, object ? '}' : ']');
             break;
         }
-        TPPValue *v = object ? tpp_record(keys.n, keys.v, values.v) : tpp_tuple(values.n, values.v);
+        ManyanValue *v = object ? manyan_record(keys.n, keys.v, values.v) : manyan_tuple(values.n, values.v);
         free(keys.v), free(values.v);
         return v;
     }
     const char *word = j->p;
     while (j->p < j->end && !strchr(" \t\r\n,]}", *j->p)) j->p++;
     size_t n = (size_t)(j->p - word);
-    if (n == 4 && !strncmp(word, "true", 4)) return tpp_bool(1);
-    if (n == 5 && !strncmp(word, "false", 5)) return tpp_bool(0);
+    if (n == 4 && !strncmp(word, "true", 4)) return manyan_bool(1);
+    if (n == 5 && !strncmp(word, "false", 5)) return manyan_bool(0);
     if (n == 4 && !strncmp(word, "null", 4))
-        tpp_throw(j->call, "java.io.IOException: Cannot convert value: unsupported JSON value null");
+        manyan_throw(j->call, "java.io.IOException: Cannot convert value: unsupported JSON value null");
     char number[64], *end;
     if (n == 0 || n >= sizeof number) json_bad(j);
     memcpy(number, word, n), number[n] = 0;
@@ -381,14 +381,14 @@ static TPPValue *json_value(Json *j) {
         if (*end) { j->p = word; json_bad(j); }
         i = d >= 9.2e18 || d <= -9.2e18 ? 0 : (long long)d;
     }
-    return tpp_int((int32_t)(uint32_t)(unsigned long long)i);
+    return manyan_int((int32_t)(uint32_t)(unsigned long long)i);
 }
 
 /* The file at path, or TLC's error that it cannot be read. */
-static char *json_file(TPPCall *call, TPPValue *path, size_t *n) {
-    const char *name = tpp_string_value(path, NULL);
+static char *json_file(ManyanCall *call, ManyanValue *path, size_t *n) {
+    const char *name = manyan_string_value(path, NULL);
     FILE *f = fopen(name, "rb");
-    if (!f) tpp_throw(call, "%s (%s)", name, strerror(errno));
+    if (!f) manyan_throw(call, "%s (%s)", name, strerror(errno));
     Text t = {0};
     put(&t, "", 0);
     char chunk[1 << 16];
@@ -398,11 +398,11 @@ static char *json_file(TPPCall *call, TPPValue *path, size_t *n) {
     return t.s;
 }
 
-static TPPValue *json_deserialize(TPPCall *call, TPPValue **a) {
+static ManyanValue *json_deserialize(ManyanCall *call, ManyanValue **a) {
     size_t n;
     char *text = json_file(call, a[0], &n);
     Json j = {call, text, text + n};
-    TPPValue *v = json_value(&j);
+    ManyanValue *v = json_value(&j);
     json_space(&j);
     if (j.p != j.end) json_bad(&j);
     free(text);
@@ -410,7 +410,7 @@ static TPPValue *json_deserialize(TPPCall *call, TPPValue **a) {
 }
 
 /* Each line not blank a value: ndJSON. */
-static TPPValue *nd_json_deserialize(TPPCall *call, TPPValue **a) {
+static ManyanValue *nd_json_deserialize(ManyanCall *call, ManyanValue **a) {
     size_t n;
     char *text = json_file(call, a[0], &n);
     Values lines = {0};
@@ -425,32 +425,32 @@ static TPPValue *nd_json_deserialize(TPPCall *call, TPPValue **a) {
         }
         p = eol ? eol + 1 : end;
     }
-    TPPValue *v = tpp_tuple(lines.n, lines.v);
+    ManyanValue *v = manyan_tuple(lines.n, lines.v);
     free(lines.v), free(text);
     return v;
 }
 
 /* ---------------------------------------------------------------- Graphs, UndirectedGraphs */
 
-static TPPValue *graph_set(TPPValue *g, const char *field) {
-    TPPValue *v = tpp_field(g, field);
-    return v ? tpp_elements(v) : NULL;
+static ManyanValue *graph_set(ManyanValue *g, const char *field) {
+    ManyanValue *v = manyan_field(g, field);
+    return v ? manyan_elements(v) : NULL;
 }
 
 /* G's nodes and edges, enumerated, if G is a graph record; else the error
    TLC gives for argument POS of OP, a KIND. */
-static void to_graph(TPPCall *call, const char *op, const char *pos, const char *kind, TPPValue *g,
-                     TPPValue **nodes, TPPValue **edges) {
+static void to_graph(ManyanCall *call, const char *op, const char *pos, const char *kind, ManyanValue *g,
+                     ManyanValue **nodes, ManyanValue **edges) {
     const char *bad = !is_record(g) ? "record with a node and an edge field"
                     : !(*nodes = graph_set(g, "node")) ? "record whose node field is a set"
                     : !(*edges = graph_set(g, "edge")) ? "record whose edge field is a set" : NULL;
-    if (bad) tpp_fail(call, "The %s argument of %s should be a %s %s, but instead it is:\n%s", pos, op, kind, bad, tpp_print(g));
+    if (bad) manyan_fail(call, "The %s argument of %s should be a %s %s, but instead it is:\n%s", pos, op, kind, bad, manyan_print(g));
 }
 
-static long position(TPPValue *set, TPPValue *v) {
-    for (long lo = 0, hi = (long)tpp_size(set) - 1; lo <= hi;) {
+static long position(ManyanValue *set, ManyanValue *v) {
+    for (long lo = 0, hi = (long)manyan_size(set) - 1; lo <= hi;) {
         long m = (lo + hi) / 2;
-        int c = tpp_compare(tpp_element(set, (size_t)m), v);
+        int c = manyan_compare(manyan_element(set, (size_t)m), v);
         if (!c) return m;
         if (c < 0) lo = m + 1; else hi = m - 1;
     }
@@ -464,22 +464,22 @@ static size_t root(size_t *parent, size_t i) {
 
 /* The components as TLC's union-find finds them: an edge is a set of one
    or two nodes, and other edges, or those leaving the nodes, join nothing. */
-static TPPValue *connected_components(TPPCall *call, TPPValue **a) {
-    TPPValue *nodes, *edges;
+static ManyanValue *connected_components(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *nodes, *edges;
     to_graph(call, "ConnectedComponents", "first", "undirected graph", a[0], &nodes, &edges);
-    size_t n = tpp_size(nodes), *parent = malloc(sizeof(size_t) * (n + 1));
+    size_t n = manyan_size(nodes), *parent = malloc(sizeof(size_t) * (n + 1));
     for (size_t i = 0; i < n; i++) parent[i] = i;
-    for (size_t k = 0; k < tpp_size(edges); k++) {
-        TPPValue *e = tpp_elements(tpp_element(edges, k));
-        if (!e || tpp_size(e) == 0 || tpp_size(e) > 2) continue;
-        long i = position(nodes, tpp_element(e, 0)), j = position(nodes, tpp_element(e, tpp_size(e) - 1));
+    for (size_t k = 0; k < manyan_size(edges); k++) {
+        ManyanValue *e = manyan_elements(manyan_element(edges, k));
+        if (!e || manyan_size(e) == 0 || manyan_size(e) > 2) continue;
+        long i = position(nodes, manyan_element(e, 0)), j = position(nodes, manyan_element(e, manyan_size(e) - 1));
         if (i >= 0 && j >= 0) parent[root(parent, (size_t)j)] = root(parent, (size_t)i);
     }
     Values *members = calloc(n + 1, sizeof(Values)), out = {0};
-    for (size_t i = 0; i < n; i++) add(&members[root(parent, i)], tpp_element(nodes, i));
+    for (size_t i = 0; i < n; i++) add(&members[root(parent, i)], manyan_element(nodes, i));
     for (size_t i = 0; i < n; i++)
-        if (members[i].n) add(&out, tpp_set(members[i].n, members[i].v)), free(members[i].v);
-    TPPValue *r = tpp_set(out.n, out.v);
+        if (members[i].n) add(&out, manyan_set(members[i].n, members[i].v)), free(members[i].v);
+    ManyanValue *r = manyan_set(out.n, out.v);
     free(out.v), free(members), free(parent);
     return r;
 }
@@ -489,14 +489,14 @@ static TPPValue *connected_components(TPPCall *call, TPPValue **a) {
    another, or one leaving the nodes, is none, as in Graphs' definitions. */
 typedef struct { size_t n, *start, *to; } Arcs;
 
-static Arcs arcs_of(TPPValue *nodes, TPPValue *edges, int transpose) {
-    size_t n = tpp_size(nodes), m = tpp_size(edges), k = 0;
+static Arcs arcs_of(ManyanValue *nodes, ManyanValue *edges, int transpose) {
+    size_t n = manyan_size(nodes), m = manyan_size(edges), k = 0;
     long *from = malloc(sizeof(long) * (m + 1)), *to = malloc(sizeof(long) * (m + 1));
     Arcs a = {n, calloc(n + 2, sizeof(size_t)), malloc(sizeof(size_t) * (m + 1))};
     for (size_t i = 0; i < m; i++) {
-        TPPValue *e = tpp_element(edges, i);
-        if (tpp_kind(e) != TPP_TUPLE || tpp_size(e) != 2) continue;
-        from[k] = position(nodes, tpp_value(e, transpose)), to[k] = position(nodes, tpp_value(e, !transpose));
+        ManyanValue *e = manyan_element(edges, i);
+        if (manyan_kind(e) != MANYAN_TUPLE || manyan_size(e) != 2) continue;
+        from[k] = position(nodes, manyan_value(e, transpose)), to[k] = position(nodes, manyan_value(e, !transpose));
         if (from[k] >= 0 && to[k] >= 0) a.start[from[k] + 2]++, k++;
     }
     for (size_t i = 2; i <= n + 1; i++) a.start[i] += a.start[i - 1];
@@ -518,39 +518,39 @@ static size_t reach(Arcs a, size_t s, char *seen) {
     return tail;
 }
 
-static TPPValue *are_connected_in(TPPCall *call, TPPValue **a) {
-    TPPValue *nodes, *edges;
+static ManyanValue *are_connected_in(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *nodes, *edges;
     to_graph(call, "AreConnectedIn", "third", "graph", a[2], &nodes, &edges);
     long m = position(nodes, a[0]), n = position(nodes, a[1]);
-    if (m < 0 || n < 0) return tpp_bool(0);
-    if (m == n) return tpp_bool(1);
+    if (m < 0 || n < 0) return manyan_bool(0);
+    if (m == n) return manyan_bool(1);
     Arcs arcs = arcs_of(nodes, edges, 0);
     char *seen = calloc(arcs.n, 1);
     reach(arcs, (size_t)m, seen);
     int r = seen[n];
     free(seen), arcs_free(arcs);
-    return tpp_bool(r);
+    return manyan_bool(r);
 }
 
 /* Every node reaches the first, and the first every node. */
-static TPPValue *is_strongly_connected(TPPCall *call, TPPValue **a) {
-    TPPValue *nodes, *edges;
+static ManyanValue *is_strongly_connected(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *nodes, *edges;
     to_graph(call, "IsStronglyConnected", "first", "graph", a[0], &nodes, &edges);
     int r = 1;
-    for (int transpose = 0; transpose < 2 && r && tpp_size(nodes); transpose++) {
+    for (int transpose = 0; transpose < 2 && r && manyan_size(nodes); transpose++) {
         Arcs arcs = arcs_of(nodes, edges, transpose);
         char *seen = calloc(arcs.n, 1);
         r = reach(arcs, 0, seen) == arcs.n;
         free(seen), arcs_free(arcs);
     }
-    return tpp_bool(r);
+    return manyan_bool(r);
 }
 
 /* Each simple path that path, of n nodes, starts. */
-static void simple_paths(Arcs a, size_t *path, size_t n, char *on, TPPValue *nodes, Values *out) {
-    TPPValue **elems = malloc(sizeof(TPPValue *) * n);
-    for (size_t i = 0; i < n; i++) elems[i] = tpp_element(nodes, path[i]);
-    add(out, tpp_tuple(n, elems));
+static void simple_paths(Arcs a, size_t *path, size_t n, char *on, ManyanValue *nodes, Values *out) {
+    ManyanValue **elems = malloc(sizeof(ManyanValue *) * n);
+    for (size_t i = 0; i < n; i++) elems[i] = manyan_element(nodes, path[i]);
+    add(out, manyan_tuple(n, elems));
     free(elems);
     for (size_t k = a.start[path[n - 1]]; k < a.start[path[n - 1] + 1]; k++)
         if (!on[a.to[k]]) {
@@ -560,15 +560,15 @@ static void simple_paths(Arcs a, size_t *path, size_t n, char *on, TPPValue *nod
         }
 }
 
-static TPPValue *simple_path(TPPCall *call, TPPValue **a) {
-    TPPValue *nodes, *edges;
+static ManyanValue *simple_path(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *nodes, *edges;
     to_graph(call, "SimplePath", "first", "graph", a[0], &nodes, &edges);
     Arcs arcs = arcs_of(nodes, edges, 0);
     size_t *path = malloc(sizeof(size_t) * (arcs.n + 1));
     char *on = calloc(arcs.n + 1, 1);
     Values out = {0};
     for (size_t s = 0; s < arcs.n; s++) on[path[0] = s] = 1, simple_paths(arcs, path, 1, on, nodes, &out), on[s] = 0;
-    TPPValue *r = tpp_set(out.n, out.v);
+    ManyanValue *r = manyan_set(out.n, out.v);
     free(out.v), free(on), free(path), arcs_free(arcs);
     return r;
 }
@@ -576,34 +576,34 @@ static TPPValue *simple_path(TPPCall *call, TPPValue **a) {
 /* ---------------------------------------------------------------- CSV */
 
 /* Appends text and a line to the file, as Files.write with CREATE and APPEND. */
-static void append_line(TPPCall *call, TPPValue *file, const char *text) {
-    const char *path = tpp_string_value(file, NULL);
+static void append_line(ManyanCall *call, ManyanValue *file, const char *text) {
+    const char *path = manyan_string_value(file, NULL);
     FILE *f = fopen(path, "a");
-    if (!f || fprintf(f, "%s\n", text) < 0) tpp_throw(call, "%s", path);
+    if (!f || fprintf(f, "%s\n", text) < 0) manyan_throw(call, "%s", path);
     fclose(f);
 }
 
 /* CSVWrite(template, val, file): val's elements, as TLC writes them,
    put in the template by Java's String.format. */
-static TPPValue *csv_write(TPPCall *call, TPPValue **a) {
-    TPPValue *vals = to_tuple(a[1]);
-    if (!vals) tpp_fail(call, "The argument of CSVWrite should be a sequence, but instead it is:\n%s", tpp_print(a[1]));
-    size_t n = tpp_size(vals);
+static ManyanValue *csv_write(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *vals = to_tuple(a[1]);
+    if (!vals) manyan_fail(call, "The argument of CSVWrite should be a sequence, but instead it is:\n%s", manyan_print(a[1]));
+    size_t n = manyan_size(vals);
     const char **args = calloc(n + 1, sizeof *args);
-    for (size_t i = 0; i < n; i++) args[i] = tpp_to_string(tpp_value(vals, i));
-    TPPValue *line = tpp_format(call, tpp_string_value(a[0], NULL), n, args);
+    for (size_t i = 0; i < n; i++) args[i] = manyan_to_string(manyan_value(vals, i));
+    ManyanValue *line = manyan_format(call, manyan_string_value(a[0], NULL), n, args);
     free(args);
-    append_line(call, a[2], tpp_string_value(line, NULL));
-    return tpp_bool(1);
+    append_line(call, a[2], manyan_string_value(line, NULL));
+    return manyan_bool(1);
 }
 
 /* A line of the record's names, or of its values as TLC writes them, between delimiters. */
-static void write_fields(TPPCall *call, TPPValue *file, TPPValue *r, int names, const char *delim) {
+static void write_fields(ManyanCall *call, ManyanValue *file, ManyanValue *r, int names, const char *delim) {
     Text t = {0};
     put(&t, "", 0);
-    for (size_t i = 0; i < tpp_size(r); i++) {
+    for (size_t i = 0; i < manyan_size(r); i++) {
         if (i) puts_(&t, delim);
-        puts_(&t, names ? tpp_string_value(tpp_key(r, i), NULL) : tpp_to_string(tpp_value(r, i)));
+        puts_(&t, names ? manyan_string_value(manyan_key(r, i), NULL) : manyan_to_string(manyan_value(r, i)));
     }
     append_line(call, file, t.s);
     free(t.s);
@@ -611,20 +611,20 @@ static void write_fields(TPPCall *call, TPPValue *file, TPPValue *r, int names, 
 
 /* CSVWriteRecord(record, delimiter, headers, file): its fields in order,
    after a line of their names if headers. */
-static TPPValue *csv_write_record(TPPCall *call, TPPValue **a) {
-    if (!is_record(a[0])) tpp_fail(call, "The argument of CSVWriteRecord should be a record, but instead it is:\n%s", tpp_print(a[0]));
-    if (tpp_is_true(a[2])) write_fields(call, a[3], a[0], 1, tpp_string_value(a[1], NULL));
-    write_fields(call, a[3], a[0], 0, tpp_string_value(a[1], NULL));
-    return tpp_bool(1);
+static ManyanValue *csv_write_record(ManyanCall *call, ManyanValue **a) {
+    if (!is_record(a[0])) manyan_fail(call, "The argument of CSVWriteRecord should be a record, but instead it is:\n%s", manyan_print(a[0]));
+    if (manyan_is_true(a[2])) write_fields(call, a[3], a[0], 1, manyan_string_value(a[1], NULL));
+    write_fields(call, a[3], a[0], 0, manyan_string_value(a[1], NULL));
+    return manyan_bool(1);
 }
 
 /* The file's lines, as Files.readAllLines: NULL if it does not exist. */
-static char **lines_of(TPPCall *call, TPPValue *file, size_t *n) {
-    const char *path = tpp_string_value(file, NULL);
+static char **lines_of(ManyanCall *call, ManyanValue *file, size_t *n) {
+    const char *path = manyan_string_value(file, NULL);
     FILE *f = fopen(path, "rb");
     if (!f) {
         if (errno == ENOENT) return NULL;
-        tpp_throw(call, "%s", path);
+        manyan_throw(call, "%s", path);
     }
     Text t = {0};
     put(&t, "", 0);
@@ -643,31 +643,31 @@ static char **lines_of(TPPCall *call, TPPValue *file, size_t *n) {
     return lines;
 }
 
-static TPPValue *csv_records(TPPCall *call, TPPValue **a) {
+static ManyanValue *csv_records(ManyanCall *call, ManyanValue **a) {
     size_t n = 0;
     char **lines = lines_of(call, a[0], &n);
     if (lines) free(lines[n]), free(lines);
-    return tpp_int((int64_t)n);
+    return manyan_int((int64_t)n);
 }
 
-static size_t length(TPPValue *s) {
+static size_t length(ManyanValue *s) {
     size_t n;
-    tpp_string_value(s, &n);
+    manyan_string_value(s, &n);
     return n;
 }
 
 /* Java's line.split(delimiter), a regular expression: its trailing empty
    fields dropped. */
-static void split(TPPCall *call, const char *line, const char *delimiter, Values *fields) {
+static void split(ManyanCall *call, const char *line, const char *delimiter, Values *fields) {
     regex_t re;
-    if (regcomp(&re, delimiter, REG_EXTENDED)) tpp_throw(call, "%s", delimiter);
+    if (regcomp(&re, delimiter, REG_EXTENDED)) manyan_throw(call, "%s", delimiter);
     regmatch_t m;
     const char *p = line, *from = line;
     int matched = 0;
     while (!regexec(&re, p, 1, &m, p > line ? REG_NOTBOL : 0)) {
         const char *start = p + m.rm_so, *end = p + m.rm_eo;
         matched = 1;
-        if (end > line) add(fields, tpp_string(from, (size_t)(start - from))), from = end;   /* none before an empty match at 0 */
+        if (end > line) add(fields, manyan_string(from, (size_t)(start - from))), from = end;   /* none before an empty match at 0 */
         if (end > start) p = end;
         else if (*end) p = end + 1;
         else break;
@@ -679,29 +679,29 @@ static void split(TPPCall *call, const char *line, const char *delimiter, Values
 
 /* CSVRead(columns, delimiter, file): a record of each line, its fields
    named by columns. */
-static TPPValue *csv_read(TPPCall *call, TPPValue **a) {
-    TPPValue *columns = to_tuple(a[0]);
-    if (!columns) tpp_fail(call, "The argument of CSVRead should be a sequence, but instead it is:\n%s", tpp_print(a[0]));
-    size_t n = 0, ncols = tpp_size(columns);
+static ManyanValue *csv_read(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *columns = to_tuple(a[0]);
+    if (!columns) manyan_fail(call, "The argument of CSVRead should be a sequence, but instead it is:\n%s", manyan_print(a[0]));
+    size_t n = 0, ncols = manyan_size(columns);
     char **lines = lines_of(call, a[2], &n);
-    if (!lines) return tpp_tuple(0, NULL);
-    TPPValue **names = calloc(ncols + 1, sizeof *names);
+    if (!lines) return manyan_tuple(0, NULL);
+    ManyanValue **names = calloc(ncols + 1, sizeof *names);
     for (size_t i = 0; i < ncols; i++) {
-        names[i] = tpp_value(columns, i);
-        if (tpp_kind(names[i]) != TPP_STRING)
-            tpp_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.StringValue (tlc2.value.impl.%s and "
-                            "tlc2.value.impl.StringValue are in unnamed module of loader 'app')", tpp_class(names[i]), tpp_class(names[i]));
+        names[i] = manyan_value(columns, i);
+        if (manyan_kind(names[i]) != MANYAN_STRING)
+            manyan_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.StringValue (tlc2.value.impl.%s and "
+                            "tlc2.value.impl.StringValue are in unnamed module of loader 'app')", manyan_class(names[i]), manyan_class(names[i]));
     }
     Values records = {0};
     for (size_t i = 0; i < n; i++) {
         Values fields = {0};
-        split(call, lines[i], tpp_string_value(a[1], NULL), &fields);
-        if (fields.n < ncols) tpp_throw(call, "Index %zu out of bounds for length %zu", fields.n, fields.n);
-        add(&records, tpp_record(ncols, names, fields.v));
+        split(call, lines[i], manyan_string_value(a[1], NULL), &fields);
+        if (fields.n < ncols) manyan_throw(call, "Index %zu out of bounds for length %zu", fields.n, fields.n);
+        add(&records, manyan_record(ncols, names, fields.v));
         free(fields.v);
     }
     free(lines[n]), free(lines);
-    TPPValue *r = tpp_tuple(records.n, records.v);
+    ManyanValue *r = manyan_tuple(records.n, records.v);
     free(records.v), free(names);
     return r;
 }
@@ -759,14 +759,14 @@ static double gamma_q(double a, double x) {   /* x >= a + 1: its continued fract
 }
 
 /* A function's values, each an integer, in order, as TLC casts them. */
-static double *counts(TPPCall *call, TPPValue *f) {
-    double *v = calloc(tpp_size(f) + 1, sizeof *v);
-    for (size_t i = 0; i < tpp_size(f); i++) {
-        TPPValue *x = tpp_value(f, i);
-        if (tpp_kind(x) != TPP_INT)
-            tpp_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.IntValue (tlc2.value.impl.%s and "
-                            "tlc2.value.impl.IntValue are in unnamed module of loader 'app')", tpp_class(x), tpp_class(x));
-        v[i] = (double)tpp_int_value(x);
+static double *counts(ManyanCall *call, ManyanValue *f) {
+    double *v = calloc(manyan_size(f) + 1, sizeof *v);
+    for (size_t i = 0; i < manyan_size(f); i++) {
+        ManyanValue *x = manyan_value(f, i);
+        if (manyan_kind(x) != MANYAN_INT)
+            manyan_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.IntValue (tlc2.value.impl.%s and "
+                            "tlc2.value.impl.IntValue are in unnamed module of loader 'app')", manyan_class(x), manyan_class(x));
+        v[i] = (double)manyan_int_value(x);
     }
     return v;
 }
@@ -774,16 +774,16 @@ static double *counts(TPPCall *call, TPPValue *f) {
 /* ChiSquare(expected, actual, alpha): whether Commons Math's chi-square
    test keeps that actual is distributed as expected, at the significance
    level alpha, a string. */
-static TPPValue *chi_square(TPPCall *call, TPPValue **a) {
+static ManyanValue *chi_square(ManyanCall *call, ManyanValue **a) {
     for (int i = 0; i < 2; i++)   /* TLC's error that it is not a function fails itself */
-        if (tpp_kind(a[i]) != TPP_FUNCTION && tpp_kind(a[i]) != TPP_TUPLE)
-            tpp_throw(call, "Cannot invoke \"tlc2.value.impl.Value.toString()\" because \"<local%d>\" is null", i);
-    if (tpp_kind(a[2]) != TPP_STRING)
-        tpp_fail(call, "The third argument of ChiSquare should be a StringValue representing a double in (0, .5], but instead it is:\n%s",
-                 tpp_print(a[2]));
+        if (manyan_kind(a[i]) != MANYAN_FUNCTION && manyan_kind(a[i]) != MANYAN_TUPLE)
+            manyan_throw(call, "Cannot invoke \"tlc2.value.impl.Value.toString()\" because \"<local%d>\" is null", i);
+    if (manyan_kind(a[2]) != MANYAN_STRING)
+        manyan_fail(call, "The third argument of ChiSquare should be a StringValue representing a double in (0, .5], but instead it is:\n%s",
+                 manyan_print(a[2]));
     double *e = counts(call, a[0]), *o = counts(call, a[1]);
-    size_t n = tpp_size(a[0]), m = tpp_size(a[1]);
-    const char *s = tpp_string_value(a[2], NULL);   /* Double.valueOf */
+    size_t n = manyan_size(a[0]), m = manyan_size(a[1]);
+    const char *s = manyan_string_value(a[2], NULL);   /* Double.valueOf */
     while (*s && (unsigned char)*s <= ' ') s++;
     size_t len = strlen(s);
     while (len && (unsigned char)s[len - 1] <= ' ') len--;
@@ -791,36 +791,36 @@ static TPPValue *chi_square(TPPCall *call, TPPValue **a) {
     double alpha = strtod(text, &end);
     if (end > text && strchr("fFdD", *end) && *end) end++;
     int number = end > text && !*end && (isdigit((unsigned char)*text) || strchr("+-.", *text) || !strncmp(text, "NaN", 3) || !strncmp(text, "Infinity", 8));
-    if (!number) tpp_throw(call, len ? "For input string: \"%s\"" : "empty String", text);
+    if (!number) manyan_throw(call, len ? "For input string: \"%s\"" : "empty String", text);
     free(text);
-    if (alpha <= 0 || alpha > 0.5) tpp_throw(call, "out of bounds significance level %s, must be between 0 and 0.5", java_number(alpha));
+    if (alpha <= 0 || alpha > 0.5) manyan_throw(call, "out of bounds significance level %s, must be between 0 and 0.5", java_number(alpha));
     double shape = ((double)n - 1) / 2;
-    if (shape <= 0) tpp_throw(call, "shape (%s)", java_number(shape));
-    if (n != m) tpp_throw(call, "%zu != %zu", n, m);
+    if (shape <= 0) manyan_throw(call, "shape (%s)", java_number(shape));
+    if (n != m) manyan_throw(call, "%zu != %zu", n, m);
     for (size_t i = 0; i < n; i++)
-        if (e[i] <= 0) tpp_throw(call, "%s is smaller than, or equal to, the minimum (0)", java_number(e[i]));
+        if (e[i] <= 0) manyan_throw(call, "%s is smaller than, or equal to, the minimum (0)", java_number(e[i]));
     for (size_t i = 0; i < n; i++)
-        if (o[i] < 0) tpp_throw(call, "%s is smaller than the minimum (0)", java_number(o[i]));
+        if (o[i] < 0) manyan_throw(call, "%s is smaller than the minimum (0)", java_number(o[i]));
     double sum_e = 0, sum_o = 0, ratio = 1, chi = 0;
     for (size_t i = 0; i < n; i++) sum_e += e[i], sum_o += o[i];
     if (fabs(sum_e - sum_o) > 1e-5) ratio = sum_o / sum_e;
     for (size_t i = 0; i < n; i++) chi += (o[i] - ratio * e[i]) * (o[i] - ratio * e[i]) / (ratio * e[i]);
     free(e), free(o);
     double p = 1 - (chi <= 0 ? 0 : gamma_p(shape, chi / 2));
-    return tpp_bool(!(p < alpha));
+    return manyan_bool(!(p < alpha));
 }
 
 /* ---------------------------------------------------------------- the table */
 
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
 
-int tpp_std_init(void) {
-    static const struct { const char *module, *name; int arity; TPPNative fn; const char *java; } natives[] = {
+int manyan_std_init(void) {
+    static const struct { const char *module, *name; int arity; ManyanNative fn; const char *java; } natives[] = {
         {"IOUtils", "IOEnv", 0, io_env, OVERRIDE("IOUtils", "ioEnv()")},
         {"IOUtils", "atoi", 1, atoi_, OVERRIDE("IOUtils", "atoi(" J_V ")")},
         {"IOUtils", "IOExec", 1, io_exec, OVERRIDE("IOUtils", "ioExec(" J_V ")")},
         {"IOUtils", "IOEnvExec", 2, io_env_exec, OVERRIDE("IOUtils", "ioEnvExec(" J_V "," J_V ")")},
-        {"IOUtils", "Serialize", TPP_LAZY, serialize,
+        {"IOUtils", "Serialize", MANYAN_LAZY, serialize,
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
         {"SVG", "SVGElemToString", 1, svg_elem_to_string, OVERRIDE("SVG", "SVGElemToString(" J_V ")")},
@@ -844,6 +844,6 @@ int tpp_std_init(void) {
          OVERRIDE("UndirectedGraphs", "connectedComponents(" J_V ")")},
     };
     for (size_t i = 0; i < sizeof natives / sizeof *natives; i++)
-        if (tpp_define(natives[i].module, natives[i].name, natives[i].arity, natives[i].fn, natives[i].java)) return -1;
+        if (manyan_define(natives[i].module, natives[i].name, natives[i].arity, natives[i].fn, natives[i].java)) return -1;
     return 0;
 }

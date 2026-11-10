@@ -1,4 +1,4 @@
-"""Check tlaplus/Examples' models with tpp and TLC; write docs/fullbench.md.
+"""Check tlaplus/Examples' models with manyan and TLC; write docs/fullbench.md.
 
 usage: examples.py ENGINE --tlc "TLC CMD" --examples DIR [--library DIR]...
                    [--only SUBSTRING] [--max-runtime HH:MM:SS] [--timeout S] [--memory MB]
@@ -6,10 +6,10 @@ usage: examples.py ENGINE --tlc "TLC CMD" --examples DIR [--library DIR]...
 Every exhaustive-search model whose recorded runtime is at most
 --max-runtime, and every simulation and generation model, its behaviors
 fixed by a seed and their number, runs once with each engine and one
-worker, killed past --timeout seconds or --memory MB resident. tpp must
+worker, killed past --timeout seconds or --memory MB resident. manyan must
 print what TLC prints.
 Each library's modules are staged beside the spec unless the spec has one
-of that name or tpp builds it in, as TLC finds them on its class path.
+of that name or manyan builds it in, as TLC finds them on its class path.
 TLC's results are cached next to the Examples checkout: they change only
 with the pins, and normalizing them again follows changes to normalize. The diffs of the models that differ go to fullbench.diff.
 """
@@ -148,11 +148,11 @@ def main():
         if theirs["killed"]:
             verdict = f"TLC {theirs['killed']}"
         elif killed:
-            verdict = f"tpp {killed}"
+            verdict = f"manyan {killed}"
         elif ours != spec_runner.normalize(theirs["output"], directory):
             verdict = "differs"
             diffs.write(f"=== {name}\n" + "".join(difflib.unified_diff(
-                theirs["output"].splitlines(True), ours.splitlines(True), "TLC", "tpp", n=2)))
+                theirs["output"].splitlines(True), ours.splitlines(True), "TLC", "manyan", n=2)))
             diffs.flush()
         else:
             verdict = "same"
@@ -160,9 +160,9 @@ def main():
         tallies[verdict.split(" over")[0]] = tallies.get(verdict.split(" over")[0], 0) + 1
         counts = COUNTS.search(theirs["output"] or "")
         distinct = counts.group(2) if counts else ""
-        tpp_time = "" if killed else f"{ours_seconds:.2f}"
+        manyan_time = "" if killed else f"{ours_seconds:.2f}"
         speedup = f"{theirs['seconds'] / ours_seconds:.1f}x" if verdict == "same" else ""
-        rows.append(f"| {name} | {distinct} | {theirs['seconds']:.2f} | {tpp_time} | {speedup} | {verdict} |")
+        rows.append(f"| {name} | {distinct} | {theirs['seconds']:.2f} | {manyan_time} | {speedup} | {verdict} |")
         print(rows[-1], flush=True)
     mean = math.exp(sum(map(math.log, speedups)) / len(speedups)) if speedups else 0
     summary = ", ".join(f"{n} {verdict}" for verdict, n in sorted(tallies.items(), key=lambda t: -t[1]))
@@ -173,9 +173,9 @@ def main():
                       f"models recorded to run in at most {args.max_runtime}, and the simulation and generation "
                       f"models with `-seed 1` and `num=` their traceCount, or 100. Measured on {platform.machine()} "
                       f"{platform.system()} {platform.release()}, one run, wall-clock seconds, one worker.\n\n"
-                      f"{len(rows)} models: {summary}. Where tpp prints what TLC prints, "
+                      f"{len(rows)} models: {summary}. Where manyan prints what TLC prints, "
                       f"it is {mean:.1f}x as fast (geometric mean).\n\n"
-                      "| model | distinct states | TLC | tpp | speedup | result |\n"
+                      "| model | distinct states | TLC | Manyan | speedup | result |\n"
                       "|---|---:|---:|---:|---:|---|\n" + "\n".join(rows) + "\n")
     return 0 if tallies.get("same", 0) + tallies.get("TLC", 0) == len(rows) else 1
 

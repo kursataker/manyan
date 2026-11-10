@@ -5,10 +5,10 @@
 EXTENDS Naturals, TLC
 VARIABLE x
 ASSUME PrintT(TLCGet("-Dtlc2.tool.impl.Tool.cdot"))
-ASSUME TLCSet("-Dtpp.key", "v") /\ PrintT(TLCGet("-Dtpp.key"))
-ASSUME TLCSet("-Dtpp.key", <<1, {2}>>) /\ PrintT(TLCGet("-Dtpp.key"))
+ASSUME TLCSet("-Dmanyan.key", "v") /\ PrintT(TLCGet("-Dmanyan.key"))
+ASSUME TLCSet("-Dmanyan.key", <<1, {2}>>) /\ PrintT(TLCGet("-Dmanyan.key"))
 Init == x = 0
-Next == x < 2 /\ x' = x + 1 /\ TLCSet("-Dtpp.x", x) /\ PrintT(TLCGet("-Dtpp.x"))
+Next == x < 2 /\ x' = x + 1 /\ TLCSet("-Dmanyan.x", x) /\ PrintT(TLCGet("-Dmanyan.x"))
 ====
 INIT Init
 NEXT Next

@@ -34,19 +34,19 @@ TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP) tlc2.TLC
 
 .PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench full-bench install clean
 
-all: tpp
+all: manyan
 
-# ./tpp is profile-guided: the conformance suite is the training run.
+# ./manyan is profile-guided: the conformance suite is the training run.
 # Without python3 to run it (or, with clang, llvm-profdata to merge the
-# profile), ./tpp is a plain build.
+# profile), ./manyan is a plain build.
 PGO = $(abspath $(OBJDIR))/pgo
 PYTHON = $(shell command -v python3)
 ifneq ($(findstring clang,$(shell $(CC) --version 2>/dev/null)),)
 PROFDATA ?= $(shell xcrun -f llvm-profdata 2>/dev/null || command -v llvm-profdata)
 PGO_TOOLS = $(and $(PYTHON),$(PROFDATA))
 PGO_GEN = -fprofile-instr-generate
-PGO_USE = -fprofile-instr-use=$(PGO)/tpp.profdata
-PGO_MERGE = $(PROFDATA) merge -o $(PGO)/tpp.profdata $(PGO)/*.profraw
+PGO_USE = -fprofile-instr-use=$(PGO)/manyan.profdata
+PGO_MERGE = $(PROFDATA) merge -o $(PGO)/manyan.profdata $(PGO)/*.profraw
 else
 PGO_TOOLS = $(PYTHON)
 PGO_GEN = -fprofile-generate=$(PGO)
@@ -54,36 +54,36 @@ PGO_USE = -fprofile-use=$(PGO) -fprofile-partial-training
 PGO_MERGE = true
 endif
 
-SRC = tpp.c tpp-std.c
-HDR = tpp.h tpp-std.h
+SRC = manyan.c manyan-std.c
+HDR = manyan.h manyan-std.h
 
-tpp: $(SRC) $(HDR)
+manyan: $(SRC) $(HDR)
 ifeq ($(PGO_TOOLS),)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 else
 	rm -rf $(PGO) && mkdir -p $(PGO)
-	$(CC) $(CFLAGS) $(PGO_GEN) $(LDFLAGS) $(SRC) $(LDLIBS) -o $(PGO)/tpp
-	LLVM_PROFILE_FILE=$(PGO)/%p.profraw $(PYTHON) tests/spec_runner.py $(PGO)/tpp > /dev/null
+	$(CC) $(CFLAGS) $(PGO_GEN) $(LDFLAGS) $(SRC) $(LDLIBS) -o $(PGO)/manyan
+	LLVM_PROFILE_FILE=$(PGO)/%p.profraw $(PYTHON) tests/spec_runner.py $(PGO)/manyan > /dev/null
 	$(PGO_MERGE)
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
 test: test-spec
 
-test-spec: tpp
-	python3 tests/spec_runner.py ./tpp --strict
-	python3 tests/spec_runner.py "./tpp -workers 4" --strict
+test-spec: manyan
+	python3 tests/spec_runner.py ./manyan --strict
+	python3 tests/spec_runner.py "./manyan -workers 4" --strict
 
 # The oracle must agree with every expected output, which validates the tests.
-test-spec-oracle: tpp $(TLA_JAR) $(COMMUNITY)
-	python3 tests/spec_runner.py ./tpp --strict --oracle "$(TLC)"
+test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/spec_runner.py ./manyan --strict --oracle "$(TLC)"
 
 # Rewrite the expected outputs from the oracle (after adding a test).
 bless: $(TLA_JAR) $(COMMUNITY)
-	python3 tests/spec_runner.py ./tpp --oracle "$(TLC)" --bless $(if $(ONLY),--only $(ONLY))
+	python3 tests/spec_runner.py ./manyan --oracle "$(TLC)" --bless $(if $(ONLY),--only $(ONLY))
 
-test-tla: tpp $(TLA_JAR) $(COMMUNITY)
-	python3 tests/tla_check.py ./tpp --tlc "$(TLC)"
+test-tla: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/tla_check.py ./manyan --tlc "$(TLC)"
 
 tla-tools: $(TLA_JAR) $(COMMUNITY)
 $(TLA_JAR):
@@ -92,29 +92,29 @@ $(TLA_JAR):
 	echo "$(TLA_SHA256)  $@.tmp" | shasum -a 256 -c -
 	mv $@.tmp $@
 
-$(OBJDIR)/tpp-sanitize: $(SRC) $(HDR)
+$(OBJDIR)/manyan-sanitize: $(SRC) $(HDR)
 	mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -O1 -g -fsanitize=$(SANITIZERS) -fno-sanitize-recover=all $(SRC) $(LDLIBS) -o $@
 
-sanitize: $(OBJDIR)/tpp-sanitize
-	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/tpp-sanitize --strict
+sanitize: $(OBJDIR)/manyan-sanitize
+	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/manyan-sanitize --strict
 
 # Mutated models must not crash the sanitized build; random expressions
 # must print as TLC prints them; so must random simulations of the models.
 # RUNS and SEED choose how many and which.
 RUNS ?= 1000
 SEED ?= 1
-fuzz: $(OBJDIR)/tpp-sanitize
-	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/tpp-sanitize --runs $(RUNS) --seed $(SEED)
+fuzz: $(OBJDIR)/manyan-sanitize
+	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
 
-fuzz-oracle: tpp $(TLA_JAR) $(COMMUNITY)
-	python3 tests/fuzz.py diff ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
+fuzz-oracle: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fuzz.py diff ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-fuzz-sim: tpp $(TLA_JAR) $(COMMUNITY)
-	python3 tests/fuzz.py sim ./tpp --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
+fuzz-sim: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fuzz.py sim ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
-bench: tpp $(TLA_JAR) $(COMMUNITY)
-	python3 bench/compare.py ./tpp --tlc "$(TLC)"
+bench: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 bench/compare.py ./manyan --tlc "$(TLC)"
 
 # tlaplus/Examples, pinned, with the TLAPS modules its CI puts on TLC's
 # class path too. Move a pin with its date in the commit.
@@ -125,8 +125,8 @@ TLAPM = $(OBJDIR)/tlapm-$(TLAPM_REV)
 FULL_TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP):$(abspath $(TLAPM)/library) tlc2.TLC
 
 # ONLY=PATTERN picks models; MAX_RUNTIME=hh:mm:ss caps the manifest's runtime.
-full-bench: tpp $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
-	python3 bench/examples.py ./tpp --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
+full-bench: manyan $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
+	python3 bench/examples.py ./manyan --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
 		--library $(COMMUNITY) --library $(TLAPM)/library \
 		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME))
 
@@ -147,10 +147,10 @@ $(COMMUNITY):
 	cd $@.tmp && unzip -q modules.jar '*.tla'
 	mv $@.tmp $@
 
-install: tpp
+install: manyan
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/include
-	install tpp $(DESTDIR)$(PREFIX)/bin/tpp
-	install -m 644 tpp.h tpp-std.h $(DESTDIR)$(PREFIX)/include/
+	install manyan $(DESTDIR)$(PREFIX)/bin/manyan
+	install -m 644 manyan.h manyan-std.h $(DESTDIR)$(PREFIX)/include/
 
 clean:
-	rm -f tpp
+	rm -f manyan

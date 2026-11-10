@@ -4,7 +4,7 @@
 
 Measured on arm64 Darwin 25.5.0, best of 3 runs, wall-clock seconds, with 1 worker and with 8.
 
-| spec | distinct states | TLC | tpp | speedup | TLC (8) | tpp (8) | speedup |
+| spec | distinct states | TLC | Manyan | speedup | TLC (8) | Manyan (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | closure | 65536 | 2.30 | 0.48 | 4.8x | 1.05 | 0.13 | 8.1x |
 | counters | 823543 | 3.74 | 0.78 | 4.8x | 3.14 | 0.26 | 12.2x |

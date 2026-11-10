@@ -1,3 +1,9 @@
+Unreleased:
+
+- renamed to Manyan (github.com/soasme/manyan): the command is manyan, the
+  sources manyan.c, manyan.h, manyan-std.c and manyan-std.h, and the C API
+  manyan_*, Manyan* and MANYAN_* in place of tpp_*, TPP* and TPP_*
+
 2026-11-10 0.7.0:
 
 - make full-bench checks tlaplus/Examples against TLC (docs/fullbench.md)

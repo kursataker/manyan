@@ -1,8 +1,8 @@
 ---------------------------------- MODULE BFS ----------------------------------
-(* The safety search of tpp (docs/standards/tla2.md, 10.4) on an explicit
+(* The safety search of Manyan (docs/standards/tla2.md, 10.4) on an explicit
    state graph. States are expanded level by level, in any order within a
    level; the search stops at the first state that violates the invariant
-   or has no successor. It reports the counts tpp prints: states generated
+   or has no successor. It reports the counts Manyan prints: states generated
    (with duplicates), distinct states and the depth, or the length of the
    trace to the error. *)
 EXTENDS Naturals, FiniteSets

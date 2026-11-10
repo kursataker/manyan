@@ -1,5 +1,5 @@
 ---- MODULE SVG ----
 \* CommunityModules' NodeOfRingNetwork, with its definition: TLC replaces
-\* it by its Java, as tpp by its own.
+\* it by its Java, as Manyan by its own.
 NodeOfRingNetwork(cx, cy, r, n, m) == [x |-> 0, y |-> 0]
 ====

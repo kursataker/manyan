@@ -1,5 +1,5 @@
 ---- MODULE tlcget_revision ----
-\* TLCGet("revision"): that of the TLC tpp follows. A -depth of -1 is no
+\* TLCGet("revision"): that of the TLC Manyan follows. A -depth of -1 is no
 \* bound, though the configuration says -1. Found by tlaplus/Examples'
 \* SimKnuthYao and SimTokenRing, whose assumptions check both.
 \* options: -generate num=2 -depth -1 -seed 1

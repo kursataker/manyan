@@ -1,10 +1,10 @@
-"""Time tpp against TLC on the specs in bench/ and write docs/benchmark.md.
+"""Time manyan against TLC on the specs in bench/ and write docs/benchmark.md.
 
 usage: compare.py ENGINE --tlc "TLC CMD" [--runs N] [--only SUBSTRING]
 
 Each bench/NAME.tla holds a module and, after it, its configuration, as in
 tests/spec. Each engine runs with one worker and with one per core; each
-tpp run must print what TLC prints with one worker (TLC's own parallel
+manyan run must print what TLC prints with one worker (TLC's own parallel
 runs may not: their search order, so their depth, varies). The time is
 the best wall-clock time of N runs.
 """
@@ -53,24 +53,24 @@ def main():
     for path in sorted((ROOT / "bench").glob("*.tla")):
         if args.only not in path.stem:
             continue
-        tlc = args.tlc.split() + ["-metadir", tempfile.mkdtemp(prefix="tpp-meta-"), "-workers"]
+        tlc = args.tlc.split() + ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-"), "-workers"]
         tlc1, reference = measure(tlc + ["1"], path, args.runs)
         tlcn, _ = measure(tlc + [str(cores)], path, args.runs)
-        tpp1, tpp1_out = measure([engine], path, args.runs)
-        tppn, tppn_out = measure([engine, "-workers", str(cores)], path, args.runs)
+        ours1, ours1_out = measure([engine], path, args.runs)
+        oursn, oursn_out = measure([engine, "-workers", str(cores)], path, args.runs)
         counts = COUNTS.search(reference)
-        same = tpp1_out == tppn_out == reference
+        same = ours1_out == oursn_out == reference
         failed |= not same
         distinct = counts.group(2) if counts else "?"
-        rows.append(f"| {path.stem} | {distinct} | {tlc1:.2f} | {tpp1:.2f} | {tlc1 / tpp1:.1f}x "
-                    f"| {tlcn:.2f} | {tppn:.2f} | {tlcn / tppn:.1f}x |" + ("" if same else " output differs |"))
+        rows.append(f"| {path.stem} | {distinct} | {tlc1:.2f} | {ours1:.2f} | {tlc1 / ours1:.1f}x "
+                    f"| {tlcn:.2f} | {oursn:.2f} | {tlcn / oursn:.1f}x |" + ("" if same else " output differs |"))
         print(rows[-1], flush=True)
     report = ROOT / "docs/benchmark.md"
     head = report.read_text().split("<!-- results -->")[0] if report.exists() else "# Benchmark\n\n"
     report.write_text(head + "<!-- results -->\n\n"
                       f"Measured on {platform.machine()} {platform.system()} {platform.release()}, "
                       f"best of {args.runs} runs, wall-clock seconds, with 1 worker and with {cores}.\n\n"
-                      f"| spec | distinct states | TLC | tpp | speedup | TLC ({cores}) | tpp ({cores}) | speedup |\n"
+                      f"| spec | distinct states | TLC | Manyan | speedup | TLC ({cores}) | Manyan ({cores}) | speedup |\n"
                       "|---|---:|---:|---:|---:|---:|---:|---:|\n"
                       + "\n".join(rows) + "\n")
     return 1 if failed else 0

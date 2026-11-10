@@ -1,10 +1,10 @@
 # Full benchmark
 
 `make full-bench` checks the models of
-[tlaplus/Examples](https://github.com/tlaplus/Examples) with tpp and with
+[tlaplus/Examples](https://github.com/tlaplus/Examples) with Manyan and with
 TLC, and writes this report. `make bench` ([benchmark](benchmark.md)) is the
 quick one for day-to-day work; this one takes hours and asks a stronger
-question: does tpp print what TLC prints on specs it was not written for?
+question: does Manyan print what TLC prints on specs it was not written for?
 
 Examples, CommunityModules and TLAPS are pinned in the Makefile. Each model
 runs once with one worker, killed past 15 minutes or 4 GB. TLC's results are
@@ -16,10 +16,10 @@ Of Examples' 243 models, it checks the 174 that TLC searches exhaustively
 in a recorded 10 minutes or less, and the 6 that simulate or generate
 behaviors, fixed by `-seed 1` and `num=`; the rest are Apalache's
 (symbolic, 46), or longer or not timed (17). Where TLC is killed, there is
-nothing to compare. One differs for a feature tpp lacks: the ALIAS of
+nothing to compare. One differs for a feature Manyan lacks: the ALIAS of
 ewd687a/EWD687a_anim lays out its graph with SVG's
 `NodesOfDirectedMultiGraph`, which TLC computes with jungrapht's Sugiyama
-layout and tpp from its definition, a `CHOOSE` it cannot enumerate. Three differ for reasons tpp keeps:
+layout and Manyan from its definition, a `CHOOSE` it cannot enumerate. Three differ for reasons Manyan keeps:
 
 - SpanningTree/SpanTreeRandom draws its graph with `RandomElement` in a
   constant, which TLC draws anew each run, so its output is TLC's of one run.
@@ -27,7 +27,7 @@ layout and tpp from its definition, a `CHOOSE` it cannot enumerate. Three differ
   but under its VIEW the two print different traces
   ([tlaplus#1045](https://github.com/tlaplus/tlaplus/issues/1045)).
 - tower_of_hanoi/Hanoi.toolbox/Model_1/MC: TLC loads the model's own
-  `Bits.class` and says so; tpp computes `Bits!And` from its definition,
+  `Bits.class` and says so; Manyan computes `Bits!And` from its definition,
   with the same result.
 
 ## Gaps
@@ -46,8 +46,8 @@ A model leaves this list when it gets a row in the results.
 - Runtime not recorded: CarTalkPuzzle Model_3, SpanTreeTest5Nodes,
   TestMCReachability, BPConProof, c1cs, TLCSailfish2, MC_HDiskSynod,
   EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC.
-- TLC over 15 minutes: ElevatorSafetyLarge (tpp 774 s), aba_asyn_byz
-  (tpp 31 s), PConProof (tpp 185 s), MultiPaxos_MC (tpp over 15 minutes as
+- TLC over 15 minutes: ElevatorSafetyLarge (Manyan 774 s), aba_asyn_byz
+  (Manyan 31 s), PConProof (Manyan 185 s), MultiPaxos_MC (Manyan over 15 minutes as
   well).
 - Recorded over 10 minutes: MCKVSSafetyLarge (7 h 16 min),
   EnvironmentController (2 h), SlushLarge and EWD998 (50 min each),
@@ -58,9 +58,9 @@ A model leaves this list when it gets a row in the results.
 
 tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run in at most 00:10:00, and the simulation and generation models with `-seed 1` and `num=` their traceCount, or 100. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
 
-180 models: 172 same, 4 differs, 4 TLC. Where tpp prints what TLC prints, it is 20.1x as fast (geometric mean).
+180 models: 172 same, 4 differs, 4 TLC. Where Manyan prints what TLC prints, it is 20.1x as fast (geometric mean).
 
-| model | distinct states | TLC | tpp | speedup | result |
+| model | distinct states | TLC | Manyan | speedup | result |
 |---|---:|---:|---:|---:|---|
 | Bakery-Boulangerie/MCBakery | 655200 | 7.38 | 1.87 | 3.9x | same |
 | Bakery-Boulangerie/MCBoulanger | 7866982 | 177.67 | 52.65 | 3.4x | same |

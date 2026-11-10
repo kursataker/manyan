@@ -1,5 +1,5 @@
 -------------------------------- MODULE Workers --------------------------------
-(* One level of tpp's parallel search (tpp.c, "workers"; docs/manual.md,
+(* One level of Manyan's parallel search (manyan.c, "workers"; docs/manual.md,
    Workers). The level's states 1..L are cut into batches of B. Processes
    take batches in turn; the search is one of them, and takes one only
    while it waits for the batch it merges next. A process expands each

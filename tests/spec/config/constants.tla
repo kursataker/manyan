@@ -6,7 +6,7 @@ MyOp(x) == x + N
 ASSUME PrintT(<<N, Name, Flag, Items, Def, Op(1)>>)
 ====
 CONSTANT N = 3
-CONSTANT Name = "tpp"
+CONSTANT Name = "manyan"
 CONSTANTS
     Flag = FALSE
     Items = {m, n}

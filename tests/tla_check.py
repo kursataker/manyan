@@ -1,4 +1,4 @@
-"""Check tpp against the TLA+ models of its algorithms (tests/tla).
+"""Check manyan against the TLA+ models of its algorithms (tests/tla).
 
 usage: tla_check.py ENGINE [--tlc "TLC CMD"] [--graphs N] [--seed S]
 
@@ -33,7 +33,7 @@ def check(command, name, directory):
 
 
 def tlc_command(tlc):
-    return tlc.split() + ["-workers", "1", "-metadir", tempfile.mkdtemp(prefix="tpp-meta-")]
+    return tlc.split() + ["-workers", "1", "-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
 
 
 def models(engine, tlc):

@@ -1,6 +1,6 @@
 # Roadmap
 
-tpp aims to be the TLC people run every day. It should give the same answers
+Manyan aims to be the TLC people run every day. It should give the same answers
 and the same output, start instantly, need nothing installed, and be easy to
 embed. It is not a new model checker with its own semantics, a proof checker
 (TLAPS) or a symbolic one (Apalache).
@@ -9,7 +9,7 @@ The goals come in order. A later goal never costs an earlier one.
 
 ## 1. Same as TLC
 
-Every other goal relies on people trusting a result from tpp as much as one
+Every other goal relies on people trusting a result from Manyan as much as one
 from TLC.
 
 - Run the specs of [tlaplus/Examples](https://github.com/tlaplus/Examples)
@@ -28,7 +28,7 @@ from TLC.
   - the order of `Print` output in a simulation that stops early.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
-- Model more of tpp's algorithms in `tests/tla`, such as the parallel
+- Model more of Manyan's algorithms in `tests/tla`, such as the parallel
   search, liveness checking and symmetry, and fuzz what the models cannot
   reach.
 
@@ -45,11 +45,11 @@ from TLC.
 
 ## 3. Embeddable
 
-- Make `tpp.h` a stable C API: load a spec, check it, and walk the result
+- Make `manyan.h` a stable C API: load a spec, check it, and walk the result
   without parsing printed text.
 - Build bindings on that API: Python first, then an editor or language
   server integration.
-- Compile tpp to WebAssembly for a browser playground, where anyone can paste
+- Compile Manyan to WebAssembly for a browser playground, where anyone can paste
   a spec and check it with nothing installed.
 
 ## Next: 0.8.0

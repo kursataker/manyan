@@ -1,4 +1,4 @@
-"""Fuzz tpp.
+"""Fuzz manyan.
 
 usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py diff ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
@@ -293,15 +293,15 @@ def diff(engine, tlc, runs, seed):
     size = 25
     for b in range(0, runs, size):
         exprs = [Gen(rng).any() for _ in range(min(size, runs - b))]
-        meta = ["-metadir", tempfile.mkdtemp(prefix="tpp-meta-")]
+        meta = ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
         if batch_output(engine, exprs) == batch_output(tlc_cmd + meta, exprs):
             continue
         for e in exprs:
-            meta = ["-metadir", tempfile.mkdtemp(prefix="tpp-meta-")]
+            meta = ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
             mine, theirs = batch_output(engine, [e]), batch_output(tlc_cmd + meta, [e])
             if mine != theirs:
                 failed += 1
-                print(f"FAIL {e}\n--- tpp\n{mine}--- TLC\n{theirs}")
+                print(f"FAIL {e}\n--- manyan\n{mine}--- TLC\n{theirs}")
                 break
     print(f"{runs - failed}/{runs} random expressions printed as TLC prints them")
     return failed

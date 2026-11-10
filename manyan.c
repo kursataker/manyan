@@ -1,4 +1,4 @@
-/* tpp: a TLA+ model checker, with TLC as its oracle.
+/* manyan: a TLA+ model checker, with TLC as its oracle.
 
    The language and the results it must produce are defined by
    docs/standards/tla2.md; section numbers below (§) refer to it.
@@ -12,7 +12,7 @@
    order, so the result is the same with any number of them. */
 #define _DEFAULT_SOURCE
 #define _DARWIN_C_SOURCE
-#include "tpp.h"
+#include "manyan.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -33,7 +33,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-typedef struct TPPValue Value;
+typedef struct ManyanValue Value;
 typedef struct Expr Expr;
 typedef struct Def Def;
 typedef struct Module Module;
@@ -53,13 +53,13 @@ static Arena *arena = &perm_arena;
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
-    if (!p) { fputs("tpp: out of memory\n", stderr); exit(TPP_ERROR); }
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
     return p;
 }
 
 static void *xrealloc(void *p, size_t n) {
     p = realloc(p, n ? n : 1);
-    if (!p) { fputs("tpp: out of memory\n", stderr); exit(TPP_ERROR); }
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
     return p;
 }
 
@@ -330,13 +330,13 @@ static void frame_push(Expr *e) {
 static Expr *source(Expr *e) { return arena == &scratch_arena ? e : NULL; }
 
 /* TLC's exit status for an error evaluating the spec. */
-static int eval_failure_status(void) { return error_status == TPP_VIOLATION_ASSERT ? TPP_VIOLATION_ASSERT : TPP_FAILURE_EVAL; }
+static int eval_failure_status(void) { return error_status == MANYAN_VIOLATION_ASSERT ? MANYAN_VIOLATION_ASSERT : MANYAN_FAILURE_EVAL; }
 
 static void error_reset(void) {
     error_message.n = 0;
     if (error_message.s) error_message.s[0] = 0;
     error_expr = NULL;
-    error_status = TPP_ERROR;
+    error_status = MANYAN_ERROR;
     error_module = 0;
     error_java = NULL;
     stackless = 0;
@@ -352,7 +352,7 @@ static _Noreturn void raise_error(void) {
     }
     if (!handler) {
         fputs(error_message.s ? error_message.s : "error", stdout);
-        exit(TPP_ERROR);
+        exit(MANYAN_ERROR);
     }
     siglongjmp(*handler, 1);
 }
@@ -389,7 +389,7 @@ static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va
 static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfail(e, 0, TPP_ERROR, fmt, ap);
+    vfail(e, 0, MANYAN_ERROR, fmt, ap);
 }
 
 /* An error TLC raises as a TLCRuntimeException, which exits with status. */
@@ -403,7 +403,7 @@ static _Noreturn void fail_runtime(Expr *e, int status, const char *fmt, ...) {
 static _Noreturn void fail_module(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfail(NULL, 1, TPP_ERROR, fmt, ap);
+    vfail(NULL, 1, MANYAN_ERROR, fmt, ap);
 }
 
 #define fail(...) fail_at(NULL, __VA_ARGS__)
@@ -445,7 +445,7 @@ enum LazyKind {
     L_CUP, L_CAP, L_DIFF
 };
 
-struct TPPValue {
+struct ManyanValue {
     unsigned char kind;
     union {
         unsigned char lazy;  /* LazyKind of a V_LAZY */
@@ -1949,7 +1949,7 @@ typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an 
 struct Expr {
     short kind;
     unsigned char fixed;  /* fixed_expr: 0 not yet known, 1 yes, 2 no */
-    unsigned char made;   /* made by tpp, not written: no frame of TLC's call stack */
+    unsigned char made;   /* made by manyan, not written: no frame of TLC's call stack */
     int op;               /* operator or name; field of X_DOT */
     int n;
     int field;            /* X_DOT: where the field was in the last record */
@@ -1988,7 +1988,7 @@ struct Def {
     int nb;
     Module *mod;
     Native native;
-    TPPNative api;        /* a native of tpp_define: native is then n_defined, which marks it */
+    ManyanNative api;        /* a native of manyan_define: native is then n_defined, which marks it */
     int lazy;             /* a native of TLC's evaluation methods: it evaluates the call's arguments itself, unless given values */
     const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
@@ -2285,7 +2285,7 @@ static _Noreturn void parse_error(const char *file, int line, int col, const cha
     va_end(ap);
     printf("***Parse Error***\n%s at line %d, column %d in %s\n\n", msg, line, col, file);
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(TPP_ERROR_PARSE);
+    exit(MANYAN_ERROR_PARSE);
 }
 
 static Tok eof_tok;
@@ -3720,7 +3720,7 @@ static void check_file_name(Module *m, const char *name) {
     if (strcmp(S(m->name), name) == 0) return;
     printf("File name '%s' does not match the name '%s' of the top level module it contains.\n\n", name, S(m->name));
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(TPP_ERROR_PARSE);
+    exit(MANYAN_ERROR_PARSE);
 }
 
 static const char *root_text;   /* the root module's file */
@@ -3777,7 +3777,7 @@ static Module *load_module(int name, Module *from) {
     if (!text) {
         printf("Cannot find source file for module %s imported in module %s.\n\n", S(name), S(from->name));
         printf("Error: Parsing or semantic analysis failed.\n");
-        exit(TPP_ERROR_PARSE);
+        exit(MANYAN_ERROR_PARSE);
     }
     m = parse_text(text, path);
     m->standard = standard;
@@ -3824,7 +3824,7 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     loc_text(&b, where);
     printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", b.s, msg);
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(TPP_ERROR_PARSE);
+    exit(MANYAN_ERROR_PARSE);
 }
 
 static Def *scope_lookup(Scope *sc, int name);
@@ -4548,7 +4548,7 @@ static void resolve_module(Module *m) {
     if (m->resolved == 1) {
         printf("Circular dependency among .tla files: module %s depends on itself.\n", S(m->name));
         printf("Error: Parsing or semantic analysis failed.\n");
-        exit(TPP_ERROR_PARSE);
+        exit(MANYAN_ERROR_PARSE);
     }
     if (m->resolved) return;
     m->resolved = 1;
@@ -5333,7 +5333,7 @@ static __attribute__((noinline)) Value *substituted_value(Def *d, Ctx c, Expr *w
             if (!primed || d->kind != D_VAR || d->var_index >= 0) continue;
             int slot = enabled_slot(d);
             if (slot < 0 || !next_state[slot])
-                fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+                fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
             return next_state[slot];
         }
         int i = subst_index(in->def, d);
@@ -5358,11 +5358,11 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
         if (primed || gen_init) moving_reads++;
         if (primed) {
             if (!next_state || !next_state[d->var_index])
-                fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+                fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
             return next_state[d->var_index];
         }
         if (!cur_state || !cur_state[d->var_index])
-            fail_runtime(where, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+            fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return cur_state[d->var_index];
     }
     if (d->replacement) return call_def(d->replacement, NULL, 0, (Ctx){NULL, NULL}, where);
@@ -5697,7 +5697,7 @@ static Inst *instance_chain(Expr *e, Ctx c) {
 
 static __attribute__((noinline)) Value *ev_bound(Expr *e, Ctx c) {
     Env *b = env_find(c.env, e->def);
-    if (!b) fail_runtime(e, TPP_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
+    if (!b) fail_runtime(e, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(e->def->name));
     return force(b);
 }
 
@@ -6245,7 +6245,7 @@ EVAL(ev_temporal) {
     const char *what = e->kind == K_ALWAYS ? "[]A" : e->kind == K_EVENTUALLY ? "<>A" : e->kind == K_LEADSTO ? "a ~> b"
                      : e->kind == K_WHILE ? "a -+-> formula" : e->kind == X_WF ? "WF" : e->kind == X_SF ? "SF"
                      : e->kind == X_TFORALL ? "\\AA" : "\\EE";
-    fail_runtime(e, TPP_ERROR, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
+    fail_runtime(e, MANYAN_ERROR, "TLC encountered a temporal formula (%s) when evaluating a predicate or action.", what);
 }
 #undef UNUSED_C
 #undef EVAL
@@ -6318,7 +6318,7 @@ static const EvalFn eval_kind[K_WHILE + 1] = {
     [K_WHILE] = ev_temporal,
 };
 
-/* e's frame, unless tpp made e, and through an instance that substitutes
+/* e's frame, unless manyan made e, and through an instance that substitutes
    the INSTANCE's, as TLC enters its substitutions. */
 static void frames_push(Expr *e) {
     if (!e->made) frame_push(e);
@@ -6526,9 +6526,9 @@ static Value *call_native(Def *d, Expr *call, Value **args, Ctx c) {
 }
 #define UNUSED (void)call; (void)a; (void)c
 
-/* ---------------------------------------------------------------- native operators of tpp.h */
+/* ---------------------------------------------------------------- native operators of manyan.h */
 
-struct TPPCall { Expr *call; Value **args; Ctx c; };
+struct ManyanCall { Expr *call; Value **args; Ctx c; };
 
 NATIVE(n_defined) { UNUSED; return NULL; }   /* marks a Def whose native is d->api */
 
@@ -6550,14 +6550,14 @@ static void java_cast(const char *java, Value **args, int n) {
 static Value *api_call(Def *d, Expr *call, Value **args, Ctx c) {
     for (int i = 0; args && i < d->nparams; i++) args[i] = realize(args[i]);
     if (args) java_cast(d->java, args, d->nparams);
-    TPPCall tc = {call, args, c};
+    ManyanCall tc = {call, args, c};
     return d->api(&tc, args);
 }
 
-static struct { const char *module, *name; int arity; TPPNative fn; const char *java; } *defined;
+static struct { const char *module, *name; int arity; ManyanNative fn; const char *java; } *defined;
 static int ndefined;
 
-int tpp_define(const char *module, const char *name, int arity, TPPNative fn, const char *java) {
+int manyan_define(const char *module, const char *name, int arity, ManyanNative fn, const char *java) {
     void *grown = realloc(defined, sizeof *defined * (size_t)(ndefined + 1));
     if (!grown) return -1;
     defined = grown;
@@ -6566,65 +6566,65 @@ int tpp_define(const char *module, const char *name, int arity, TPPNative fn, co
     return 0;
 }
 
-TPPKind tpp_kind(Value *v) {
+ManyanKind manyan_kind(Value *v) {
     switch (v->kind) {
-    case V_BOOL: return TPP_BOOL;
-    case V_INT: return TPP_INT;
-    case V_STR: return TPP_STRING;
-    case V_MODEL: return TPP_MODEL;
-    case V_TUPLE: return TPP_TUPLE;
-    case V_FCN: case V_LAMBDA: return TPP_FUNCTION;
-    default: return is_set(v) ? TPP_SET : TPP_OTHER;
+    case V_BOOL: return MANYAN_BOOL;
+    case V_INT: return MANYAN_INT;
+    case V_STR: return MANYAN_STRING;
+    case V_MODEL: return MANYAN_MODEL;
+    case V_TUPLE: return MANYAN_TUPLE;
+    case V_FCN: case V_LAMBDA: return MANYAN_FUNCTION;
+    default: return is_set(v) ? MANYAN_SET : MANYAN_OTHER;
     }
 }
 
-Value *tpp_bool(int b) { return BOOLV(b); }
-Value *tpp_int(int64_t i) { return mk_int(i); }
-Value *tpp_string(const char *s, size_t n) { return mk_str(intern_n(s, (int)n)); }
+Value *manyan_bool(int b) { return BOOLV(b); }
+Value *manyan_int(int64_t i) { return mk_int(i); }
+Value *manyan_string(const char *s, size_t n) { return mk_str(intern_n(s, (int)n)); }
 
-Value *tpp_tuple(size_t n, Value *const *elems) {
+Value *manyan_tuple(size_t n, Value *const *elems) {
     Value *t = mk_tuple((int)n);
     for (size_t i = 0; i < n; i++) t->u.fcn.vals[i] = elems[i];
     return t;
 }
 
-Value *tpp_function(size_t n, Value *const *keys, Value *const *values) {
+Value *manyan_function(size_t n, Value *const *keys, Value *const *values) {
     List k = {(Value **)keys, (int)n, (int)n}, v = {(Value **)values, (int)n, (int)n};
     return mk_fcn_from(&k, &v);
 }
 
-Value *tpp_record(size_t n, Value *const *names, Value *const *values) {
-    Value *r = tpp_function(n, names, values);
+Value *manyan_record(size_t n, Value *const *names, Value *const *values) {
+    Value *r = manyan_function(n, names, values);
     r->made = MADE_RECORD;
     return r;
 }
 
-Value *tpp_set(size_t n, Value *const *elems) {
+Value *manyan_set(size_t n, Value *const *elems) {
     List l = {0};
     for (size_t i = 0; i < n; i++) list_add(&l, elems[i]);
     return list_set(&l);
 }
 
-int tpp_is_true(Value *v) { return v->kind == V_BOOL && v->u.i; }
-int64_t tpp_int_value(Value *v) { return v->u.i; }
+int manyan_is_true(Value *v) { return v->kind == V_BOOL && v->u.i; }
+int64_t manyan_int_value(Value *v) { return v->u.i; }
 
-const char *tpp_string_value(Value *v, size_t *len) {
+const char *manyan_string_value(Value *v, size_t *len) {
     if (len) *len = (size_t)strs[v->u.i].len;
     return S(v->u.i);
 }
 
-size_t tpp_size(Value *v) { return (size_t)v->n; }
-Value *tpp_key(Value *v, size_t i) { return v->kind == V_TUPLE ? mk_int((int64_t)i + 1) : v->u.fcn.keys[i]; }
-Value *tpp_value(Value *v, size_t i) { return realize(v->u.fcn.vals[i]); }
+size_t manyan_size(Value *v) { return (size_t)v->n; }
+Value *manyan_key(Value *v, size_t i) { return v->kind == V_TUPLE ? mk_int((int64_t)i + 1) : v->u.fcn.keys[i]; }
+Value *manyan_value(Value *v, size_t i) { return realize(v->u.fcn.vals[i]); }
 
-Value *tpp_field(Value *r, const char *name) {
+Value *manyan_field(Value *r, const char *name) {
     int i = is_fcn(r) ? fcn_index(r, mk_str(intern(name))) : -1;
     return i < 0 ? NULL : realize(r->u.fcn.vals[i]);
 }
 
-Value *tpp_elements(Value *s) { return is_set(s) && enumerable(s) ? enumerate(s) : NULL; }
-Value *tpp_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
-int tpp_compare(Value *a, Value *b) { return vcmp(a, b); }
+Value *manyan_elements(Value *s) { return is_set(s) && enumerable(s) ? enumerate(s) : NULL; }
+Value *manyan_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
+int manyan_compare(Value *a, Value *b) { return vcmp(a, b); }
 
 /* Java's String.format(f, args), each argument a string: %s and %S, with
    flag -, a width and a precision, %b, %h, %n and %%, an argument by its
@@ -6678,33 +6678,33 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
     return NULL;
 }
 
-const char *tpp_print(Value *v) { return pretty(v); }
-const char *tpp_to_string(Value *v) { return value_str(v); }
-const char *tpp_class(Value *v) { return java_class(v); }
+const char *manyan_print(Value *v) { return pretty(v); }
+const char *manyan_to_string(Value *v) { return value_str(v); }
+const char *manyan_class(Value *v) { return java_class(v); }
 
-Value *tpp_format(TPPCall *call, const char *fmt, size_t n, const char *const *args) {
+Value *manyan_format(ManyanCall *call, const char *fmt, size_t n, const char *const *args) {
     Buf b = {0};
     const char *cls, *why = java_format(&b, fmt, (int)n, args, &cls);
-    if (why) { free(b.s); tpp_throw(call, "%s", why); }
+    if (why) { free(b.s); manyan_throw(call, "%s", why); }
     Value *v = mk_str(intern(b.s ? b.s : ""));
     free(b.s);
     return v;
 }
 
-Value *tpp_arg(TPPCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
+Value *manyan_arg(ManyanCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
 
-void tpp_fail(TPPCall *call, const char *fmt, ...) {
+void manyan_fail(ManyanCall *call, const char *fmt, ...) {
     (void)call;
     va_list ap;
     va_start(ap, fmt);
-    vfail(NULL, 1, TPP_ERROR, fmt, ap);
+    vfail(NULL, 1, MANYAN_ERROR, fmt, ap);
 }
 
-void tpp_throw(TPPCall *call, const char *fmt, ...) {
+void manyan_throw(ManyanCall *call, const char *fmt, ...) {
     (void)call;
     va_list ap;
     va_start(ap, fmt);
-    vfail(NULL, 0, TPP_ERROR, fmt, ap);
+    vfail(NULL, 0, MANYAN_ERROR, fmt, ap);
 }
 
 
@@ -6959,7 +6959,7 @@ NATIVE(n_assert) {
     if (a[0]->kind == V_BOOL && a[0]->u.i) return TRUEV;
     error_reset();
     buf_printf(&error_message, "The first argument of Assert evaluated to FALSE; the second argument was:\n%s", pretty(a[1]));
-    error_status = TPP_VIOLATION_ASSERT;
+    error_status = MANYAN_VIOLATION_ASSERT;
     error_module = 1;
     raise_error();
 }
@@ -6983,7 +6983,7 @@ static Value *sim_stats(void);
 static Value *action_record(Value **st);
 
 /* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
-   sets: pairs of k and its value, interned. A worker leaves them to tpp. */
+   sets: pairs of k and its value, interned. A worker leaves them to manyan. */
 static int *props, nprops;
 static int *prop(const char *key) {
     if (strncmp(key, "-D", 2)) return NULL;
@@ -7321,7 +7321,7 @@ static int jr_int(JRandom *r, int bound) {
    simulation draws as TLC's threads do, from one for the model and the
    initial states and another for the behaviors. Model checking draws
    again for Init and for each state expanded, xored with the state's
-   fingerprint so that a trace can be rebuilt; tpp's fingerprints are not
+   fingerprint so that a trace can be rebuilt; manyan's fingerprints are not
    TLC's, so there the draws are not TLC's. */
 static JRandom draw_model, draw_behaviors, *drawing = &draw_model;
 static int64_t draw_seed;
@@ -7601,8 +7601,8 @@ NATIVE(n_tlcgetordefault) {
 static _Noreturn void unsupported(const char *op) {
     if (in_worker) worker_cannot();
     fflush(stdout);
-    fprintf(stderr, "tpp: %s is not supported\n", op);
-    exit(TPP_ERROR);
+    fprintf(stderr, "manyan: %s is not supported\n", op);
+    exit(MANYAN_ERROR);
 }
 #define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
 UNSUPPORTED(n_trace, "Trace")
@@ -7726,9 +7726,9 @@ static void bind_natives(void) {
                 }
             for (int k = 0; k < ndefined; k++)
                 if (!strcmp(defined[k].module, S(m->name)) && !strcmp(defined[k].name, S(d->name))
-                    && (defined[k].arity == TPP_LAZY || d->nparams == defined[k].arity)) {
+                    && (defined[k].arity == MANYAN_LAZY || d->nparams == defined[k].arity)) {
                     d->native = n_defined, d->api = defined[k].fn;
-                    d->lazy = defined[k].arity == TPP_LAZY;
+                    d->lazy = defined[k].arity == MANYAN_LAZY;
                     d->java = defined[k].java;
                 }
         }
@@ -8887,7 +8887,7 @@ static void fp_insert(int idx) {
         size_t bytes = sizeof(FpSlot) * (size_t)size;
         FpSlot *table;
         if (fp_region) {
-            if (fp_region_used + bytes > fp_region_size) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
+            if (fp_region_used + bytes > fp_region_size) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
             table = (FpSlot *)(fp_region + fp_region_used);
             fp_region_used += bytes;
         } else {
@@ -9175,7 +9175,7 @@ static int nworkers = 1;   /* processes expanding states; with more than one, th
 /* A new state whose encoding ends the store. */
 static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
-        if (nworkers > 1) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
+        if (nworkers > 1) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
@@ -9193,7 +9193,7 @@ static int add_record(size_t off, uint64_t fp, int parent, int action, int depth
 }
 
 static void store_add(const char *bytes, size_t n) {
-    if (nworkers > 1 && store.n + n + 1 > store.cap) { fputs("tpp: too many states\n", stderr); exit(TPP_ERROR); }
+    if (nworkers > 1 && store.n + n + 1 > store.cap) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
     buf_add(&store, bytes, n);
 }
 
@@ -9257,7 +9257,7 @@ static int cur_action;
 /* TLC rebuilds the states of a trace from their fingerprints by evaluating
    the spec again: all of Init for the first state, then each action in turn
    until one yields the next state. Side effects such as Print happen
-   again, so tpp replays the same evaluations for the same output. The
+   again, so manyan replays the same evaluations for the same output. The
    state found is the first with the fingerprint, which under a view or
    symmetry may be another than the one stored. */
 static Value **replay_target;
@@ -9560,7 +9560,7 @@ static int check_posts(int after_error) {
             printf("%s\n", why.s);
         }
         free(why.s);
-        return simulating ? TPP_ERROR_CONFIG : after_error ? 0 : TPP_ERROR;
+        return simulating ? MANYAN_ERROR_CONFIG : after_error ? 0 : MANYAN_ERROR;
     }
     EvalState saved = eval_save();
     ErrorState error = error_save();
@@ -9578,17 +9578,17 @@ static int check_posts(int after_error) {
             printf("Error: Evaluating postcondition %s at %s failed.\n", S(posts[i]), b.s);
             print_error_text();
             free(b.s);
-            status = TPP_VIOLATION_ASSUMPTION;
+            status = MANYAN_VIOLATION_ASSUMPTION;
             continue;
         }
         Value *v = eval(d[i]->body, root_ctx);
         if (v->kind != V_BOOL) {
             printf("Error: Evaluating postcondition %s at %s failed.\n"
                    "TLC expected a boolean value, but did not find one. %s\n", S(posts[i]), b.s, b.s);
-            status = TPP_VIOLATION_ASSUMPTION;
+            status = MANYAN_VIOLATION_ASSUMPTION;
         } else if (!v->u.i) {
             printf("Error: Postcondition %s at %s is false.\n", S(posts[i]), b.s);
-            status = TPP_VIOLATION_ASSUMPTION;
+            status = MANYAN_VIOLATION_ASSUMPTION;
         }
         free(b.s);
     }
@@ -9647,14 +9647,14 @@ static int checking_invariant(void) { return checking(invariants, ninvariants); 
 
 /* Whether the error is TLC's EvalException, not one of its own
    TLCRuntimeExceptions, which some of its callers catch. */
-static int eval_exception(void) { return error_status == TPP_VIOLATION_ASSERT || error_module == 1; }
+static int eval_exception(void) { return error_status == MANYAN_VIOLATION_ASSERT || error_module == 1; }
 
 /* A formula that is no boolean, an error TLC raises outside its evaluator. */
 static _Noreturn void not_boolean_formula(Expr *e) {
     error_reset();
     buf_puts(&error_message, "TLC expected a boolean value, but did not find one. ");
     node_text(&error_message, e);
-    error_status = TPP_FAILURE_EVAL;
+    error_status = MANYAN_FAILURE_EVAL;
     stackless = 1;
     raise_error();
 }
@@ -9789,13 +9789,13 @@ static int check_initial(Value **st) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
         if (!print_shown(st)) print_trace_state(st, st, 1);
         printf("\n");
-        if (!keep_going || simulating) return TPP_VIOLATION_SAFETY;   /* TLC's simulator stops */
+        if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
         if (!print_shown(st)) print_trace_state(st, st, 1);
-        return TPP_VIOLATION_LIVENESS;
+        return MANYAN_VIOLATION_LIVENESS;
     }
     return 0;
 }
@@ -9846,7 +9846,7 @@ static int action_violated(Value **st) {
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
     reported_trace(expanding, st, cur_action);
     if (keep_going) return 0;
-    violation = TPP_VIOLATION_LIVENESS;
+    violation = MANYAN_VIOLATION_LIVENESS;
     return 1;
 }
 
@@ -9861,7 +9861,7 @@ static int next_emit(void) {
     if (unassigned) {
         print_unspecified(succ);
         reported_trace(expanding, succ, cur_action);
-        violation = TPP_FAILURE_EVAL;
+        violation = MANYAN_FAILURE_EVAL;
         return 1;
     }
     Value **st = NEWN(Value *, nvars);
@@ -9875,7 +9875,7 @@ static int next_emit(void) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             reported_trace(expanding, st, cur_action);
             if (!keep_going) {
-                violation = TPP_VIOLATION_SAFETY;
+                violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
             }
         }
@@ -9899,7 +9899,7 @@ static int next_emit(void) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
             reported_trace(expanding, st, cur_action);
             if (!keep_going) {
-                violation = TPP_VIOLATION_SAFETY;
+                violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
             }
         }
@@ -9935,7 +9935,7 @@ static Value *search_config(void) {
     return mk_record(simulating ? 8 : 4, names, vals);
 }
 
-/* TLCGet("revision"): that of the TLC whose behavior tpp follows, the
+/* TLCGet("revision"): that of the TLC whose behavior manyan follows, the
    Makefile's oracle. */
 static Value *tlc_revision(void) {
     const char *names[] = {"timestamp", "date", "count", "tag", "calver"};
@@ -10015,7 +10015,7 @@ static int expand_state(int idx) {
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
         if (violation) {
-            print_counts(nstates - expanded - (violation != TPP_FAILURE_EVAL && violation_fresh));
+            print_counts(nstates - expanded - (violation != MANYAN_FAILURE_EVAL && violation_fresh));
             return violation;
         }
     }
@@ -10024,7 +10024,7 @@ static int expand_state(int idx) {
         reported_trace(idx, NULL, 0);
         if (ntemporal_props) live_after_deadlock(idx);
         print_counts(nstates - expanded);
-        return TPP_VIOLATION_DEADLOCK;
+        return MANYAN_VIOLATION_DEADLOCK;
     }
     note_expanded(idx);
     arena_reset(&scratch_arena);
@@ -10093,7 +10093,7 @@ static Buf w_bytes;
 
 static void *shared(size_t bytes) {
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) { fputs("tpp: cannot reserve shared memory for workers\n", stderr); exit(TPP_ERROR); }
+    if (p == MAP_FAILED) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); exit(MANYAN_ERROR); }
     return p;
 }
 
@@ -10270,9 +10270,9 @@ static void start_workers(void) {
     from_worker = xmalloc(sizeof *from_worker * (size_t)nworkers);
     worker_pids = xmalloc(sizeof(pid_t) * (size_t)nworkers);
     for (int i = 0; i < nworkers - 1; i++) {
-        if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
+        if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
         pid_t pid = fork();
-        if (pid < 0) { fputs("tpp: cannot start workers\n", stderr); exit(TPP_ERROR); }
+        if (pid < 0) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
         if (pid == 0) {
             for (int j = 0; j < i; j++) { close(to_worker[j][1]); close(from_worker[j][0]); }
             close(to_worker[i][1]);
@@ -10350,14 +10350,14 @@ static int expand_level(int lo, int hi) {
     for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
     for (int i = 0; i < nworkers - 1; i++)
-        if (write(to_worker[i][1], "x", 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+        if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
     int status = merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nworkers - 1; i++)
-        if (read(from_worker[i][0], &c, 1) != 1) { fputs("tpp: a worker stopped\n", stderr); exit(TPP_ERROR); }
+        if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     return status;
 }
 
@@ -10478,12 +10478,12 @@ static int search(void) {
             replay_error(NULL);
             if (over != 2) print_unfingerprinted(fps, nfp);
             print_counts(nstates);
-            return TPP_FAILURE_EVAL;   /* TLC: a failed Assert too */
+            return MANYAN_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
         if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
             print_counts(nstates - expanded - checking_invariant());
-            return checking_invariant() ? TPP_ERROR : TPP_FAILURE_EVAL;
+            return checking_invariant() ? MANYAN_ERROR : MANYAN_FAILURE_EVAL;
         }
         int outside = fingerprinting;
         fingerprinting = 0;
@@ -10511,7 +10511,7 @@ static int search(void) {
             }
             if (!over) print_unfingerprinted(fps, nfp);
             print_counts(outside ? nstates - expanded : 0);
-            return error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
+            return error_module == 1 ? MANYAN_ERROR : MANYAN_FAILURE_EVAL;
         }
         if (checking(action_props, naction_props)) {
             printf("Error: Evaluating action property %s failed.\n", S(error_check->name));
@@ -10519,7 +10519,7 @@ static int search(void) {
             int failed = print_trace(expanding, error_state, cur_action);
             print_unfingerprinted(fps, nfp);
             print_counts(nstates - expanded - violation_fresh);
-            return failed ? failed : error_module == 1 ? TPP_ERROR : TPP_FAILURE_EVAL;
+            return failed ? failed : error_module == 1 ? MANYAN_ERROR : MANYAN_FAILURE_EVAL;
         }
         if (checking_invariant()) {
             /* An invariant of a new state failed to evaluate: as TLC, an
@@ -10529,11 +10529,11 @@ static int search(void) {
             int failed = print_trace(expanding, error_state, cur_action);
             if (failed) printf("\n");   /* after the call stack TLC prints for it */
             print_counts(nstates - expanded - 1);
-            return failed ? failed : TPP_FAILURE_SAFETY_EVAL;
+            return failed ? failed : MANYAN_FAILURE_SAFETY_EVAL;
         }
         /* TLC reports an error of its own evaluator in Next as an unexpected
            exception; one of a standard module's operators plainly. */
-        if (status == TPP_FAILURE_EVAL && error_module != 1)
+        if (status == MANYAN_FAILURE_EVAL && error_module != 1)
             print_exception("java.lang.RuntimeException", ": ");
         else
             printf("Error: ");
@@ -10546,7 +10546,7 @@ static int search(void) {
         replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
-        if (status == TPP_FAILURE_EVAL && error_module == 1) status = TPP_ERROR;
+        if (status == MANYAN_FAILURE_EVAL && error_module == 1) status = MANYAN_ERROR;
         return status;
     }
     gen_target = succ;
@@ -10576,7 +10576,7 @@ static int search(void) {
     fflush(stdout);
     if (!next_expr) {
         printf("Error: No next state actions defined to generate successor states from.\n");
-        return TPP_FAILURE_EVAL;
+        return MANYAN_FAILURE_EVAL;
     }
     gen_init = 0;
     gen_emit = next_emit;
@@ -10599,7 +10599,7 @@ static int search(void) {
         int violated = live_violated();
         if (violated) {
             check_posts(1);
-            if (violated == TPP_VIOLATION_SAFETY) print_counts_after(live_cut);
+            if (violated == MANYAN_VIOLATION_SAFETY) print_counts_after(live_cut);
             else print_counts(exit_requested ? nstates - expanded : 0);
             return violated;
         }
@@ -10613,7 +10613,7 @@ static int search(void) {
     }
     printf("Model checking completed. No error has been found.\n");
     print_counts(exit_requested ? nstates - expanded : 0);
-    return TPP_OK;
+    return MANYAN_OK;
 }
 
 /* ---------------------------------------------------------------- simulation */
@@ -10869,7 +10869,7 @@ static void sim_write(const char *file, long t, States *trace) {
 /* Random simulation (§10.8): TLC's behaviors for the seed, from one worker.
    The initial states are kept for good; a behavior, with all it
    evaluates, until it ends. */
-static int simulate(const TPPOptions *o) {
+static int simulate(const ManyanOptions *o) {
     int64_t seed = draw_seed;
     rng_seed(seed);
     for (int64_t i = 0; i < o->aril; i++) rng_index(1);
@@ -10897,17 +10897,17 @@ static int simulate(const TPPOptions *o) {
             print_state(error_state);
             printf("\n");
             sim_summary(seed, aril);
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
         if (invariant || checking(action_props, naction_props)) {
             printf("Error: Evaluating %s %s failed.\n", invariant ? "invariant" : "action property", S(error_check->name));
             print_error_text();
             sim_print(sim_behavior(trace, sim_checked, cur_action));
             sim_summary(seed, aril);
-            return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
+            return invariant ? MANYAN_FAILURE_SAFETY_EVAL : MANYAN_VIOLATION_LIVENESS;
         }
         report_exception(trace->n > 0);
-        int status = trace->n && error_module == 2 ? error_status : TPP_ERROR;
+        int status = trace->n && error_module == 2 ? error_status : MANYAN_ERROR;
         if (trace->n) {
             error_check = NULL;
             sim_print(sim_behavior(trace, NULL, 0));
@@ -10933,7 +10933,7 @@ static int simulate(const TPPOptions *o) {
             if (!st[v]) {
                 printf("Error: State is not completely specified by the initial predicate:\n");
                 print_state(st);
-                return TPP_ERROR;
+                return MANYAN_ERROR;
             }
         sim_checked = st, cur_action = -1;   /* reached by Init */
         int violated = check_initial(st);
@@ -10941,18 +10941,18 @@ static int simulate(const TPPOptions *o) {
             printf("While working on the initial state:\n");
             print_state(st);
             printf("\n");
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
         if (violated) return violated;
         if (check_list(constraints, nconstraints, st) < 0) sim_push(&in_model, st, -1);
     }
     if (!init.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
-        return TPP_ERROR;
+        return MANYAN_ERROR;
     }
     if (!in_model.n) {
         printf("Error: There is no state satisfying the initial state predicate and the state-constraint(s).\n");
-        return TPP_ERROR;
+        return MANYAN_ERROR;
     }
     init = in_model;
     printf("Finished computing initial states: %d distinct state generated.\n", init.n);
@@ -10981,16 +10981,16 @@ static int simulate(const TPPOptions *o) {
                            "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"
                            "but it produced the following error:\n"
                            "Cannot invoke \"tlc2.value.impl.Value.fingerPrint(long)\" because \"this.values[i]\" is null\n");
-                    return TPP_FAILURE_EVAL;
+                    return MANYAN_FAILURE_EVAL;
                 }
                 States *b = sim_behavior(trace, sim_failed ? sim_checked : NULL, cur_action);
                 if (sim_failed) {
                     Check *list = sim_failed == 2 ? invariants : action_props;
                     printf("Error: %s %s is violated.\n", sim_failed == 2 ? "Invariant" : "Action property", S(list[sim_bad].name));
-                    status = sim_failed == 2 ? TPP_VIOLATION_SAFETY : TPP_VIOLATION_LIVENESS;
+                    status = sim_failed == 2 ? MANYAN_VIOLATION_SAFETY : MANYAN_VIOLATION_LIVENESS;
                 } else if (check_deadlock) {
                     printf("Error: Deadlock reached.\n");
-                    status = TPP_VIOLATION_DEADLOCK;
+                    status = MANYAN_VIOLATION_DEADLOCK;
                 } else break;
                 sim_print(b);
                 sim_summary(seed, aril);
@@ -11009,7 +11009,7 @@ static int simulate(const TPPOptions *o) {
         if (ntemporal_props && sim_violates(sim_behavior(trace, NULL, 0))) {
             sim_summary(seed, aril);
             int post = check_posts(1);
-            return post ? post : TPP_VIOLATION_LIVENESS;
+            return post ? post : MANYAN_VIOLATION_LIVENESS;
         }
         sim_level(trace->n < depth ? trace->n : depth);
         if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(trace, NULL, 0));
@@ -11036,7 +11036,7 @@ static _Noreturn void config_error(const char *fmt, ...) {
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     printf("Error: %s\n", msg);
-    exit(TPP_ERROR_CONFIG);
+    exit(MANYAN_ERROR_CONFIG);
 }
 
 /* line: where the lexer is; tline: the line of the token last read. */
@@ -11050,7 +11050,7 @@ static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
     vprintf(fmt, ap);
     va_end(ap);
     printf("\n");
-    exit(TPP_ERROR_CONFIG);
+    exit(MANYAN_ERROR_CONFIG);
 }
 
 static void cfg_space(CfgLexer *L) {
@@ -11115,7 +11115,7 @@ static _Noreturn void cfg_string_error(CfgLexer *L, int n) {
         printf("Error: TLC found an error in the configuration file:\nLexical error at line %d, column 0.  "
                "Encountered: <EOF> after : \"%s\"\n", L->line + 1, b.s);
     }
-    exit(TPP_ERROR_CONFIG);
+    exit(MANYAN_ERROR_CONFIG);
 }
 
 static int cfg_token(CfgLexer *L) {
@@ -11438,7 +11438,7 @@ typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
 static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
     if (depth > 1000) {   /* a cycle through substitutions: TLC's stack overflows */
         printf("Error: %s\n", stack_overflow);
-        exit(TPP_ERROR);
+        exit(MANYAN_ERROR);
     }
     switch (e->kind) {
     case K_DECL:
@@ -11535,7 +11535,7 @@ static void use_specification(Expr *spec) {
             Buf b = {0};   /* []S, S an operator applied with no action: SANY's OpApplNode */
             loc_text(&b, e->args[0]);
             printf("Error: TLC cannot handle the temporal formula %s\n", b.s);
-            exit(TPP_ERROR);
+            exit(MANYAN_ERROR);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
             fairness[nfairness++] = in_instance(call, e);
@@ -11776,7 +11776,7 @@ static int check_assumption(Unit *u) {
             printf("\n%s", l.s);
         }
         printf("\n");
-        return TPP_VIOLATION_ASSUMPTION;
+        return MANYAN_VIOLATION_ASSUMPTION;
     }
     arena = &made;
     Value *v = eval(u->expr, root_ctx);
@@ -11788,7 +11788,7 @@ static int check_assumption(Unit *u) {
         Buf b = {0};
         loc_text(&b, u->expr);
         printf("Error: Assumption %s is false.\n", b.s);
-        return TPP_VIOLATION_ASSUMPTION;
+        return MANYAN_VIOLATION_ASSUMPTION;
     }
     return 0;
 }
@@ -12138,7 +12138,7 @@ static int setup_model(void) {
                     printf("Note that a bug can cause TLC to incorrectly report this error.\n"
                            "If you believe your TLA+ or PlusCal specification to be correct,\n"
                            "please check if this bug described in LevelNode.java starting at line 590ff affects you.\n");
-                exit(TPP_FAILURE_SAFETY_EVAL);
+                exit(MANYAN_FAILURE_SAFETY_EVAL);
             }
             if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, root_ctx, e->def->name);
         } else if (strncmp(k, "PROPERT", 7) == 0) {
@@ -12173,10 +12173,10 @@ static int setup_model(void) {
             handler = &here;
             if (sigsetjmp(here, 0)) {
                 handler = NULL;
-                if (error_status == TPP_ERROR_CONFIG) { print_error_message(); exit(TPP_ERROR_CONFIG); }
+                if (error_status == MANYAN_ERROR_CONFIG) { print_error_message(); exit(MANYAN_ERROR_CONFIG); }
                 print_exception("java.lang.RuntimeException", ": ");
                 printf("The symmetry operator must specify a set of functions.\n");
-                exit(TPP_ERROR);
+                exit(MANYAN_ERROR);
             }
             Value *g = enumerate(eval(config_call(it->name, "symmetry function", 0), root_ctx));
             handler = NULL;
@@ -12184,7 +12184,7 @@ static int setup_model(void) {
                 if (!is_fcn(realize(g->u.set.elems[j]))) {
                     print_exception("java.lang.RuntimeException", ": ");
                     printf("The symmetry values must be function records.\n");
-                    exit(TPP_ERROR);
+                    exit(MANYAN_ERROR);
                 }
             if (!nowarning) warn_symmetry_sets(root_sym(it->name)->def->body, g);
             Value *s = permutation_group(g);
@@ -12198,8 +12198,8 @@ static int setup_model(void) {
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
         } else if (k[0] == '_') {
-            fprintf(stderr, "tpp: %s is not supported\n", k);
-            exit(TPP_ERROR);
+            fprintf(stderr, "manyan: %s is not supported\n", k);
+            exit(MANYAN_ERROR);
         }
     }
     }
@@ -13324,12 +13324,12 @@ static int live_error(void) {
     if (sigsetjmp(here, 0)) {
         handler = NULL;
         printf("\n");
-        if (eval_failure_status() == TPP_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
+        if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
         else printf("Error: ");
         print_error_text();
         print_trace(s, NULL, 0);
         print_counts_after(s);
-        return TPP_ERROR;
+        return MANYAN_ERROR;
     }
     for (s = 0; s < nstates; s++) {
         StateRec *r = &states[s];
@@ -13353,7 +13353,7 @@ static int live_error(void) {
     /* Not found so: as it came. */
     handler = NULL;
     print_error_message();
-    return TPP_FAILURE_EVAL;
+    return MANYAN_FAILURE_EVAL;
 }
 
 static void collect_fairnesses(void) {
@@ -13391,14 +13391,14 @@ static int live_cut_violated(void) {
     if (first < 0) return 0;
     if (first) live_cut_at(live_setup(first), &at);
     print_cut(at);
-    return TPP_VIOLATION_SAFETY;
+    return MANYAN_VIOLATION_SAFETY;
 }
 
 static int live_violated(void) {
     int cut = live_cut_violated();
     if (cut) return cut;
     for (int p = 0; p < ntemporal_props; p++)
-        if (check_property(p ? live_setup(p) : live_negated)) return TPP_VIOLATION_LIVENESS;
+        if (check_property(p ? live_setup(p) : live_negated)) return MANYAN_VIOLATION_LIVENESS;
     return 0;
 }
 
@@ -13471,17 +13471,17 @@ static int check_temporal_forms(int simulating) {
         negated[p] = negation(&temporal_props[p]);
         if (!negated[p]) {   /* TLC fails building its tableau, evaluating its constants */
             report_exception(0);
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
     }
     if (ntemporal_props && dnf_too_large(negated)) {
         printf("Error: TLC cannot handle the temporal formula because it exceeds the maximum supported size in disjunctive normal form.\n");
-        return TPP_ERROR;
+        return MANYAN_ERROR;
     }
     for (int p = 0; p < ntemporal_props; p++) {
         if (tf_wrong_form(negated[p])) {
             printf("Error: Temporal formulas containing actions must be of forms <>[]A or []<>A.\n");
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
         if (level_in(temporal_props[p].expr, temporal_props[p].ctx) == 3) {   /* a predicate on the initial states is no tautology */
             temporal++;
@@ -13490,7 +13490,7 @@ static int check_temporal_forms(int simulating) {
     }
     if (temporal && unsatisfiable == temporal && !simulating) {
         printf("Error: Temporal formula is a tautology (its negation is unsatisfiable).\n");
-        return TPP_FAILURE_LIVENESS_EVAL;
+        return MANYAN_FAILURE_LIVENESS_EVAL;
     }
     return 0;
 }
@@ -13509,8 +13509,8 @@ static Expr *odd_literal(Module *m) {
     return m->odd[1] ? m->odd[1] : m->odd[2];
 }
 
-int tpp_check(const TPPOptions *o) {
-    printf("tpp version %s\n", TPP_VERSION);
+int manyan_check(const ManyanOptions *o) {
+    printf("manyan version %s\n", MANYAN_VERSION);
     size_t len = strlen(o->spec);
     char *path = xmalloc(len + 5);
     strcpy(path, o->spec);
@@ -13534,7 +13534,7 @@ int tpp_check(const TPPOptions *o) {
     if (!text) {
         printf("Error: Cannot find source file %s.\n", path);
         printf("Error: Parsing or semantic analysis failed.\n");
-        return TPP_ERROR_PARSE;
+        return MANYAN_ERROR_PARSE;
     }
 
     for (int i = 0; builtin_names[i]; i++) intern(builtin_names[i]);
@@ -13563,8 +13563,8 @@ int tpp_check(const TPPOptions *o) {
     if (user_file) fclose(user_file);   /* each write is flushed: a run may end anywhere */
     user_file = NULL;
     if (o->user_file && !(user_file = fopen(o->user_file, "w"))) {
-        fprintf(stderr, "tpp: cannot write %s\n", o->user_file);
-        return TPP_ERROR;
+        fprintf(stderr, "manyan: cannot write %s\n", o->user_file);
+        return MANYAN_ERROR;
     }
 
     root_text = text;
@@ -13583,7 +13583,7 @@ int tpp_check(const TPPOptions *o) {
         if (e && e->num < 0) config_error("TLC can't handle real numbers.\n%s", S(e->op));
         if (e) {
             printf("Error: TLC can't handle a number this big.\n%s\n", S(e->op));
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
     }
     bind_natives();
@@ -13624,12 +13624,12 @@ int tpp_check(const TPPOptions *o) {
         if (o->simulate) {   /* TLC's simulator wants an initial state */
             printf("Computed 0 initial states...\n");
             printf("Error: There is no state satisfying the initial state predicate.\n");
-            return TPP_ERROR;
+            return MANYAN_ERROR;
         }
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
         print_counts(0);
-        return TPP_OK;
+        return MANYAN_OK;
     }
     /* With nothing to check on steps, TLC computes the initial states first. */
     if (!next_expr && (ninvariants || naction_props || ntemporal_props))
@@ -13641,7 +13641,7 @@ int tpp_check(const TPPOptions *o) {
         handler = NULL;
         print_exception("java.lang.RuntimeException", ": ");
         print_error_text();
-        return TPP_ERROR;
+        return MANYAN_ERROR;
     }
     if (next_expr) {
         int named = (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;
@@ -13649,7 +13649,7 @@ int tpp_check(const TPPOptions *o) {
     }
     handler = NULL;
     if (o->dump && !o->simulate) {
-        if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "tpp: cannot write %s\n", o->dump); return TPP_ERROR; }
+        if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }
         fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
         dump_actions = o->dump_actions;
     }
@@ -13662,12 +13662,12 @@ int tpp_check(const TPPOptions *o) {
     return status;
 }
 
-#ifndef TPP_NO_MAIN
-#include "tpp-std.h"
+#ifndef MANYAN_NO_MAIN
+#include "manyan-std.h"
 
 int main(int argc, char **argv) {
-    if (tpp_std_init()) { fprintf(stderr, "tpp: out of memory\n"); return TPP_ERROR; }
-    TPPOptions o = {0};
+    if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }
+    ManyanOptions o = {0};
     o.check_deadlock = 1;
     const char **properties = calloc((size_t)argc, sizeof(char *));
     int nproperties = 0;
@@ -13682,7 +13682,7 @@ int main(int argc, char **argv) {
                 for (char *arg = strtok(argv[++i], ","); arg; arg = strtok(NULL, ","))
                     if (strncmp(arg, "num=", 4) == 0) o.traces = atol(arg + 4);
                     else if (strncmp(arg, "file=", 5) == 0) o.trace_file = arg + 5;
-                    else { fprintf(stderr, "tpp: %s %s is not supported\n", o.generate ? "-generate" : "-simulate", arg); return TPP_ERROR; }
+                    else { fprintf(stderr, "manyan: %s %s is not supported\n", o.generate ? "-generate" : "-simulate", arg); return MANYAN_ERROR; }
             }
         }
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
@@ -13696,31 +13696,31 @@ int main(int argc, char **argv) {
             /* -dump dot[,actionlabels,...] FILE writes FILE.dot, as TLC. */
             const char *format = argv[++i], *file = argv[++i];
             if (strncmp(format, "dot", 3) != 0 || (format[3] && format[3] != ',')) {
-                fprintf(stderr, "tpp: -dump writes only dot: -dump dot FILE\n");
-                return TPP_ERROR;
+                fprintf(stderr, "manyan: -dump writes only dot: -dump dot FILE\n");
+                return MANYAN_ERROR;
             }
             o.dump_actions = strstr(format, "actionlabels") != NULL;
             size_t n = strlen(file);
             char *path = xmalloc(n + 5);
             sprintf(path, "%s%s", file, n >= 4 && strcmp(file + n - 4, ".dot") == 0 ? "" : ".dot");
             o.dump = path;
-        } else if (strcmp(argv[i], "-version") == 0) { printf("tpp version %s\n", TPP_VERSION); return 0; }
+        } else if (strcmp(argv[i], "-version") == 0) { printf("manyan version %s\n", MANYAN_VERSION); return 0; }
         else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
         else if (strcmp(argv[i], "-difftrace") == 0) o.difftrace = 1;
         else if (strcmp(argv[i], "-continue") == 0) o.keep_going = 1;
         else if (strcmp(argv[i], "-view") == 0) o.view = 1;
         else if (strcmp(argv[i], "-userFile") == 0 && i + 1 < argc) o.user_file = argv[++i];
         else if (!strncmp(argv[i], "-D", 2) && strchr(argv[i], '=')) properties[nproperties++] = argv[i] + 2;
-        /* TLC's, for its own files and fingerprints: tpp has neither */
+        /* TLC's, for its own files and fingerprints: manyan has neither */
         else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits")) && i + 1 < argc) i++;
         else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}
-        else if (argv[i][0] == '-') { fprintf(stderr, "tpp: unknown option %s\n", argv[i]); return TPP_ERROR; }
+        else if (argv[i][0] == '-') { fprintf(stderr, "manyan: unknown option %s\n", argv[i]); return MANYAN_ERROR; }
         else o.spec = argv[i];
     }
     if (!o.spec) {
-        fprintf(stderr, "usage: tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n");
-        return TPP_ERROR;
+        fprintf(stderr, "usage: manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n");
+        return MANYAN_ERROR;
     }
-    return tpp_check(&o);
+    return manyan_check(&o);
 }
 #endif

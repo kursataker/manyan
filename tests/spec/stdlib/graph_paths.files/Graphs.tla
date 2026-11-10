@@ -1,6 +1,6 @@
 ---- MODULE Graphs ----
 \* CommunityModules' path operators, with their definitions: TLC replaces
-\* them by its Java, as tpp by its own.
+\* them by its Java, as Manyan by its own.
 LOCAL INSTANCE Naturals
 LOCAL INSTANCE Sequences
 Path(G) == {p \in Seq(G.node) :

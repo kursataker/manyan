@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "tests/spec"
 
 NOISE = re.compile(
-    r"^(TLC2 Version|tpp version|Running |Parsing file|Semantic processing|Starting\.\.\.|"
+    r"^(TLC2 Version|manyan version|Running |Parsing file|Semantic processing|Starting\.\.\.|"
     r"Computing initial states\.\.\.|Computed \d+ initial states|Progress\(|Checking temporal properties for|"
     r"Finished checking temporal properties|Implied-temporal checking|Finished in|"
     r"The average outdegree|  Estimates of the probability|  because two distinct states|"
@@ -126,7 +126,7 @@ def run(command, path):
 
 
 def oracle_command(tlc):
-    meta = tempfile.mkdtemp(prefix="tpp-meta-")
+    meta = tempfile.mkdtemp(prefix="manyan-meta-")
     return tlc.split() + ["-workers", "1", "-metadir", meta]
 
 

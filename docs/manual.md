@@ -1,32 +1,32 @@
-# tpp manual
+# Manyan manual
 
-tpp checks TLA+ specifications the way TLC does: it reads a module and a
+Manyan checks TLA+ specifications the way TLC does: it reads a module and a
 model configuration, explores every reachable state breadth-first, and
-prints what TLC 1.8.0 prints. What tpp accepts and what it must print are
-defined by [the tpp TLA+ Standard](standards/tla2.md); this manual covers
+prints what TLC 1.8.0 prints. What Manyan accepts and what it must print are
+defined by [the Manyan TLA+ Standard](standards/tla2.md); this manual covers
 how to run it.
 
 ## Building
 
 ```sh
-make            # builds ./tpp from tpp.c and tpp-std.c; needs a C11 compiler
-make install    # installs bin/tpp and include/tpp.h, tpp-std.h under PREFIX (/usr/local)
+make            # builds ./manyan from manyan.c and manyan-std.c; needs a C11 compiler
+make install    # installs bin/manyan and include/manyan.h, manyan-std.h under PREFIX (/usr/local)
 ```
 
-`make` builds tpp instrumented, runs the conformance suite with it, and
+`make` builds Manyan instrumented, runs the conformance suite with it, and
 builds it again with the profile; the result is 10 to 25% faster than a
 plain `-O2` build. It needs python3 to run the suite and, with clang,
-`llvm-profdata` (Xcode has it); without them, it builds tpp plain.
+`llvm-profdata` (Xcode has it); without them, it builds Manyan plain.
 
-tpp is one C file with no dependencies beyond the C library and POSIX
+Manyan is one C file with no dependencies beyond the C library and POSIX
 (`fork`, `mmap` for workers).
 
 ## Running
 
 ```sh
-tpp [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
-tpp -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
-tpp -generate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
+manyan -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+manyan -generate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
 ```
 
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
@@ -54,12 +54,12 @@ for it; [std.md](std.md) lists them.
 | `-Dk=v` | set Java's system property `k`, which `TLCGet("-Dk")` reads, as `java -Dk=v` does; `-Dtlc2.tool.impl.Tool.cdot=true` turns on TLC's incomplete action composition `A \cdot B` |
 | `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
-| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: tpp writes no metadata and has its own fingerprints |
+| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: Manyan writes no metadata and has its own fingerprints |
 
 A run prints TLC's report on standard output: the initial states, then
 either `Model checking completed. No error has been found.` or the first
 error with its trace, then the state counts and the depth of the search.
-tpp leaves out TLC's banner, timing and progress lines; everything else
+Manyan leaves out TLC's banner, timing and progress lines; everything else
 matches TLC's text (Standard §11).
 
 ## Model configuration
@@ -113,7 +113,7 @@ an initial state drawn at random, it takes a random action's successors,
 checks every one of them against the invariants and action properties,
 and moves to one in the constraints at random, until the behavior has
 taken `-depth` steps or stops (Standard §10.8). Temporal properties are checked on each behavior.
-With the same `-seed` and `-aril`, tpp draws the same behaviors as TLC
+With the same `-seed` and `-aril`, Manyan draws the same behaviors as TLC
 with one worker and prints the same report; `-workers` is ignored. A
 seed is drawn at random unless one is given.
 
@@ -143,30 +143,30 @@ successor is kept in the constraints. `TLCGet("config").mode` is
 
 ## Workers
 
-With `-workers N`, N processes expand states: tpp forks N - 1 once the
+With `-workers N`, N processes expand states: Manyan forks N - 1 once the
 search reaches a level of 256 states or more, and is the last itself. They
 share the state store and the fingerprint set, read-only, and expand the
-level in batches of 32 states; tpp merges their successors in the order one
+level in batches of 32 states; Manyan merges their successors in the order one
 process would find them, and expands a batch while it waits for one. A state whose
 expansion reports anything (an error, a violation, a deadlock, output from
-`Print`) is expanded again by tpp itself, so the output, including which
+`Print`) is expanded again by Manyan itself, so the output, including which
 violation is reported and its trace, is the same for every N. Levels
-smaller than 256 states are expanded by tpp alone.
+smaller than 256 states are expanded by Manyan alone.
 
 ## Library
 
-`tpp.h` declares one entry point:
+`manyan.h` declares one entry point:
 
 ```c
-#include "tpp.h"
+#include "manyan.h"
 
-TPPOptions o = {.spec = "MySpec", .check_deadlock = 1, .workers = 1};
-int status = tpp_check(&o);   /* prints the report; returns an exit status */
+ManyanOptions o = {.spec = "MySpec", .check_deadlock = 1, .workers = 1};
+int status = manyan_check(&o);   /* prints the report; returns an exit status */
 ```
 
-Compile `tpp.c` with `-DTPP_NO_MAIN` to link it into another program, with
-`tpp-std.c` and a call of `tpp_std_init()` before `tpp_check` for the
-operators of [std.md](std.md). `tpp_define` adds a native operator of your
+Compile `manyan.c` with `-DMANYAN_NO_MAIN` to link it into another program, with
+`manyan-std.c` and a call of `manyan_std_init()` before `manyan_check` for the
+operators of [std.md](std.md). `manyan_define` adds a native operator of your
 own, as std.md shows.
 
 ## Testing
@@ -177,9 +177,9 @@ make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
 make fuzz              # mutated tests/spec models under the sanitizer build
-make fuzz-oracle       # random expressions, printed by tpp and by TLC
-make fuzz-sim          # random simulations of tests/spec models, by tpp and by TLC
-make bench             # times tpp against TLC; writes docs/benchmark.md
+make fuzz-oracle       # random expressions, printed by Manyan and by TLC
+make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
+make bench             # times Manyan against TLC; writes docs/benchmark.md
 ```
 
 A test in `tests/spec` is `NAME.tla`: a module, then its configuration
@@ -190,26 +190,26 @@ own test suite.
 `make fuzz` swaps, drops or repeats one to three tokens of a random test's
 model (most mutants still parse) and runs the sanitizer build on it, half
 the time as a random simulation; it
-must end with one of tpp's exit statuses, without a signal or a sanitizer
+must end with one of Manyan's exit statuses, without a signal or a sanitizer
 report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
 `make fuzz-oracle` writes random constant expressions as `ASSUME
-PrintT(e)` and checks that tpp prints what TLC prints, narrowing a
+PrintT(e)` and checks that Manyan prints what TLC prints, narrowing a
 difference to one expression. `make fuzz-sim` simulates random tests'
-models with random seeds and depths, with tpp and with TLC. All three take `RUNS=` (1000) and `SEED=` (1);
+models with random seeds and depths, with Manyan and with TLC. All three take `RUNS=` (1000) and `SEED=` (1);
 a run with a seed is repeatable. A case any of them finds becomes a test in
 `tests/spec`.
 
 ## Limitations
 
 Not supported: the proof language (parsed and skipped); TLC's
-`-terse`, `-maxSetSize` (tpp does not bound the sets it builds, where TLC
+`-terse`, `-maxSetSize` (Manyan does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
 `-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
 `_POSSIBLE`, TLC's standard modules `TLCExt` and `Json`, checkpoints (`-checkpoint`, `-recover`) and
 distributed checking. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
-may come between the states; tpp stops at the error. There a temporal
+may come between the states; Manyan stops at the error. There a temporal
 property is checked on the whole graph of each behavior, where TLC may
 miss a counterexample of a property such as `P ~> Q`, or report another.
 A simulated behavior prints each record with its fields in the standard
@@ -219,5 +219,5 @@ compares or fingerprints it, which it does as it goes. Real numbers
 check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
 and constants when model checking. In `Init` and `Next`, TLC seeds each
-state's draws with its fingerprint, which tpp computes differently, so
-tpp draws other values there.
+state's draws with its fingerprint, which Manyan computes differently, so
+Manyan draws other values there.

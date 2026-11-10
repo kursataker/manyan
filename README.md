@@ -1,27 +1,34 @@
-# TLA⁺⁺
+# Manyan
 
-TLA⁺⁺ (TLAPlusPlus) is a model checker for TLA⁺ written in C11. It reads
-the same specifications and model configurations as TLC and produces same
-outcome, 1.1 to 27.2 times faster with one worker.
+A fast, TLC-compatible model checker for TLA⁺.
 
-![logo](docs/logo.png)
+Manyan checks TLA⁺ specifications and model configurations with the same
+semantics and default reporting behavior as TLC, without requiring a JVM. It
+is an independent implementation written in C11, designed for fast feedback,
+predictable results, and embedding in other tools.
 
-\* Write it as `TLA++` when superscript is unavailable.
+Manyan does not extend the TLA⁺ language or fork TLC. TLC 1.8.0 is its
+reference oracle: compatibility tests compare results, output, and exit
+statuses against TLC.
+
+**Naming:** Manyan (曼衍) comes from Zhuangzi's Qi Wu Lun (齐物论):
+“和之以天倪，因之以曼衍.” It evokes continuous unfolding and transformation—a
+fitting image for exploring the possible states of a system.
 
 ## Getting started
 
-Each [release](https://github.com/soasme/tlaplusplus/releases) has `tpp`
+Each [release](https://github.com/soasme/manyan/releases) has `manyan`
 built for macOS, Linux and Windows. To build it instead:
 
 ```sh
-make                          # builds ./tpp; needs a C11 compiler
+make                          # builds ./manyan; needs a C11 compiler
 make install                  # install to your $PATH (/usr/local/bin)
 ```
 
 To install into your current user workspace, run
 
 ```sh
-make install PREFIX=~/.local  # installs ~/.local/bin/tpp
+make install PREFIX=~/.local  # installs ~/.local/bin/manyan
 ```
 
 See [the manual](docs/manual.md) for the options, the configuration file,
@@ -32,8 +39,8 @@ exit statuses and the C API.
 Try it out:
 
 ```sh
-$ ./tpp examples/DieHard
-tpp version 0.6.1
+$ ./manyan examples/DieHard
+manyan version 0.7.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:
@@ -50,22 +57,28 @@ State 2: <Next line 9, col 12 to line 9, col 37 of module DieHard>
 To enable multi-worker mode:
 
 ```
-tpp -workers auto examples/DieHard   # one worker per core
+manyan -workers auto examples/DieHard   # one worker per core
 ```
 
-## Why
+## Why Manyan?
 
-TLC is the reference model checker for TLA⁺, and `tpp` is tested
-against. `tpp` keeps TLC's semantics and output, so it can stand in for TLC
-in scripts and CI, and it starts quickly and spends less time on each
-state:
+**Compatible with TLC.** Manyan accepts TLC-style TLA⁺ modules and `.cfg`
+files. Its default output and exit statuses are tested against TLC so it can
+be used in existing scripts and CI workflows. Some TLC features are not yet
+supported; see [limitations](docs/manual.md#limitations).
 
-- one C file and one header, with no runtime or dependencies;
-- values interned in arenas and states stored as compact encodings;
-- fingerprints hashed straight from values;
-- with `-workers N`, a parallel breadth-first search whose output is
-  identical to a one-worker run, including which violation it reports and
-  its trace (TLC's traces vary between multi-worker runs).
+**Fast startup and checking.** A small native executable avoids Java startup
+overhead. Benchmarks on the included models show substantial speedups over
+TLC, though performance depends on the specification and hardware.
+
+**Deterministic parallel checking.** Use `-workers N` to explore states in
+parallel. Manyan merges results in single-worker order, preserving the
+reported violation and trace across worker counts.
+
+**Small, embeddable implementation.** The checker is written in C11, with its
+core in one file, `manyan.c`, and no runtime or dependencies. `manyan.h`
+exposes it as a C API, and `manyan-std.c` adds the operators TLC computes in
+Java, on that same API.
 
 ## Performance
 
@@ -73,7 +86,7 @@ Wall-clock seconds, best of 3 runs, on an Apple M2 (4 performance and 4
 efficiency cores). TLC is tla2tools 1.8.0 (d8fb231). Every run prints the same
 report as TLC with one worker.
 
-| spec | distinct states | TLC | tpp | speedup | TLC (8) | tpp (8) | speedup |
+| spec | distinct states | TLC | Manyan | speedup | TLC (8) | Manyan (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | closure | 65536 | 2.16 | 0.47 | 4.6x | 0.97 | 0.12 | 8.3x |
 | counters | 823543 | 3.61 | 0.73 | 4.9x | 2.98 | 0.23 | 13.1x |
@@ -118,7 +131,7 @@ parsed and skipped.
 
 ## How it is tested
 
-`tpp` follows [the tpp TLA⁺ Standard](docs/standards/tla2.md),
+`manyan` follows [the Manyan TLA⁺ Standard](docs/standards/tla2.md),
 with TLC 1.8.0 as the oracle for every choice the language leaves open.
 The tests follow it; they need python3, and those that run TLC also need
 Java (they download tla2tools 1.8.0 themselves):
@@ -131,28 +144,28 @@ Java (they download tla2tools 1.8.0 themselves):
   `make sanitize` runs it under UndefinedBehaviorSanitizer (with Guard
   Malloc on macOS, AddressSanitizer elsewhere).
 - `make fuzz` runs mutated models of the suite under the sanitizers, to
-  find crashes; `make fuzz-oracle` compares what `tpp` and TLC print for
+  find crashes; `make fuzz-oracle` compares what `manyan` and TLC print for
   random expressions, and `make fuzz-sim` for random simulations of the
   suite's models, to find differences. What they find becomes a test.
-- `tests/tla` models parts of `tpp`'s algorithms in TLA⁺, for TLC and `tpp` to
+- `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
 
 ## Layout
 
 ```
-tpp.c, tpp.h           the checker and its C API
-tpp-std.c, tpp-std.h   the operators TLC computes in Java, on that API
-docs/standards/        the language standard tpp conforms to
-docs/manual.md         how to use tpp
-docs/std.md            the standard modules, and writing an operator in C
-docs/benchmark.md      tpp against TLC
-docs/optimizations.md  what made tpp fast, and what did not
-docs/roadmap.md        where tpp is going
-tests/spec/            conformance tests, by chapter of the standard
-tests/tla/             TLA⁺ models of tpp's algorithms
-examples/              a spec and its configuration to try tpp on
-bench/                 benchmark specs, compare.py (against TLC), quick.sh (two builds)
-CHANGELOG.md           what each release changed; releasing is tagging vX.Y.Z
+manyan.c, manyan.h          the checker and its C API
+manyan-std.c, manyan-std.h  the operators TLC computes in Java, on that API
+docs/standards/             the language standard Manyan conforms to
+docs/manual.md              how to use Manyan
+docs/std.md                 the standard modules, and writing an operator in C
+docs/benchmark.md           Manyan against TLC
+docs/optimizations.md       what made Manyan fast, and what did not
+docs/roadmap.md             where Manyan is going
+tests/spec/                 conformance tests, by chapter of the standard
+tests/tla/                  TLA⁺ models of Manyan's algorithms
+examples/                   a spec and its configuration to try Manyan on
+bench/                      benchmark specs, compare.py (against TLC), quick.sh (two builds)
+CHANGELOG.md                what each release changed; releasing is tagging vX.Y.Z
 ```
 
 ## License

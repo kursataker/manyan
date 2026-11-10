@@ -1,4 +1,4 @@
-# Pushing a tag vX.Y.Z builds tpp on each platform, runs the conformance
+# Pushing a tag vX.Y.Z builds manyan on each platform, runs the conformance
 # suite with each build, and publishes them as the release X.Y.Z.
 # Run by hand, it builds and tests without publishing.
 name: release
@@ -20,9 +20,9 @@ jobs:
       - uses: actions/checkout@v4
       - id: v
         run: |
-          version=$(sed -n 's/^#define TPP_VERSION "\(.*\)"$/\1/p' tpp.h)
+          version=$(sed -n 's/^#define MANYAN_VERSION "\(.*\)"$/\1/p' manyan.h)
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME, but tpp.h says $version"; exit 1
+            echo "::error::tag $GITHUB_REF_NAME, but manyan.h says $version"; exit 1
           fi
           grep -q " $version:$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -38,18 +38,18 @@ jobs:
       - run: |
           make
           mkdir arm64 x86_64
-          mv tpp arm64/tpp
-          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/tpp.profdata -arch x86_64 tpp.c tpp-std.c -lm -o x86_64/tpp
+          mv manyan arm64/manyan
+          cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/manyan.profdata -arch x86_64 manyan.c manyan-std.c -lm -o x86_64/manyan
       - run: |
           softwareupdate --install-rosetta --agree-to-license
           for arch in arm64 x86_64; do
-            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp" --strict --verbose
-            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/tpp -workers 4" --strict --verbose
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/manyan" --strict --verbose
+            python3 tests/spec_runner.py "arch -$arch $PWD/$arch/manyan -workers 4" --strict --verbose
           done
       - run: |
           for arch in arm64 x86_64; do
-            dir=tpp-${{ needs.version.outputs.version }}-macos-$arch
-            mkdir $dir && cp $arch/tpp README.md CHANGELOG.md LICENSE $dir
+            dir=manyan-${{ needs.version.outputs.version }}-macos-$arch
+            mkdir $dir && cp $arch/manyan README.md CHANGELOG.md LICENSE $dir
             tar -czf $dir.tar.gz $dir
           done
       - uses: actions/upload-artifact@v4
@@ -71,11 +71,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: make LDFLAGS=-static
       - run: |
-          python3 tests/spec_runner.py ./tpp --strict --verbose
-          python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose
+          python3 tests/spec_runner.py ./manyan --strict --verbose
+          python3 tests/spec_runner.py "./manyan -workers 4" --strict --verbose
       - run: |
-          dir=tpp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
-          mkdir $dir && cp tpp README.md CHANGELOG.md LICENSE $dir
+          dir=manyan-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
+          mkdir $dir && cp manyan README.md CHANGELOG.md LICENSE $dir
           tar -czf $dir.tar.gz $dir
       - uses: actions/upload-artifact@v4
         with:
@@ -100,15 +100,15 @@ jobs:
           packages: gcc-core make python3 zip
       - run: make
       - run: |
-          python3 tests/spec_runner.py ./tpp --strict --verbose
-          python3 tests/spec_runner.py "./tpp -workers 4" --strict --verbose
+          python3 tests/spec_runner.py ./manyan --strict --verbose
+          python3 tests/spec_runner.py "./manyan -workers 4" --strict --verbose
       - run: |
-          dir=tpp-${{ needs.version.outputs.version }}-windows-x86_64
-          mkdir $dir && cp tpp.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md LICENSE $dir
+          dir=manyan-${{ needs.version.outputs.version }}-windows-x86_64
+          mkdir $dir && cp manyan.exe /usr/bin/cygwin1.dll README.md CHANGELOG.md LICENSE $dir
           zip -qr $dir.zip $dir
       - shell: pwsh
         run: |
-          .\tpp-${{ needs.version.outputs.version }}-windows-x86_64\tpp.exe -version
+          .\manyan-${{ needs.version.outputs.version }}-windows-x86_64\manyan.exe -version
           if ($LASTEXITCODE) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
@@ -134,17 +134,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows
-      - run: unzip -q tpp-${{ needs.version.outputs.version }}-windows-x86_64.zip
+      - run: unzip -q manyan-${{ needs.version.outputs.version }}-windows-x86_64.zip
       # As it ships, from Windows; then the suite in Cygwin, whose own dll
       # it must use there, as two Cygwin dlls in one session conflict.
       - shell: pwsh
         run: |
-          .\tpp-${{ needs.version.outputs.version }}-windows-x86_64\tpp.exe -version
+          .\manyan-${{ needs.version.outputs.version }}-windows-x86_64\manyan.exe -version
           if ($LASTEXITCODE) { exit 1 }
       - run: |
-          mkdir solo && cp tpp-${{ needs.version.outputs.version }}-windows-x86_64/tpp.exe solo/
-          python3 tests/spec_runner.py "$PWD/solo/tpp.exe" --strict --verbose
-          python3 tests/spec_runner.py "$PWD/solo/tpp.exe -workers 4" --strict --verbose
+          mkdir solo && cp manyan-${{ needs.version.outputs.version }}-windows-x86_64/manyan.exe solo/
+          python3 tests/spec_runner.py "$PWD/solo/manyan.exe" --strict --verbose
+          python3 tests/spec_runner.py "$PWD/solo/manyan.exe -workers 4" --strict --verbose
 
   publish:
     if: github.ref_type == 'tag'
@@ -164,4 +164,4 @@ jobs:
         run: |
           (cd dist && sha256sum -- * > SHA256SUMS)
           awk -v v="$VERSION:" '/^[0-9-]+ [0-9.]+:$/ {on = $2 == v; next} on' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --title "tpp $VERSION" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Manyan $VERSION" --notes-file notes.md

@@ -1,6 +1,6 @@
 ---- MODULE UndirectedGraphs ----
 \* CommunityModules' ConnectedComponents, with its definition: TLC
-\* replaces it by its Java, as tpp by its own.
+\* replaces it by its Java, as Manyan by its own.
 LOCAL INSTANCE Naturals
 LOCAL INSTANCE Sequences
 ConnectedComponents(G) ==

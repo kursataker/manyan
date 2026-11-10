@@ -1,6 +1,6 @@
 # Optimizations
 
-What made tpp fast, what was tried and gave nothing, and how to measure.
+What made Manyan fast, what was tried and gave nothing, and how to measure.
 Each entry gives wall-clock seconds on the bench specs (arm64, best of 5)
 before and after; [benchmark.md](benchmark.md) has the current comparison
 with TLC.
@@ -86,19 +86,19 @@ bound name, comparisons of integers) at resolve time.
 
 ## Open: where TLC gains more from workers
 
-Examples' models where tpp is least ahead of TLC (4 workers each) are
+Examples' models where Manyan is least ahead of TLC (4 workers each) are
 ones with a large serial part, not a slow evaluator.
 
-- **MCBakery** (TLC 5.74 s, tpp 2.29 s; tpp 1.87 s user with one worker).
+- **MCBakery** (TLC 5.74 s, Manyan 2.29 s; Manyan 1.87 s user with one worker).
   Its initial predicate is `TypeOK /\ IInv`: 1.68M candidates, filtered
   to 655200 initial states, each checked against three invariants.
-  That is about 40% of the run, and tpp computes it in one process
+  That is about 40% of the run, and Manyan computes it in one process
   (`gen(init_expr, ...)` in `search`). Workers bring the rest down: 2.31
   s real with one, 1.52 with two, 1.29 with four. The fix is to compute
   the initial states in parallel: split the first quantifier or `\in`
   of `Init` among the workers, and merge their states in the order one
   process finds them, so the output and state numbers stay the same.
-- **AllocatorImplementation** (TLC 3.44 s, tpp 1.38 s; tpp 1.32 s with
+- **AllocatorImplementation** (TLC 3.44 s, Manyan 1.38 s; Manyan 1.32 s with
   one worker). Its property `SchedAllocator` is checked on the state
   graph after the search, in one process: about half the samples are in
   `scc_search`, evaluating `[Sched!Next]_vars` on each of 64414 edges

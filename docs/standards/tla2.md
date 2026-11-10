@@ -1,6 +1,6 @@
-# The tpp TLA⁺ Standard
+# The Manyan TLA⁺ Standard
 
-Version 0.1. The language tpp accepts and the results it must produce.
+Version 0.1. The language Manyan accepts and the results it must produce.
 
 ## Contents
 
@@ -510,7 +510,7 @@ Elements of different kinds are ordered by kind.
 
 ### 7.5 String order
 
-Strings are ordered by when tpp first meets them, in this order: the
+Strings are ordered by when Manyan first meets them, in this order: the
 built-in names of the language; the identifiers and numerals of the root
 module and then of each module it uses, in the order those modules are
 read; the string literals of every module, dependencies first; the
@@ -554,14 +554,14 @@ evaluated natively.
   `TLCGetOrDefault`; `AssertEq`, `TLCNoOp` and `TLCGetAndSet` are their
   definitions. `Trace`, `CounterExample`, `ToTrace`, `TLCFP`,
   `PickSuccessor`, `TLCDefer` and `TLCEvalDefinition` need TLC's own
-  traces, fingerprints or successors: tpp stops, saying it does not
+  traces, fingerprints or successors: Manyan stops, saying it does not
   support the one evaluated.
 
 `RandomElement(S)` and the Randomization operators draw as TLC does, from
 `java.util.Random` seeded with `-seed`: the model, the assumptions and
 Init in sequence from one generator, as TLC's main thread keeps the one
 its first draw made; a state's successors from one seeded with `-seed`
-xor the state's fingerprint, which tpp's fingerprints, not TLC's, make
+xor the state's fingerprint, which Manyan's fingerprints, not TLC's, make
 other draws than TLC's. `RandomSubset(k, S)` takes
 k indices from a linear congruential generator, `x' = (a * x + c) % m`
 skipping those past |S|: m is the least number from max(|S|, 9) on that is
@@ -600,7 +600,7 @@ also has `traces` (-1 without `num=`), `depth`, `aril |-> "0"` and `sched
 `TLCGet("distinct")`, `"queue"` and `"diameter"` are the search's counts
 of states found, queued and the depth reached; `TLCGet("generated")`, of
 states generated, only in a postcondition: during the search TLC counts
-an action's states before it checks them, tpp as it checks each. TLC implements `TLCGet` by an evaluation method, so
+an action's states before it checks them, Manyan as it checks each. TLC implements `TLCGet` by an evaluation method, so
 its errors carry that method's preamble (§11.3). That method's level is
 1: a definition that uses `TLCGet` is not evaluated once as a constant,
 but each time it is used, and a substitution `C <- d` of one is
