@@ -11,7 +11,7 @@ Manyan does not extend the TLA⁺ language or fork TLC. TLC 1.8.0 is its
 reference oracle: compatibility tests compare results, output, and exit
 statuses against TLC.
 
-**Naming:** Manyan (曼衍) comes from Zhuangzi's Qi Wu Lun (齐物论):
+**Naming:** Manyan (曼衍, *màn yǎn*, said "mahn-yen") comes from Zhuangzi's Qi Wu Lun (齐物论):
 “和之以天倪，因之以曼衍.” It evokes continuous unfolding and transformation—a
 fitting image for exploring the possible states of a system.
 
@@ -39,7 +39,7 @@ exit statuses and the C API.
 Try it out:
 
 ```sh
-$ ./manyan examples/DieHard
+$ manyan examples/DieHard
 manyan version 0.7.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
