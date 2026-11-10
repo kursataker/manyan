@@ -92,6 +92,11 @@ TPPValue *tpp_elements(TPPValue *set);   /* enumerated, as TLC's toSetEnum; NULL
 TPPValue *tpp_element(TPPValue *elements, size_t);
 int tpp_compare(TPPValue *, TPPValue *);   /* TLC's order of values: <0, 0 or >0 */
 const char *tpp_print(TPPValue *);         /* as TLC prints it */
+const char *tpp_to_string(TPPValue *);     /* as TLC's toString gives it: on one line */
+const char *tpp_class(TPPValue *);         /* the Java class TLC keeps it in, as "IntValue" */
+/* Java's String.format(fmt, args...), each arg a string; its exception
+   the native's, as tpp_throw. */
+TPPValue *tpp_format(TPPCall *, const char *fmt, size_t n, const char *const *args);
 TPPValue *tpp_arg(TPPCall *, int i);       /* a TPP_LAZY native's argument i, evaluated */
 /* An error in the native: tpp_fail one TLC reports as its own, as an
    EvalException; tpp_throw another exception of its Java, which TLC

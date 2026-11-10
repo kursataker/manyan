@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 6, col 8 to line 6, col 33 of module java_cast failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.IValue tlc2.overrides.Json.deserialize(tlc2.value.impl.StringValue) throws java.io.IOException,
+but it produced the following error:
+Cannot cast tlc2.value.impl.IntValue to tlc2.value.impl.StringValue
+exit 10

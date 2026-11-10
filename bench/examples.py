@@ -4,8 +4,10 @@ usage: examples.py ENGINE --tlc "TLC CMD" --examples DIR [--library DIR]...
                    [--only SUBSTRING] [--max-runtime HH:MM:SS] [--timeout S] [--memory MB]
 
 Every exhaustive-search model whose recorded runtime is at most
---max-runtime runs once with each engine and one worker, killed past
---timeout seconds or --memory MB resident. tpp must print what TLC prints.
+--max-runtime, and every simulation and generation model, its behaviors
+fixed by a seed and their number, runs once with each engine and one
+worker, killed past --timeout seconds or --memory MB resident. tpp must
+print what TLC prints.
 Each library's modules are staged beside the spec unless the spec has one
 of that name or tpp builds it in, as TLC finds them on its class path.
 TLC's results are cached next to the Examples checkout: they change only
@@ -89,12 +91,23 @@ def stage(spec, libraries, directory):
                 shutil.copy(module, directory)
 
 
+def options(model):
+    """The engines' options for the model: a random one's behaviors fixed."""
+    mode = model["mode"]
+    if mode == "generate":
+        return ["-generate", "num=100", "-seed", "1"]
+    if isinstance(mode, dict) and "simulate" in mode:
+        return ["-simulate", f"num={mode['simulate']['traceCount']}", "-seed", "1"]
+    return []
+
+
 def models(examples, only, max_runtime):
     for manifest in sorted(examples.glob("specifications/*/manifest.json")):
         for module in json.loads(manifest.read_text())["modules"]:
             for model in module["models"]:
-                if (model["mode"] == "exhaustive search" and model["runtime"] != "unknown"
-                        and model["runtime"] <= max_runtime and only in model["path"]):
+                exhaustive = (model["mode"] == "exhaustive search" and model["runtime"] != "unknown"
+                              and model["runtime"] <= max_runtime)
+                if (exhaustive or options(model)) and only in model["path"]:
                     yield module, model
 
 
@@ -119,17 +132,18 @@ def main():
     for module, model in models(examples, args.only, args.max_runtime):
         path = model["path"]
         name = path.removeprefix("specifications/").removesuffix(".cfg")
-        command = ["-config", Path(path).name, Path(module["path"]).stem]
+        command = options(model) + ["-config", Path(path).name, Path(module["path"]).stem]
+        cached = " ".join([path] + options(model))
         java = ["-Dtlc2.tool.impl.Tool.cdot=true"] if "action composition" in module["features"] else []
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp).resolve() / "spec"
             stage(examples / Path(path).parent, args.library, directory)
-            if path not in cache:
+            if cached not in cache:
                 tlc = spec_runner.place(args.tlc.split(), java + ["-workers", "1", "-metadir", str(Path(tmp) / "meta")])
                 seconds, output, killed = run(tlc + command, directory, args.timeout, args.memory)
-                cache[path] = {"seconds": seconds, "output": output, "killed": killed}
+                cache[cached] = {"seconds": seconds, "output": output, "killed": killed}
                 cache_path.write_text(json.dumps(cache, indent=1))
-            theirs = cache[path]
+            theirs = cache[cached]
             ours_seconds, ours, killed = run(spec_runner.place([engine], java) + command, directory, args.timeout, args.memory)
         if theirs["killed"]:
             verdict = f"TLC {theirs['killed']}"
@@ -156,7 +170,8 @@ def main():
     head = report.read_text().split("<!-- results -->")[0] if report.exists() else "# Full benchmark\n\n"
     report.write_text(head + "<!-- results -->\n\n"
                       f"tlaplus/Examples at {examples.name.removeprefix('Examples-')[:12]}, the exhaustive-search "
-                      f"models recorded to run in at most {args.max_runtime}. Measured on {platform.machine()} "
+                      f"models recorded to run in at most {args.max_runtime}, and the simulation and generation "
+                      "models with `-seed 1` and `num=` their traceCount, or 100. Measured on {platform.machine()} "
                       f"{platform.system()} {platform.release()}, one run, wall-clock seconds, one worker.\n\n"
                       f"{len(rows)} models: {summary}. Where tpp prints what TLC prints, "
                       f"it is {mean:.1f}x as fast (geometric mean).\n\n"

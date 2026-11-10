@@ -21,11 +21,13 @@ gives, error messages included.
 
 | module | operators |
 |---|---|
+| CSV | `CSVWrite`, `CSVWriteRecord`, `CSVRead`, `CSVRecords` (a line too short for `CSVRead`'s columns fails in `CSVRead`, where TLC fails when the record is used) |
 | Graphs | `SimplePath`, `AreConnectedIn`, `IsStronglyConnected` |
 | IOUtils | `IOEnv`, `atoi`, `IOExec`, `IOEnvExec`, `Serialize` (format `TXT`; another format is the definition's) |
 | Json | `JsonDeserialize`, `ndJsonDeserialize` |
 | SequencesExt | `SetToSeq` |
-| SVG | `SVGElemToString` |
+| Statistics | `ChiSquare` |
+| SVG | `SVGElemToString`, `NodeOfRingNetwork` |
 | UndirectedGraphs | `ConnectedComponents` |
 
 ## Writing one
@@ -34,7 +36,9 @@ A native operator is a C function on the values of `tpp.h`. `tpp_define`
 binds it to an operator of every module of that name, when the operator's
 definition takes as many arguments, as TLC binds its Java by name. The last
 argument is the Java method as TLC names it when the operator fails; tpp
-prints it in the same place.
+prints it in the same place. As TLC, tpp casts each argument to its
+parameter's class there, `tlc2.value.impl.StringValue` say, and fails as
+Java's cast does on another value.
 
 ```c
 #include "tpp.h"
@@ -64,7 +68,9 @@ of functions come in TLC's order. Values belong to the evaluation that
 made them; a native keeps none past its return. An error does not return:
 `tpp_fail` for one TLC's Java raises as an `EvalException`, which TLC
 prints as it is, and `tpp_throw` for another exception, which TLC prints
-under the Java method that threw it.
+under the Java method that threw it. `tpp_format` is Java's
+`String.format` on strings, and `tpp_to_string` a value as TLC's
+`toString` writes it, on one line.
 
 Each new native gets a test in `tests/spec/stdlib`, its expected output
 from TLC with the CommunityModules jar (`make bless`), and a stub of the

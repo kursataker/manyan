@@ -6532,8 +6532,24 @@ struct TPPCall { Expr *call; Value **args; Ctx c; };
 
 NATIVE(n_defined) { UNUSED; return NULL; }   /* marks a Def whose native is d->api */
 
+static const char *java_class(Value *v);
+
+/* Each argument cast to its parameter's class, as Java invokes TLC's
+   method: a StringValue parameter takes only a string; a Value, anything. */
+static void java_cast(const char *java, Value **args, int n) {
+    const char *p = strchr(java, '(');
+    for (int i = 0; p && i < n; i++, p = strchr(p, ',')) {
+        const char *t = ++p, *end = t + strcspn(t, ",)");
+        if (strncmp(t, "tlc2.value.impl.", 16) || (end - t == 21 && !strncmp(t + 16, "Value", 5))) continue;
+        const char *cls = java_class(args[i]);
+        if ((size_t)(end - t - 16) != strlen(cls) || strncmp(t + 16, cls, strlen(cls)))
+            fail("Cannot cast tlc2.value.impl.%s to %.*s", cls, (int)(end - t), t);
+    }
+}
+
 static Value *api_call(Def *d, Expr *call, Value **args, Ctx c) {
     for (int i = 0; args && i < d->nparams; i++) args[i] = realize(args[i]);
+    if (args) java_cast(d->java, args, d->nparams);
     TPPCall tc = {call, args, c};
     return d->api(&tc, args);
 }
@@ -6610,7 +6626,70 @@ Value *tpp_elements(Value *s) { return is_set(s) && enumerable(s) ? enumerate(s)
 Value *tpp_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
 int tpp_compare(Value *a, Value *b) { return vcmp(a, b); }
 
+/* Java's String.format(f, args), each argument a string: %s and %S, with
+   flag -, a width and a precision, %b, %h, %n and %%, an argument by its
+   index or in turn. Any other conversion of a string is Java's exception,
+   whose message it gives, its class in cls; NULL if none. */
+static const char *java_format(Buf *b, const char *f, int n, const char *const *args, const char **cls) {
+    static char msg[64];
+    int next = 0;
+    for (const char *p = f; *p; p++) {
+        if (*p != '%') { buf_add(b, p, 1); continue; }
+        const char *spec = p++;
+        int index = 0, left = 0, width = 0, prec = -1;
+        const char *q = p;
+        while (isdigit((unsigned char)*q)) index = index * 10 + (*q++ - '0');
+        if (*q == '$' && q > p) p = q + 1;
+        else index = 0;
+        for (; *p && strchr("-#+ 0,(<", *p); p++) left |= *p == '-';
+        while (isdigit((unsigned char)*p)) width = width * 10 + (*p++ - '0');
+        if (*p == '.') for (prec = 0, p++; isdigit((unsigned char)*p); p++) prec = prec * 10 + (*p - '0');
+        char c = *p;
+        if (c == '%' || c == 'n') { buf_puts(b, c == '%' ? "%" : "\n"); continue; }
+        if (!c || !strchr("sSbBhHdoxXeEfgGaAcCtT", c)) {
+            snprintf(msg, sizeof msg, "Conversion = '%c'", c ? c : '%');
+            *cls = "java.util.UnknownFormatConversionException";
+            return msg;
+        }
+        int i = index ? index - 1 : next++;
+        if (i >= n) {
+            snprintf(msg, sizeof msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
+            *cls = "java.util.MissingFormatArgumentException";
+            return msg;
+        }
+        if (!strchr("sSbBhH", c)) {
+            snprintf(msg, sizeof msg, "%c != java.lang.String", tolower((unsigned char)c));
+            *cls = "java.util.IllegalFormatConversionException";
+            return msg;
+        }
+        Buf t = {0};
+        if (c == 's' || c == 'S') buf_puts(&t, args[i]);
+        else if (c == 'b' || c == 'B') buf_puts(&t, "true");
+        else {
+            uint32_t h = 0;   /* Java's String.hashCode */
+            for (const char *k = args[i]; *k; k++) h = 31 * h + (unsigned char)*k;
+            buf_printf(&t, "%x", h);
+        }
+        int len = prec >= 0 && (size_t)prec < t.n ? prec : (int)t.n;
+        if (isupper((unsigned char)c)) for (int k = 0; k < len; k++) t.s[k] = (char)toupper((unsigned char)t.s[k]);
+        buf_printf(b, left ? "%-*.*s" : "%*.*s", width, len, t.s ? t.s : "");
+        free(t.s);
+    }
+    return NULL;
+}
+
 const char *tpp_print(Value *v) { return pretty(v); }
+const char *tpp_to_string(Value *v) { return value_str(v); }
+const char *tpp_class(Value *v) { return java_class(v); }
+
+Value *tpp_format(TPPCall *call, const char *fmt, size_t n, const char *const *args) {
+    Buf b = {0};
+    const char *cls, *why = java_format(&b, fmt, (int)n, args, &cls);
+    if (why) { free(b.s); tpp_throw(call, "%s", why); }
+    Value *v = mk_str(intern(b.s ? b.s : ""));
+    free(b.s);
+    return v;
+}
 
 Value *tpp_arg(TPPCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
 
@@ -6899,6 +6978,8 @@ static int64_t search_counter(const char *key);
 static int checking_posts;   /* the search is over: its count of states generated is TLC's */
 static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for the initial states */
 static Value *search_config(void);
+static Value *tlc_revision(void);
+static Value *sim_stats(void);
 
 /* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
    sets: pairs of k and its value, interned. A worker leaves them to tpp. */
@@ -6921,6 +7002,8 @@ NATIVE(n_tlcget) {
         if (p) return mk_str(*p);
         if (!strcmp(key, "level")) return mk_int(cur_level + primed);   /* primed, the next state's */
         if (!strcmp(key, "config") && !starting) return search_config();
+        if (!strcmp(key, "revision")) return tlc_revision();
+        if (!strcmp(key, "stats") && simulating) return sim_stats();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
         int64_t n = starting ? -1 : search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
@@ -9309,52 +9392,6 @@ static void state_text(Buf *b, Value **st) {
         buf_printf(b, "%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
 }
 
-/* Java's String.format(f, key, value), with TLC's alias field _format as
-   f: %s and %S, with flag -, a width and a precision, %b, %n and %%. Any
-   other conversion of a string is Java's exception. */
-static void java_format(Buf *b, const char *f, const char *key, const char *value) {
-    const char *args[2] = {key, value};
-    int next = 0;
-    for (const char *p = f; *p; p++) {
-        if (*p != '%') { buf_add(b, p, 1); continue; }
-        const char *spec = p++;
-        int index = 0, left = 0, width = 0, prec = -1;
-        const char *q = p;
-        while (isdigit((unsigned char)*q)) index = index * 10 + (*q++ - '0');
-        if (*q == '$' && q > p) p = q + 1;
-        else index = 0;
-        for (; *p && strchr("-#+ 0,(<", *p); p++) left |= *p == '-';
-        while (isdigit((unsigned char)*p)) width = width * 10 + (*p++ - '0');
-        if (*p == '.') for (prec = 0, p++; isdigit((unsigned char)*p); p++) prec = prec * 10 + (*p - '0');
-        char c = *p, msg[64];
-        if (c == '%' || c == 'n') { buf_puts(b, c == '%' ? "%" : "\n"); continue; }
-        if (!c || !strchr("sSbBhHdoxXeEfgGaAcCtT", c)) {
-            snprintf(msg, sizeof msg, "Conversion = '%c'", c ? c : '%');
-            fail_java("java.util.UnknownFormatConversionException", msg);
-        }
-        int i = index ? index - 1 : next++;
-        if (i > 1) {
-            snprintf(msg, sizeof msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
-            fail_java("java.util.MissingFormatArgumentException", msg);
-        }
-        if (!strchr("sSbBhH", c)) {
-            snprintf(msg, sizeof msg, "%c != java.lang.String", tolower((unsigned char)c));
-            fail_java("java.util.IllegalFormatConversionException", msg);
-        }
-        Buf t = {0};
-        if (c == 's' || c == 'S') buf_puts(&t, args[i]);
-        else if (c == 'b' || c == 'B') buf_puts(&t, "true");
-        else {
-            uint32_t h = 0;   /* Java's String.hashCode */
-            for (const char *k = args[i]; *k; k++) h = 31 * h + (unsigned char)*k;
-            buf_printf(&t, "%x", h);
-        }
-        int n = prec >= 0 && (size_t)prec < t.n ? prec : (int)t.n;
-        if (isupper((unsigned char)c)) for (int k = 0; k < n; k++) t.s[k] = (char)toupper((unsigned char)t.s[k]);
-        buf_printf(b, left ? "%-*.*s" : "%*.*s", width, n, t.s ? t.s : "");
-        free(t.s);
-    }
-}
 
 /* State st of a trace, the level-th, followed by next, as TLC prints it, into b:
    with an ALIAS, the alias's value on the step from st to next is printed
@@ -9400,8 +9437,9 @@ static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
                 if (v->u.fcn.keys[j]->u.i == made->segs[i].name) k = j;
             if (v->u.fcn.keys[k]->u.i == fmt) continue;
             const char *key = S(v->u.fcn.keys[k]->u.i), *val = pretty(v->u.fcn.vals[k]);
-            if (format) java_format(b, format, key, val);
-            else buf_printf(b, "%s%s = %s\n", v->n == 1 ? "" : "/\\ ", key, val);
+            if (!format) { buf_printf(b, "%s%s = %s\n", v->n == 1 ? "" : "/\\ ", key, val); continue; }
+            const char *cls, *args[] = {key, val}, *why = java_format(b, format, 2, args, &cls);
+            if (why) fail_java(cls, why);
         }
         return;
     }
@@ -9873,6 +9911,15 @@ static time_t started;   /* when checking began, for TLCGet("duration") */
 
 static long sim_traces_max = -1, sim_depth = 100;   /* a simulation's -simulate num= and -depth */
 
+/* A record of n fields, its names interned in this order, as TLC makes its own. */
+static Value *mk_record(int n, const char *const *names, Value *const *vals) {
+    List keys = {0}, l = {0};
+    for (int i = 0; i < n; i++) list_add(&keys, mk_str(intern(names[i]))), list_add(&l, vals[i]);
+    Value *r = mk_fcn_from(&keys, &l);
+    r->made = MADE_RECORD;
+    return r;
+}
+
 /* TLCGet("config") of a search or a simulation: TLC's fields but those
    naming its fingerprint polynomial and its jar. TLC's aril is "0",
    whatever -aril says. */
@@ -9883,11 +9930,16 @@ static Value *search_config(void) {
     Value *vals[] = {mk_str(intern(generating ? "generate" : simulating ? "simulate" : "bfs")), BOOLV(check_deadlock), mk_int(nworkers),
                      mk_str(intern(seed)), mk_int(sim_traces_max), mk_int(sim_depth), mk_str(intern("0")),
                      mk_str(intern("random"))};
-    List keys = {0}, l = {0};
-    for (int i = 0; i < (simulating ? 8 : 4); i++) list_add(&keys, mk_str(intern(names[i]))), list_add(&l, vals[i]);
-    Value *r = mk_fcn_from(&keys, &l);
-    r->made = MADE_RECORD;
-    return r;
+    return mk_record(simulating ? 8 : 4, names, vals);
+}
+
+/* TLCGet("revision"): that of the TLC whose behavior tpp follows, the
+   Makefile's oracle. */
+static Value *tlc_revision(void) {
+    const char *names[] = {"timestamp", "date", "count", "tag", "calver"};
+    Value *vals[] = {mk_int(1794003837), mk_str(intern("2026-11-06T22:23:57.662Z")), mk_int(9088),
+                     mk_str(intern("d8fb231")), mk_str(intern("2026.11.06.222357"))};
+    return mk_record(5, names, vals);
 }
 
 /* TLCGet's counters of the search, -1 for another key. As TLC, a new
@@ -10582,6 +10634,47 @@ static void sim_push(States *s, Value **st, int act) {
     s->act[s->n++] = act;
 }
 
+/* The behavior being generated, and TLC's running mean and M2 of the
+   behaviors' lengths, packed as TLC packs them: M2 high, mean low. */
+static States sim_trace;
+static Value **sim_checked;   /* the successor being checked */
+static uint64_t sim_levels;
+
+static void sim_level(long len) {
+    int64_t mean = (int32_t)(sim_levels & 0xffffffff), m2 = (int64_t)(sim_levels >> 32);
+    int64_t delta = len - mean;
+    mean = (int32_t)(mean + delta / (sim_traces > 1 ? sim_traces : 1));
+    m2 += delta * (len - mean);
+    sim_levels = ((uint64_t)m2 << 32) | ((uint64_t)mean & 0xffffffff);
+}
+
+/* TLCGet("stats") of a simulation; the behavior's actions are those into
+   the state being evaluated, the successor being checked too. */
+static Value *sim_stats(void) {
+    List names = {0}, counts = {0};
+    int n = sim_trace.n;
+    for (int i = 1; i <= n; i++) {
+        int act = i < n ? sim_trace.act[i] : cur_state == sim_checked ? cur_action : -1;
+        if (act < 0) continue;
+        Value *name = mk_str(actions[act].name);
+        int j = 0;
+        while (j < names.n && names.v[j] != name) j++;
+        if (j == names.n) list_add(&names, name), list_add(&counts, mk_int(0));
+        counts.v[j] = mk_int(counts.v[j]->u.i + 1);
+    }
+    Value *acts = mk_fcn_from(&names, &counts);
+    acts->made = MADE_RECORD;
+    const char *bnames[] = {"actions", "id"};
+    Value *bvals[] = {acts, mk_int(sim_traces)};
+    const char *snames[] = {"actions", "behavior", "worker", "traces", "duration", "generated", "distinct",
+                            "retries", "distinctvalues", "levelmean", "levelvariance"};
+    Value *svals[] = {mk_record(0, NULL, NULL), mk_record(2, bnames, bvals), mk_int(0), mk_int(sim_traces),
+                      mk_int(time(NULL) - started), mk_int(generated), mk_int(-1), mk_int(-1), mk_int(-1),
+                      mk_int((int64_t)(sim_levels & 0xffffffff)),
+                      mk_int(llround((double)(sim_levels >> 32) / (sim_traces + 1.0)))};
+    return mk_record(11, snames, svals);
+}
+
 /* Whether two states are equal, as TLC compares them: variable by variable. */
 static int same_state(Value **s, Value **t) {
     for (int i = 0; i < nvars; i++)
@@ -10621,7 +10714,6 @@ static int sim_emit(void) {
 /* A successor as TLC's simulation worker takes it, checking it as it is
    generated: complete, then the invariants and action properties, then
    kept if in the model. A failed check stops the generation. */
-static Value **sim_checked;   /* the successor being checked */
 static int sim_failed;        /* its failed check: 1 incomplete, 2 an invariant, 3 an action property */
 static int sim_bad;           /* the invariant or action property */
 
@@ -10744,12 +10836,13 @@ static int simulate(const TPPOptions *o) {
     for (int64_t i = 0; i < o->aril; i++) rng_index(1);
     int64_t aril = rng_aril;
     rng_seed(jr_long(&rng));
-    long depth = sim_depth;
+    long depth = sim_depth < 0 ? INT32_MAX : sim_depth;   /* -1, TLC's Integer.MAX_VALUE */
     nimplied_inits = 0;   /* TLC's simulator ignores the properties that are state predicates */
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
     handler = &here;
-    static States init, trace;   /* static: read after an error jumps back */
+    static States init;   /* static: read after an error jumps back */
+    States *const trace = &sim_trace;
     static EvalState fresh;
     fresh = eval_save();
     if (sigsetjmp(here, 0)) {
@@ -10758,7 +10851,7 @@ static int simulate(const TPPOptions *o) {
         arena = in_use;
         handler = NULL;
         int invariant = checking_invariant();
-        if (!trace.n && (invariant || checking(constraints, nconstraints))) {
+        if (!trace->n && (invariant || checking(constraints, nconstraints))) {
             printf("Error: ");
             print_error_text();
             printf("While working on the initial state:\n");
@@ -10770,15 +10863,15 @@ static int simulate(const TPPOptions *o) {
         if (invariant || checking(action_props, naction_props)) {
             printf("Error: Evaluating %s %s failed.\n", invariant ? "invariant" : "action property", S(error_check->name));
             print_error_text();
-            sim_print(sim_behavior(&trace, sim_checked, cur_action));
+            sim_print(sim_behavior(trace, sim_checked, cur_action));
             sim_summary(seed, aril);
             return invariant ? TPP_FAILURE_SAFETY_EVAL : TPP_VIOLATION_LIVENESS;
         }
-        report_exception(trace.n > 0);
-        int status = trace.n && error_module == 2 ? error_status : TPP_ERROR;
-        if (trace.n) {
+        report_exception(trace->n > 0);
+        int status = trace->n && error_module == 2 ? error_status : TPP_ERROR;
+        if (trace->n) {
             error_check = NULL;
-            sim_print(sim_behavior(&trace, NULL, 0));
+            sim_print(sim_behavior(trace, NULL, 0));
         }
         return status;
     }
@@ -10829,17 +10922,17 @@ static int simulate(const TPPOptions *o) {
     drawing = &draw_behaviors;   /* TLC's worker thread */
     for (long t = 0; !o->traces || t < o->traces; t++) {
         arena_reset(&scratch_arena);
-        trace.n = 0;
+        trace->n = 0;
         sim_traces = t + 1;
         Value **st = init.a[rng_index(init.n)];
-        sim_push(&trace, st, -1);
+        sim_push(trace, st, -1);
         int ended = 0;
         for (long d = 0; d < depth && !ended && !exit_requested; d++) {
             cur_level = d + 1;
             if (!sim_next(st)) {
                 int status = 0;
                 if (sim_failed == 1) {
-                    States *b = sim_behavior(&trace, sim_checked, cur_action);
+                    States *b = sim_behavior(trace, sim_checked, cur_action);
                     print_unspecified(sim_checked);
                     sim_print(b);
                     /* TLC's postcondition writing the behavior fails on it. */
@@ -10850,7 +10943,7 @@ static int simulate(const TPPOptions *o) {
                            "Cannot invoke \"tlc2.value.impl.Value.fingerPrint(long)\" because \"this.values[i]\" is null\n");
                     return TPP_FAILURE_EVAL;
                 }
-                States *b = sim_behavior(&trace, sim_failed ? sim_checked : NULL, cur_action);
+                States *b = sim_behavior(trace, sim_failed ? sim_checked : NULL, cur_action);
                 if (sim_failed) {
                     Check *list = sim_failed == 2 ? invariants : action_props;
                     printf("Error: %s %s is violated.\n", sim_failed == 2 ? "Invariant" : "Action property", S(list[sim_bad].name));
@@ -10869,16 +10962,17 @@ static int simulate(const TPPOptions *o) {
                 break;
             }
             int k = rng_index(sim_found.n);
-            sim_push(&trace, st = sim_found.a[k], sim_found.act[k]);
+            sim_push(trace, st = sim_found.a[k], sim_found.act[k]);
         }
         if (exit_requested) break;   /* TLCSet("exit"): the simulation ends after the step */
         if (ended) continue;
-        if (ntemporal_props && sim_violates(sim_behavior(&trace, NULL, 0))) {
+        if (ntemporal_props && sim_violates(sim_behavior(trace, NULL, 0))) {
             sim_summary(seed, aril);
             int post = check_posts(1);
             return post ? post : TPP_VIOLATION_LIVENESS;
         }
-        if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(&trace, NULL, 0));
+        sim_level(trace->n < depth ? trace->n : depth);
+        if (o->trace_file) sim_write(o->trace_file, t, sim_behavior(trace, NULL, 0));
     }
     handler = NULL;
     int post = check_posts(0);

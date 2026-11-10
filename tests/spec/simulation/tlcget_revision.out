@@ -1,0 +1,10 @@
+[ timestamp |-> 1794003837,
+  date |-> "2026-11-06T22:23:57.662Z",
+  count |-> 9088,
+  tag |-> "d8fb231",
+  calver |-> "2026.11.06.222357" ]
+-1
+Finished computing initial states: 1 distinct state generated.
+31
+31
+exit 0

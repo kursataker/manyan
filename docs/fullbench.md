@@ -13,9 +13,12 @@ cached under `.obj` and the diffs of the models that differ are written to
 DieHard; `MAX_RUNTIME=00:00:30` keeps those recorded to run in 30 seconds.
 
 Of Examples' 243 models, it checks the 174 that TLC searches exhaustively
-in a recorded 10 minutes or less; the rest are Apalache's (symbolic, 46),
-longer or not timed (17), or simulations (6). Where TLC is killed, there is
-nothing to compare. Three differ for reasons tpp keeps:
+in a recorded 10 minutes or less, and the 6 that simulate or generate
+behaviors, fixed by `-seed 1` and `num=`; the rest are Apalache's
+(symbolic, 46), or longer or not timed (17). Where TLC is killed, there is
+nothing to compare. One differs for a feature tpp lacks: the ALIAS of
+ewd687a/EWD687a_anim reads `TLCGet("action")`, which tpp does not give in
+a simulation. Three differ for reasons tpp keeps:
 
 - SpanningTree/SpanTreeRandom draws its graph with `RandomElement` in a
   constant, which TLC draws anew each run, so its output is TLC's of one run.
@@ -36,8 +39,6 @@ A model leaves this list when it gets a row in the results.
 | runtime not recorded | 10 | Run each once under the 15-minute cap, and keep the ones that finish |
 | TLC over 15 minutes | 4 | A longer cap for TLC, run once; its results stay cached |
 | recorded over 10 minutes | 7 | A run with a larger `MAX_RUNTIME`, hours long |
-| simulations | 3 | Compare the outcome (violation, exit status) under a fixed `-seed`; traces are random |
-| generation (`-generate`) | 3 | Run under a fixed `-seed` and `num=`; SimKnuthYao and SimTokenRing also need `TLCGet("revision")` and CSV's Java operators |
 | more than one worker | 174 | Run the checked models again with `-workers 4` |
 | symbolic | 46 | None: these are Apalache's models, not TLC's |
 
@@ -51,15 +52,12 @@ A model leaves this list when it gets a row in the results.
   EnvironmentController (2 h), SlushLarge and EWD998 (50 min each),
   bcastFolklore (30 min), MCNanoLarge (20 min), ElevatorLivenessLarge
   (11 min).
-- Simulations: SmokeEWD998, EWD687a_anim, EWD840_anim.
-- Generation: DiningPhilosophers_stats (with `-seed 1`, `num=1000`, `-depth 1000`
-  it prints what TLC prints, 1000001 states), SimKnuthYao, SimTokenRing.
 
 <!-- results -->
 
-tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run in at most 00:10:00. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
+tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run in at most 00:10:00, and the simulation and generation models with `-seed 1` and `num=` their traceCount, or 100. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
 
-174 models: 167 same, 4 TLC, 3 differs. Where tpp prints what TLC prints, it is 20.8x as fast (geometric mean).
+180 models: 172 same, 4 differs, 4 TLC. Where tpp prints what TLC prints, it is 20.1x as fast (geometric mean).
 
 | model | distinct states | TLC | tpp | speedup | result |
 |---|---:|---:|---:|---:|---|
@@ -80,6 +78,7 @@ tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run i
 | DiningPhilosophers/DiningPhilosophers | 58 | 0.53 | 0.01 | 92.9x | same |
 | DiningPhilosophers/DiningPhilosophersPCal | 67 | 0.39 | 0.01 | 67.2x | same |
 | DiningPhilosophers/DiningPhilosophers_anim | 58 | 0.41 | 0.01 | 34.9x | same |
+| DiningPhilosophers/DiningPhilosophers_stats |  | 0.57 | 0.02 | 24.8x | same |
 | Disruptor/MCDisruptor_MPMC | 112929 | 2.64 | 0.54 | 4.9x | same |
 | Disruptor/MCDisruptor_MPMC_liveliness | 14365 | 1.67 | 0.28 | 6.0x | same |
 | Disruptor/MCDisruptor_SPMC | 8496 | 0.96 | 0.16 | 6.1x | same |
@@ -96,6 +95,7 @@ tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run i
 | KeyValueStore/MCKVSSafetyMedium | 17220672 | 826.26 | 210.71 | 3.9x | same |
 | KeyValueStore/MCKVSSafetySmall | 3409605 | 130.22 | 26.68 | 4.9x | same |
 | KeyValueStore/MCKVsnap | 32293 | 8.38 | 1.52 | 5.5x | same |
+| KnuthYao/SimKnuthYao |  | 0.42 | 0.16 | 2.6x | same |
 | LearnProofs/MCFindHighest | 742 | 0.50 | 0.02 | 21.0x | same |
 | LeastCircularSubstring/MCLeastCircularSubstringMedium | 1007232 | 186.95 | 1.50 | 124.4x | same |
 | LeastCircularSubstring/MCLeastCircularSubstringSmall | 8554 | 0.63 | 0.02 | 26.7x | same |
@@ -209,16 +209,20 @@ tlaplus/Examples at ca168055339d, the exhaustive-search models recorded to run i
 | dijkstra-mutex/DijkstraMutex.toolbox/Safety-4-processors/MC | 33288512 | 289.67 | 99.40 | 2.9x | same |
 | echo/MCEcho | 75 | 0.70 | 0.02 | 29.0x | same |
 | ewd426/TokenRing | 46656 | 1.56 | 0.13 | 11.5x | same |
+| ewd426/SimTokenRing |  | 2.90 | 1.26 | 2.3x | same |
 | ewd687a/MCEWD687a | 18028 | 3.49 | 0.28 | 12.6x | same |
+| ewd687a/EWD687a_anim |  | 1.57 | 0.01 |  | differs |
 | ewd840/EWD840 | 302 | 0.50 | 0.01 | 42.3x | same |
 | ewd840/EWD840_json | 1566 | 0.43 | 0.01 | 36.8x | same |
 | ewd840/SyncTerminationDetection | 129 | 0.36 | 0.01 | 65.4x | same |
+| ewd840/EWD840_anim |  | 0.87 | 0.05 | 16.3x | same |
 | ewd998/AsyncTerminationDetection | 4097 | 0.58 | 0.02 | 24.6x | same |
 | ewd998/EWD998Small | 1520618 | 23.35 | 10.72 | 2.2x | same |
 | ewd998/EWD998Chan | 1524022 | 775.49 | 145.29 | 5.3x | same |
 | ewd998/EWD998ChanID | 14 | 0.68 | 0.02 | 28.7x | same |
 | ewd998/EWD998ChanTrace |  | 0.41 | 0.01 | 35.0x | same |
 | ewd998/EWD998PCal | 321370 | 26.81 | 7.20 | 3.7x | same |
+| ewd998/SmokeEWD998 |  | 0.91 | 0.18 | 5.0x | same |
 | glowingRaccoon/clean | 63 | 0.29 | 0.01 | 51.9x | same |
 | glowingRaccoon/product | 305 | 0.42 | 0.02 | 18.0x | same |
 | glowingRaccoon/stages | 83 | 0.33 | 0.01 | 64.6x | same |

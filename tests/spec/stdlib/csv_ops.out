@@ -1,0 +1,23 @@
+0
+5
+8
+<<[zz |-> "a", c1 |-> "1"], [zz |-> "b", c1 |-> "2"], [zz |-> "c", c1 |-> "3"]>>
+<<[one |-> "a"], [one |-> "b"], [one |-> "c"]>>
+<<[x |-> "a#", y |-> "#p"], [x |-> "b#", y |-> "#x"], [x |-> "c#", y |-> "#"]>>
+<<>>
+0
+3
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0
+--- out.txt
+"abc"#42#{"x", "y"}
+"a"|[P |-> 1]|    7|7   .
+<<1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000, 20000, 21000, 22000, 23000, 24000, 25000, 26000, 27000, 28000, 29000, 30000>>
+plain
+1;2
+b;a
+"x";1
+"y";<<2>>

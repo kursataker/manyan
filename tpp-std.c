@@ -5,9 +5,12 @@
 #define _DARWIN_C_SOURCE
 #include "tpp-std.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <poll.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +18,8 @@
 #include <unistd.h>
 
 #define J_V "tlc2.value.impl.Value"
+#define J_S "tlc2.value.impl.StringValue"
+#define J_I "tlc2.value.impl.IntValue"
 #define J_EVAL "tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context," \
                "tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel"
 
@@ -25,6 +30,20 @@ static int is_record(TPPValue *v) {
     if (tpp_kind(v) != TPP_FUNCTION && tpp_kind(v) != TPP_TUPLE) return 0;
     for (size_t i = 0; i < tpp_size(v); i++) if (tpp_kind(tpp_key(v, i)) != TPP_STRING) return 0;
     return 1;
+}
+
+/* A function on 1..n as the tuple it is, as TLC's toTuple; NULL for another value. */
+static TPPValue *to_tuple(TPPValue *v) {
+    if (tpp_kind(v) == TPP_TUPLE) return v;
+    if (tpp_kind(v) != TPP_FUNCTION) return NULL;
+    size_t n = tpp_size(v);
+    for (size_t i = 0; i < n; i++)
+        if (tpp_kind(tpp_key(v, i)) != TPP_INT || tpp_int_value(tpp_key(v, i)) != (int64_t)i + 1) return NULL;
+    TPPValue **elems = calloc(n + 1, sizeof *elems);
+    for (size_t i = 0; i < n; i++) elems[i] = tpp_value(v, i);
+    TPPValue *t = tpp_tuple(n, elems);
+    free(elems);
+    return t;
 }
 
 /* A growing array of values. */
@@ -227,6 +246,19 @@ static TPPValue *svg_elem_to_string(TPPCall *call, TPPValue **a) {
     return v;
 }
 
+/* Java's double to int: NaN 0, out of range the nearest int. */
+static int64_t java_d2i(double d) { return d != d ? 0 : d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : (int64_t)d; }
+
+/* NodeOfRingNetwork(cx, cy, r, n, m): node n's place on a ring of m about (cx, cy). */
+static TPPValue *ring_network(TPPCall *call, TPPValue **a) {
+    (void)call;
+    double angle = 6.283185307179586 / (double)tpp_int_value(a[4]) * (double)tpp_int_value(a[3]), r = (double)tpp_int_value(a[2]);
+    TPPValue *names[] = {str("x"), str("y")};
+    TPPValue *at[] = {tpp_int(java_d2i((double)tpp_int_value(a[0]) + r * cos(angle))),
+                      tpp_int(java_d2i((double)tpp_int_value(a[1]) + r * sin(angle)))};
+    return tpp_record(2, names, at);
+}
+
 /* ---------------------------------------------------------------- Json */
 
 /* JSON text as Json's getValue makes it a value: an array a tuple, an
@@ -354,7 +386,6 @@ static TPPValue *json_value(Json *j) {
 
 /* The file at path, or TLC's error that it cannot be read. */
 static char *json_file(TPPCall *call, TPPValue *path, size_t *n) {
-    if (tpp_kind(path) != TPP_STRING) tpp_fail(call, "The argument should be a string, but instead it is:\n%s", tpp_print(path));
     const char *name = tpp_string_value(path, NULL);
     FILE *f = fopen(name, "rb");
     if (!f) tpp_throw(call, "%s (%s)", name, strerror(errno));
@@ -542,6 +573,243 @@ static TPPValue *simple_path(TPPCall *call, TPPValue **a) {
     return r;
 }
 
+/* ---------------------------------------------------------------- CSV */
+
+/* Appends text and a line to the file, as Files.write with CREATE and APPEND. */
+static void append_line(TPPCall *call, TPPValue *file, const char *text) {
+    const char *path = tpp_string_value(file, NULL);
+    FILE *f = fopen(path, "a");
+    if (!f || fprintf(f, "%s\n", text) < 0) tpp_throw(call, "%s", path);
+    fclose(f);
+}
+
+/* CSVWrite(template, val, file): val's elements, as TLC writes them,
+   put in the template by Java's String.format. */
+static TPPValue *csv_write(TPPCall *call, TPPValue **a) {
+    TPPValue *vals = to_tuple(a[1]);
+    if (!vals) tpp_fail(call, "The argument of CSVWrite should be a sequence, but instead it is:\n%s", tpp_print(a[1]));
+    size_t n = tpp_size(vals);
+    const char **args = calloc(n + 1, sizeof *args);
+    for (size_t i = 0; i < n; i++) args[i] = tpp_to_string(tpp_value(vals, i));
+    TPPValue *line = tpp_format(call, tpp_string_value(a[0], NULL), n, args);
+    free(args);
+    append_line(call, a[2], tpp_string_value(line, NULL));
+    return tpp_bool(1);
+}
+
+/* A line of the record's names, or of its values as TLC writes them, between delimiters. */
+static void write_fields(TPPCall *call, TPPValue *file, TPPValue *r, int names, const char *delim) {
+    Text t = {0};
+    put(&t, "", 0);
+    for (size_t i = 0; i < tpp_size(r); i++) {
+        if (i) puts_(&t, delim);
+        puts_(&t, names ? tpp_string_value(tpp_key(r, i), NULL) : tpp_to_string(tpp_value(r, i)));
+    }
+    append_line(call, file, t.s);
+    free(t.s);
+}
+
+/* CSVWriteRecord(record, delimiter, headers, file): its fields in order,
+   after a line of their names if headers. */
+static TPPValue *csv_write_record(TPPCall *call, TPPValue **a) {
+    if (!is_record(a[0])) tpp_fail(call, "The argument of CSVWriteRecord should be a record, but instead it is:\n%s", tpp_print(a[0]));
+    if (tpp_is_true(a[2])) write_fields(call, a[3], a[0], 1, tpp_string_value(a[1], NULL));
+    write_fields(call, a[3], a[0], 0, tpp_string_value(a[1], NULL));
+    return tpp_bool(1);
+}
+
+/* The file's lines, as Files.readAllLines: NULL if it does not exist. */
+static char **lines_of(TPPCall *call, TPPValue *file, size_t *n) {
+    const char *path = tpp_string_value(file, NULL);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (errno == ENOENT) return NULL;
+        tpp_throw(call, "%s", path);
+    }
+    Text t = {0};
+    put(&t, "", 0);
+    char chunk[1 << 16];
+    for (size_t got; (got = fread(chunk, 1, sizeof chunk, f)) > 0;) put(&t, chunk, got);
+    fclose(f);
+    char **lines = malloc(sizeof(char *) * (t.n + 2));
+    *n = 0;
+    for (char *p = t.s, *end = t.s + t.n; p < end;) {
+        char *eol = p + strcspn(p, "\r\n");
+        lines[(*n)++] = p;
+        p = eol + (eol < end && *eol == '\r' && eol[1] == '\n') + 1;
+        *eol = 0;
+    }
+    lines[*n] = t.s;   /* the text, to free */
+    return lines;
+}
+
+static TPPValue *csv_records(TPPCall *call, TPPValue **a) {
+    size_t n = 0;
+    char **lines = lines_of(call, a[0], &n);
+    if (lines) free(lines[n]), free(lines);
+    return tpp_int((int64_t)n);
+}
+
+static size_t length(TPPValue *s) {
+    size_t n;
+    tpp_string_value(s, &n);
+    return n;
+}
+
+/* Java's line.split(delimiter), a regular expression: its trailing empty
+   fields dropped. */
+static void split(TPPCall *call, const char *line, const char *delimiter, Values *fields) {
+    regex_t re;
+    if (regcomp(&re, delimiter, REG_EXTENDED)) tpp_throw(call, "%s", delimiter);
+    regmatch_t m;
+    const char *p = line, *from = line;
+    int matched = 0;
+    while (!regexec(&re, p, 1, &m, p > line ? REG_NOTBOL : 0)) {
+        const char *start = p + m.rm_so, *end = p + m.rm_eo;
+        matched = 1;
+        if (end > line) add(fields, tpp_string(from, (size_t)(start - from))), from = end;   /* none before an empty match at 0 */
+        if (end > start) p = end;
+        else if (*end) p = end + 1;
+        else break;
+    }
+    regfree(&re);
+    add(fields, str(from));
+    while (matched && fields->n && !length(fields->v[fields->n - 1])) fields->n--;
+}
+
+/* CSVRead(columns, delimiter, file): a record of each line, its fields
+   named by columns. */
+static TPPValue *csv_read(TPPCall *call, TPPValue **a) {
+    TPPValue *columns = to_tuple(a[0]);
+    if (!columns) tpp_fail(call, "The argument of CSVRead should be a sequence, but instead it is:\n%s", tpp_print(a[0]));
+    size_t n = 0, ncols = tpp_size(columns);
+    char **lines = lines_of(call, a[2], &n);
+    if (!lines) return tpp_tuple(0, NULL);
+    TPPValue **names = calloc(ncols + 1, sizeof *names);
+    for (size_t i = 0; i < ncols; i++) {
+        names[i] = tpp_value(columns, i);
+        if (tpp_kind(names[i]) != TPP_STRING)
+            tpp_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.StringValue (tlc2.value.impl.%s and "
+                            "tlc2.value.impl.StringValue are in unnamed module of loader 'app')", tpp_class(names[i]), tpp_class(names[i]));
+    }
+    Values records = {0};
+    for (size_t i = 0; i < n; i++) {
+        Values fields = {0};
+        split(call, lines[i], tpp_string_value(a[1], NULL), &fields);
+        if (fields.n < ncols) tpp_throw(call, "Index %zu out of bounds for length %zu", fields.n, fields.n);
+        add(&records, tpp_record(ncols, names, fields.v));
+        free(fields.v);
+    }
+    free(lines[n]), free(lines);
+    TPPValue *r = tpp_tuple(records.n, records.v);
+    free(records.v), free(names);
+    return r;
+}
+
+/* ---------------------------------------------------------------- Statistics */
+
+/* A number as Java's MessageFormat gives it: #,##0.### */
+static const char *java_number(double d) {
+    static char out[64];
+    char digits[48];
+    snprintf(digits, sizeof digits, "%.3f", d);
+    char *dot = strchr(digits, '.'), *e = digits + strlen(digits);
+    while (e > dot + 1 && e[-1] == '0') *--e = 0;
+    if (e == dot + 1) *dot = 0;
+    if (!strcmp(digits, "-0")) strcpy(digits, "0");
+    const char *p = digits, *end = strchr(digits, '.');
+    size_t ints = (end ? (size_t)(end - digits) : strlen(digits)) - (*p == '-'), k = 0;
+    if (*p == '-') out[k++] = *p++;
+    for (size_t i = 0; i < ints; i++) {
+        if (i && (ints - i) % 3 == 0) out[k++] = ',';
+        out[k++] = *p++;
+    }
+    strcpy(out + k, p);
+    return out;
+}
+
+/* Commons Math's regularized gamma functions, P(a, x) and Q(a, x). */
+static double gamma_q(double a, double x);
+
+static double gamma_p(double a, double x) {
+    if (x == 0) return 0;
+    if (x >= a + 1) return 1 - gamma_q(a, x);
+    double an = 1 / a, sum = an;
+    for (double n = 1; fabs(an / sum) > 1e-14 && sum < INFINITY; n++) an *= x / (a + n), sum += an;
+    return exp(-x + a * log(x) - lgamma(a)) * sum;
+}
+
+static double gamma_q(double a, double x) {   /* x >= a + 1: its continued fraction, by Lentz */
+    if (x < a + 1) return 1 - gamma_p(a, x);
+    double h = 1 - a + x, small = 1e-50, d = 0, c;
+    if (fabs(h) <= small) h = small;
+    c = h;
+    for (double n = 1;; n++) {
+        double an = 2 * n + 1 - a + x, bn = n * (a - n);
+        d = an + bn * d;
+        if (fabs(d) <= small) d = small;
+        c = an + bn / c;
+        if (fabs(c) <= small) c = small;
+        d = 1 / d;
+        double delta = c * d;
+        h *= delta;
+        if (fabs(delta - 1) < 1e-14) break;
+    }
+    return exp(-x + a * log(x) - lgamma(a)) / h;
+}
+
+/* A function's values, each an integer, in order, as TLC casts them. */
+static double *counts(TPPCall *call, TPPValue *f) {
+    double *v = calloc(tpp_size(f) + 1, sizeof *v);
+    for (size_t i = 0; i < tpp_size(f); i++) {
+        TPPValue *x = tpp_value(f, i);
+        if (tpp_kind(x) != TPP_INT)
+            tpp_throw(call, "class tlc2.value.impl.%s cannot be cast to class tlc2.value.impl.IntValue (tlc2.value.impl.%s and "
+                            "tlc2.value.impl.IntValue are in unnamed module of loader 'app')", tpp_class(x), tpp_class(x));
+        v[i] = (double)tpp_int_value(x);
+    }
+    return v;
+}
+
+/* ChiSquare(expected, actual, alpha): whether Commons Math's chi-square
+   test keeps that actual is distributed as expected, at the significance
+   level alpha, a string. */
+static TPPValue *chi_square(TPPCall *call, TPPValue **a) {
+    for (int i = 0; i < 2; i++)   /* TLC's error that it is not a function fails itself */
+        if (tpp_kind(a[i]) != TPP_FUNCTION && tpp_kind(a[i]) != TPP_TUPLE)
+            tpp_throw(call, "Cannot invoke \"tlc2.value.impl.Value.toString()\" because \"<local%d>\" is null", i);
+    if (tpp_kind(a[2]) != TPP_STRING)
+        tpp_fail(call, "The third argument of ChiSquare should be a StringValue representing a double in (0, .5], but instead it is:\n%s",
+                 tpp_print(a[2]));
+    double *e = counts(call, a[0]), *o = counts(call, a[1]);
+    size_t n = tpp_size(a[0]), m = tpp_size(a[1]);
+    const char *s = tpp_string_value(a[2], NULL);   /* Double.valueOf */
+    while (*s && (unsigned char)*s <= ' ') s++;
+    size_t len = strlen(s);
+    while (len && (unsigned char)s[len - 1] <= ' ') len--;
+    char *text = strndup(s, len), *end;
+    double alpha = strtod(text, &end);
+    if (end > text && strchr("fFdD", *end) && *end) end++;
+    int number = end > text && !*end && (isdigit((unsigned char)*text) || strchr("+-.", *text) || !strncmp(text, "NaN", 3) || !strncmp(text, "Infinity", 8));
+    if (!number) tpp_throw(call, len ? "For input string: \"%s\"" : "empty String", text);
+    free(text);
+    if (alpha <= 0 || alpha > 0.5) tpp_throw(call, "out of bounds significance level %s, must be between 0 and 0.5", java_number(alpha));
+    double shape = ((double)n - 1) / 2;
+    if (shape <= 0) tpp_throw(call, "shape (%s)", java_number(shape));
+    if (n != m) tpp_throw(call, "%zu != %zu", n, m);
+    for (size_t i = 0; i < n; i++)
+        if (e[i] <= 0) tpp_throw(call, "%s is smaller than, or equal to, the minimum (0)", java_number(e[i]));
+    for (size_t i = 0; i < n; i++)
+        if (o[i] < 0) tpp_throw(call, "%s is smaller than the minimum (0)", java_number(o[i]));
+    double sum_e = 0, sum_o = 0, ratio = 1, chi = 0;
+    for (size_t i = 0; i < n; i++) sum_e += e[i], sum_o += o[i];
+    if (fabs(sum_e - sum_o) > 1e-5) ratio = sum_o / sum_e;
+    for (size_t i = 0; i < n; i++) chi += (o[i] - ratio * e[i]) * (o[i] - ratio * e[i]) / (ratio * e[i]);
+    free(e), free(o);
+    double p = 1 - (chi <= 0 ? 0 : gamma_p(shape, chi / 2));
+    return tpp_bool(!(p < alpha));
+}
+
 /* ---------------------------------------------------------------- the table */
 
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
@@ -556,6 +824,7 @@ int tpp_std_init(void) {
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
         {"SVG", "SVGElemToString", 1, svg_elem_to_string, OVERRIDE("SVG", "SVGElemToString(" J_V ")")},
+        {"SVG", "NodeOfRingNetwork", 5, ring_network, OVERRIDE("SVG", "ringNetwork(" J_I "," J_I "," J_I "," J_I "," J_I ")")},
         {"Json", "JsonDeserialize", 1, json_deserialize,
          "public static tlc2.value.IValue tlc2.overrides.Json.deserialize(tlc2.value.impl.StringValue) throws java.io.IOException"},
         {"Json", "ndJsonDeserialize", 1, nd_json_deserialize,
@@ -563,6 +832,14 @@ int tpp_std_init(void) {
         {"Graphs", "SimplePath", 1, simple_path, OVERRIDE("Graphs", "simplePath(" J_V ")")},
         {"Graphs", "AreConnectedIn", 3, are_connected_in, OVERRIDE("Graphs", "areConnectedIn(" J_V "," J_V "," J_V ")")},
         {"Graphs", "IsStronglyConnected", 1, is_strongly_connected, OVERRIDE("Graphs", "isStronglyConnected(" J_V ")")},
+        {"CSV", "CSVWrite", 3, csv_write,
+         "public static " J_V " tlc2.overrides.CSV.write(" J_S "," J_V "," J_S ") throws java.io.IOException"},
+        {"CSV", "CSVWriteRecord", 4, csv_write_record,
+         "public static " J_V " tlc2.overrides.CSV.writeRecord(" J_V "," J_S ",tlc2.value.impl.BoolValue," J_S ") throws java.io.IOException"},
+        {"CSV", "CSVRead", 3, csv_read,
+         "public static " J_V " tlc2.overrides.CSV.read(" J_V "," J_S "," J_S ") throws java.io.IOException"},
+        {"CSV", "CSVRecords", 1, csv_records, "public static " J_V " tlc2.overrides.CSV.records(" J_S ") throws java.io.IOException"},
+        {"Statistics", "ChiSquare", 3, chi_square, OVERRIDE("Statistics", "chiSquare(" J_V "," J_V "," J_V ")")},
         {"UndirectedGraphs", "ConnectedComponents", 1, connected_components,
          OVERRIDE("UndirectedGraphs", "connectedComponents(" J_V ")")},
     };

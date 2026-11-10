@@ -1,0 +1,14 @@
+TRUE
+FALSE
+TRUE
+FALSE
+TRUE
+TRUE
+FALSE
+TRUE
+Error: Evaluating assumption line 15, col 8 to line 15, col 61 of module chi_square failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.overrides.Statistics.chiSquare(tlc2.value.impl.Value,tlc2.value.impl.Value,tlc2.value.impl.Value),
+but it produced the following error:
+0 is smaller than, or equal to, the minimum (0)
+exit 10

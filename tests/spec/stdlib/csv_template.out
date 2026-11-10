@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 39 of module csv_template failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.overrides.CSV.write(tlc2.value.impl.StringValue,tlc2.value.impl.Value,tlc2.value.impl.StringValue) throws java.io.IOException,
+but it produced the following error:
+d != java.lang.String
+exit 10
