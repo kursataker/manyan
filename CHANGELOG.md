@@ -1,4 +1,4 @@
-Unreleased:
+2026-11-10 0.8.0:
 
 - renamed to Manyan (github.com/soasme/manyan): the command is manyan, the
   sources manyan.c, manyan.h, manyan-std.c and manyan-std.h, and the C API
