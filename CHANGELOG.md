@@ -1,3 +1,13 @@
+2026-11-11 0.9.0:
+
+- simulation: an alias whose _format Java cannot apply prints the behavior
+  once (#1); a conjunct of Next that is no boolean is reported plainly, as
+  TLC's TLCRuntimeException; TLCCache keeps a state's value in the state,
+  an initial state's for every behavior from it
+- no memory is lost once manyan_check returns: make sanitize checks it on
+  Linux, and make sanitize-linux runs that in Docker; manyan_alloc gives a
+  native memory that lives as values do
+
 2026-11-10 0.8.0:
 
 - renamed to Manyan (github.com/soasme/manyan): the command is manyan, the

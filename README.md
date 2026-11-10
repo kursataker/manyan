@@ -42,7 +42,7 @@ Try it out:
 
 ```sh
 $ manyan examples/DieHard
-manyan version 0.8.0
+manyan version 0.9.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:
