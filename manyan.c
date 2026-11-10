@@ -10792,10 +10792,13 @@ static int sim_next(Value **st) {
 
 /* A random behavior up to its error, as TLC prints it: each state labeled
    by the action it was reached by. */
+static int sim_printing;
 static void sim_print(States *trace) {
+    sim_printing = 1;
     printf("Error: The behavior up to this point is:\n");
     for (int i = 0; i < trace->n; i++)
         print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL, trace->a[i + (i + 1 < trace->n)]);
+    sim_printing = 0;
 }
 
 /* An error TLC catches as an exception: one raised outside its evaluator,
@@ -10908,7 +10911,7 @@ static int simulate(const ManyanOptions *o) {
         }
         report_exception(trace->n > 0);
         int status = trace->n && error_module == 2 ? error_status : MANYAN_ERROR;
-        if (trace->n) {
+        if (trace->n && !sim_printing) {
             error_check = NULL;
             sim_print(sim_behavior(trace, NULL, 0));
         }
