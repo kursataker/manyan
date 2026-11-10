@@ -171,7 +171,7 @@ def main():
     report.write_text(head + "<!-- results -->\n\n"
                       f"tlaplus/Examples at {examples.name.removeprefix('Examples-')[:12]}, the exhaustive-search "
                       f"models recorded to run in at most {args.max_runtime}, and the simulation and generation "
-                      "models with `-seed 1` and `num=` their traceCount, or 100. Measured on {platform.machine()} "
+                      f"models with `-seed 1` and `num=` their traceCount, or 100. Measured on {platform.machine()} "
                       f"{platform.system()} {platform.release()}, one run, wall-clock seconds, one worker.\n\n"
                       f"{len(rows)} models: {summary}. Where tpp prints what TLC prints, "
                       f"it is {mean:.1f}x as fast (geometric mean).\n\n"

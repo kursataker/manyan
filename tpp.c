@@ -6980,6 +6980,7 @@ static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for 
 static Value *search_config(void);
 static Value *tlc_revision(void);
 static Value *sim_stats(void);
+static Value *action_record(Value **st);
 
 /* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
    sets: pairs of k and its value, interned. A worker leaves them to tpp. */
@@ -7004,6 +7005,7 @@ NATIVE(n_tlcget) {
         if (!strcmp(key, "config") && !starting) return search_config();
         if (!strcmp(key, "revision")) return tlc_revision();
         if (!strcmp(key, "stats") && simulating) return sim_stats();
+        if (!strcmp(key, "action")) return action_record(primed ? next_state : cur_state);
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
         int64_t n = starting ? -1 : search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
@@ -10648,6 +10650,43 @@ static void sim_level(long len) {
     sim_levels = ((uint64_t)m2 << 32) | ((uint64_t)mean & 0xffffffff);
 }
 
+static Value *location_record(Expr *l) {
+    const char *names[] = {"beginLine", "beginColumn", "endLine", "endColumn", "module"};
+    Value *vals[] = {mk_int(l ? l->l1 : 0), mk_int(l ? l->c1 : 0), mk_int(l ? l->l2 : 0), mk_int(l ? l->c2 : 0),
+                     mk_str(intern(l ? S(l->mod->name) : "--TLA+ BUILTINS--"))};
+    return mk_record(5, names, vals);
+}
+
+/* TLCGet("action"): the action into st, as a simulation keeps it in
+   each state, Init's -1 for an initial one; TLC's UnnamedAction for a
+   state without one, as each of a search. */
+static Value *action_record(Value **st) {
+    int act = -2;
+    for (int i = sim_trace.n - 1; i >= 0 && act == -2 && simulating; i--) if (sim_trace.a[i] == st) act = sim_trace.act[i];
+    if (act == -2 && simulating && st == sim_checked) act = cur_action;
+    const char *names[] = {"name", "location", "context", "parameters"};
+    if (act < -1) {
+        Value *vals[] = {mk_str(intern("UnnamedAction")), location_record(NULL)};
+        return mk_record(2, names, vals);
+    }
+    Action *a = act < 0 ? NULL : &actions[act];
+    Value *vals[] = {mk_str(a ? a->name : init_name ? init_name : intern("Initial predicate")),
+                     location_record(a ? a->loc : init_where), NULL, NULL};
+    List keys = {0}, args = {0};
+    for (int i = 0; a && a->op && i < a->op->nparams; i++)
+        if (!a->op->params[i]->arity) {
+            list_add(&keys, mk_str(a->op->params[i]->name));
+            list_add(&args, force(env_find(a->c.env, a->op->params[i])));
+        }
+    if (!keys.n) return mk_record(2, names, vals);
+    Value *params = mk_tuple(keys.n);
+    memcpy(params->u.fcn.vals, keys.v, sizeof(Value *) * (size_t)keys.n);
+    vals[2] = mk_fcn_from(&keys, &args);
+    vals[2]->made = MADE_RECORD;
+    vals[3] = params;
+    return mk_record(4, names, vals);
+}
+
 /* TLCGet("stats") of a simulation; the behavior's actions are those into
    the state being evaluated, the successor being checked too. */
 static Value *sim_stats(void) {
@@ -10896,6 +10935,7 @@ static int simulate(const TPPOptions *o) {
                 print_state(st);
                 return TPP_ERROR;
             }
+        sim_checked = st, cur_action = -1;   /* reached by Init */
         int violated = check_initial(st);
         if (violated && check_posts(1)) {   /* TLC's error, as one in an invariant */
             printf("While working on the initial state:\n");

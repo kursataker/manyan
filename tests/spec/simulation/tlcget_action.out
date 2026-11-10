@@ -1,0 +1,69 @@
+<<"inv", 0, "Init">>
+Finished computing initial states: 1 distinct state generated.
+<<"next", 0, "Init">>
+<<"inv", 1, "Inc">>
+<<"next", 1, "Inc">>
+<<"inv", 2, "Inc">>
+Error: Invariant Bad is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 8, col 9 to line 8, col 22 of module tlcget_action>
+/\ x = 0
+/\ a = [ name |-> "Init",
+  location |->
+      [ beginLine |-> 8,
+        beginColumn |-> 9,
+        endLine |-> 8,
+        endColumn |-> 22,
+        module |-> "tlcget_action" ] ]
+/\ b = [ name |-> "Inc",
+  location |->
+      [ beginLine |-> 9,
+        beginColumn |-> 14,
+        endLine |-> 9,
+        endColumn |-> 90,
+        module |-> "tlcget_action" ],
+  context |-> [n |-> 1, m |-> "a"],
+  parameters |-> <<"n", "m">> ]
+
+State 2: <Inc(1,"a") line 9, col 14 to line 9, col 90 of module tlcget_action>
+/\ x = 1
+/\ a = [ name |-> "Inc",
+  location |->
+      [ beginLine |-> 9,
+        beginColumn |-> 14,
+        endLine |-> 9,
+        endColumn |-> 90,
+        module |-> "tlcget_action" ],
+  context |-> [n |-> 1, m |-> "a"],
+  parameters |-> <<"n", "m">> ]
+/\ b = [ name |-> "Inc",
+  location |->
+      [ beginLine |-> 9,
+        beginColumn |-> 14,
+        endLine |-> 9,
+        endColumn |-> 90,
+        module |-> "tlcget_action" ],
+  context |-> [n |-> 1, m |-> "a"],
+  parameters |-> <<"n", "m">> ]
+
+State 3: <Inc(1,"a") line 9, col 14 to line 9, col 90 of module tlcget_action>
+/\ x = 2
+/\ a = [ name |-> "Inc",
+  location |->
+      [ beginLine |-> 9,
+        beginColumn |-> 14,
+        endLine |-> 9,
+        endColumn |-> 90,
+        module |-> "tlcget_action" ],
+  context |-> [n |-> 1, m |-> "a"],
+  parameters |-> <<"n", "m">> ]
+/\ b = [ name |-> "Inc",
+  location |->
+      [ beginLine |-> 9,
+        beginColumn |-> 14,
+        endLine |-> 9,
+        endColumn |-> 90,
+        module |-> "tlcget_action" ],
+  context |-> [n |-> 1, m |-> "a"],
+  parameters |-> <<"n", "m">> ]
+exit 12

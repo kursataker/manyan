@@ -17,8 +17,9 @@ in a recorded 10 minutes or less, and the 6 that simulate or generate
 behaviors, fixed by `-seed 1` and `num=`; the rest are Apalache's
 (symbolic, 46), or longer or not timed (17). Where TLC is killed, there is
 nothing to compare. One differs for a feature tpp lacks: the ALIAS of
-ewd687a/EWD687a_anim reads `TLCGet("action")`, which tpp does not give in
-a simulation. Three differ for reasons tpp keeps:
+ewd687a/EWD687a_anim lays out its graph with SVG's
+`NodesOfDirectedMultiGraph`, which TLC computes with jungrapht's Sugiyama
+layout and tpp from its definition, a `CHOOSE` it cannot enumerate. Three differ for reasons tpp keeps:
 
 - SpanningTree/SpanTreeRandom draws its graph with `RandomElement` in a
   constant, which TLC draws anew each run, so its output is TLC's of one run.
