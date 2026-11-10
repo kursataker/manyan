@@ -37,7 +37,7 @@ JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC_CP = $(abspath $(TLA_JAR)):$(abspath $(COMMUNITY)/modules.jar)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP) tlc2.TLC
 
-.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize fuzz fuzz-oracle fuzz-sim bench full-bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench install clean
 
 all: manyan
 
@@ -111,6 +111,13 @@ RUNS ?= 1000
 SEED ?= 1
 fuzz: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
+
+# The same in Debian, with Docker, for a machine whose sanitizers find no
+# leaks, as macOS's; its build apart from this one's.
+sanitize-linux:
+	docker run --rm -v "$(CURDIR)":/src -w /src debian:bookworm-slim sh -c \
+	  'apt-get update -qq && apt-get install -y -qq gcc make python3 >/dev/null && \
+	   make sanitize fuzz OBJDIR=.obj/linux RUNS=$(RUNS) SEED=$(SEED)'
 
 fuzz-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py diff ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
