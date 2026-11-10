@@ -7553,33 +7553,53 @@ NATIVE(n_asserterror);   /* after the evaluation's saved state */
    each value of closure, as TLC keeps it in a table at the expression. One
    of a state is kept in the state, which the search's states cannot: TLC
    evaluates the closure and the expression, then the definition evaluates
-   the expression again. One of an action is the definition's. */
+   the expression again. A simulation's states can: an initial state keeps
+   it for good, a later one for its behavior. One of an action is the
+   definition's. */
 static inline uint64_t elem_hash(Value *v);
-static struct { Expr *e; uint64_t key; Value *value; } *tlc_cache;
+static struct { Expr *e; Value **st; uint64_t key; Value *value; int behavior; } *tlc_cache;
 static int ntlc_cache;
+static Value **sim_initial;   /* the behavior's initial state, NULL before the first */
+
+static void tlc_cache_add(Expr *x, Value **st, uint64_t key, Value *v, int behavior) {
+    tlc_cache = xrealloc(tlc_cache, sizeof *tlc_cache * (size_t)(ntlc_cache + 1));
+    tlc_cache[ntlc_cache].e = x, tlc_cache[ntlc_cache].st = st, tlc_cache[ntlc_cache].key = key;
+    tlc_cache[ntlc_cache].value = v, tlc_cache[ntlc_cache++].behavior = behavior;
+}
+
+/* A behavior from initial state st begins: the last one's states are gone. */
+static void tlc_cache_behavior(Value **st) {
+    int n = 0;
+    for (int i = 0; i < ntlc_cache; i++) if (!tlc_cache[i].behavior) tlc_cache[n++] = tlc_cache[i];
+    ntlc_cache = n;
+    sim_initial = st;
+}
 
 NATIVE(n_tlccache) {
     UNUSED;
     if (a) return a[0];
     Expr *x = call->args[0];
     int level = expr_level(x);
-    if (level == 1) {
-        eval(call->args[1], c);
-        if (!simulating) eval(x, c);
-    }
-    if (level) return eval(x, c);
+    if (level > 1) return eval(x, c);
     uint64_t key = elem_hash(eval(call->args[1], c));
-    for (int i = 0; i < ntlc_cache; i++) if (tlc_cache[i].e == x && tlc_cache[i].key == key) return tlc_cache[i].value;
+    Value **st = level ? cur_state : NULL;
+    if (st && !simulating) eval(x, c);
+    if (st && (!simulating || gen_init)) return eval(x, c);
+    for (int i = 0; i < ntlc_cache; i++)
+        if (tlc_cache[i].e == x && tlc_cache[i].st == st && tlc_cache[i].key == key) return tlc_cache[i].value;
     if (in_worker) worker_cannot();
     Value *v = eval(x, c);
+    if (st && sim_initial && st != sim_initial) {   /* the behavior's arena keeps it */
+        tlc_cache_add(x, st, key, v, 1);
+        return v;
+    }
     Arena *saved = arena;
     arena = &perm_arena;
     long budget = INT64_MAX;
     Value *kept = copy_value(v, &budget);
     arena = saved;
     if (!kept) return v;
-    tlc_cache = xrealloc(tlc_cache, sizeof *tlc_cache * (size_t)(ntlc_cache + 1));
-    tlc_cache[ntlc_cache].e = x, tlc_cache[ntlc_cache].key = key, tlc_cache[ntlc_cache++].value = kept;
+    tlc_cache_add(x, st, key, kept, 0);
     return kept;
 }
 
@@ -10969,6 +10989,7 @@ static int simulate(const ManyanOptions *o) {
         trace->n = 0;
         sim_traces = t + 1;
         Value **st = init.a[rng_index(init.n)];
+        tlc_cache_behavior(st);
         sim_push(trace, st, -1);
         int ended = 0;
         for (long d = 0; d < depth && !ended && !exit_requested; d++) {
