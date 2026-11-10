@@ -68,7 +68,8 @@ of functions come in TLC's order. Values belong to the evaluation that
 made them; a native keeps none past its return. An error does not return:
 `manyan_fail` for one TLC's Java raises as an `EvalException`, which TLC
 prints as it is, and `manyan_throw` for another exception, which TLC prints
-under the Java method that threw it. `manyan_format` is Java's
+under the Java method that threw it, so memory a native needs across one
+comes from `manyan_alloc`, which lives as values do. `manyan_format` is Java's
 `String.format` on strings, and `manyan_to_string` a value as TLC's
 `toString` writes it, on one line.
 
