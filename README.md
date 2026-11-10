@@ -1,5 +1,7 @@
 # Manyan
 
+<p align="center"><img src="docs/logo.jpg" alt="Manyan logo: a dragon and a koi in a circle" width="240"></p>
+
 A fast, TLC-compatible model checker for TLA⁺.
 
 Manyan checks TLA⁺ specifications and model configurations with the same
