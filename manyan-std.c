@@ -25,6 +25,24 @@
 
 static ManyanValue *str(const char *s) { return manyan_string(s, strlen(s)); }
 
+static void *xmalloc(size_t n) {
+    void *p = malloc(n ? n : 1);
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    return p;
+}
+
+static void *xrealloc(void *p, size_t n) {
+    p = realloc(p, n ? n : 1);
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    return p;
+}
+
+static void *xcalloc(size_t n, size_t size) {
+    void *p = calloc(n ? n : 1, size);
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    return p;
+}
+
 /* A function whose keys are strings, as <<>> is: a record. */
 static int is_record(ManyanValue *v) {
     if (manyan_kind(v) != MANYAN_FUNCTION && manyan_kind(v) != MANYAN_TUPLE) return 0;
@@ -39,7 +57,7 @@ static ManyanValue *to_tuple(ManyanValue *v) {
     size_t n = manyan_size(v);
     for (size_t i = 0; i < n; i++)
         if (manyan_kind(manyan_key(v, i)) != MANYAN_INT || manyan_int_value(manyan_key(v, i)) != (int64_t)i + 1) return NULL;
-    ManyanValue **elems = calloc(n + 1, sizeof *elems);
+    ManyanValue **elems = xcalloc(n + 1, sizeof *elems);
     for (size_t i = 0; i < n; i++) elems[i] = manyan_value(v, i);
     ManyanValue *t = manyan_tuple(n, elems);
     free(elems);
@@ -52,8 +70,7 @@ typedef struct { ManyanValue **v; size_t n, cap; } Values;
 static void add(Values *l, ManyanValue *v) {
     if (l->n == l->cap) {
         l->cap = l->cap ? 2 * l->cap : 8;
-        l->v = realloc(l->v, sizeof(ManyanValue *) * l->cap);
-        if (!l->v) abort();
+        l->v = xrealloc(l->v, sizeof(ManyanValue *) * l->cap);
     }
     l->v[l->n++] = v;
 }
@@ -93,7 +110,7 @@ static char **command_words(ManyanCall *call, ManyanValue *v, const char *op) {
     for (size_t i = 0; i < manyan_size(v); i++)
         if (manyan_kind(manyan_value(v, i)) != MANYAN_STRING)
             manyan_fail(call, "The argument of IOExec should be a sequence, but instead it is:\n%s", manyan_print(manyan_value(v, i)));
-    char **argv = calloc(manyan_size(v) + 1, sizeof(char *));
+    char **argv = xcalloc(manyan_size(v) + 1, sizeof(char *));
     for (size_t i = 0; i < manyan_size(v); i++) argv[i] = (char *)manyan_string_value(manyan_value(v, i), NULL);
     return argv;
 }
@@ -134,7 +151,7 @@ static ManyanValue *run_process(ManyanCall *call, char **argv, ManyanValue *env)
             char chunk[4096];
             ssize_t n = read(fds[i].fd, chunk, sizeof chunk);
             if (n <= 0) { close(fds[i].fd), fds[i].fd = -1, open--; continue; }
-            text[i] = realloc(text[i], len[i] + (size_t)n + 1);
+            text[i] = xrealloc(text[i], len[i] + (size_t)n + 1);
             memcpy(text[i] + len[i], chunk, (size_t)n);
             text[i][len[i] += (size_t)n] = 0;
         }
@@ -207,7 +224,7 @@ static ManyanValue *set_to_seq(ManyanCall *call, ManyanValue **a) {
 typedef struct { char *s; size_t n; } Text;
 
 static void put(Text *t, const char *s, size_t n) {
-    t->s = realloc(t->s, t->n + n + 1);
+    t->s = xrealloc(t->s, t->n + n + 1);
     memcpy(t->s + t->n, s, n);
     t->s[t->n += n] = 0;
 }
@@ -467,7 +484,7 @@ static size_t root(size_t *parent, size_t i) {
 static ManyanValue *connected_components(ManyanCall *call, ManyanValue **a) {
     ManyanValue *nodes, *edges;
     to_graph(call, "ConnectedComponents", "first", "undirected graph", a[0], &nodes, &edges);
-    size_t n = manyan_size(nodes), *parent = malloc(sizeof(size_t) * (n + 1));
+    size_t n = manyan_size(nodes), *parent = xmalloc(sizeof(size_t) * (n + 1));
     for (size_t i = 0; i < n; i++) parent[i] = i;
     for (size_t k = 0; k < manyan_size(edges); k++) {
         ManyanValue *e = manyan_elements(manyan_element(edges, k));
@@ -475,7 +492,7 @@ static ManyanValue *connected_components(ManyanCall *call, ManyanValue **a) {
         long i = position(nodes, manyan_element(e, 0)), j = position(nodes, manyan_element(e, manyan_size(e) - 1));
         if (i >= 0 && j >= 0) parent[root(parent, (size_t)j)] = root(parent, (size_t)i);
     }
-    Values *members = calloc(n + 1, sizeof(Values)), out = {0};
+    Values *members = xcalloc(n + 1, sizeof(Values)), out = {0};
     for (size_t i = 0; i < n; i++) add(&members[root(parent, i)], manyan_element(nodes, i));
     for (size_t i = 0; i < n; i++)
         if (members[i].n) add(&out, manyan_set(members[i].n, members[i].v)), free(members[i].v);
@@ -491,8 +508,8 @@ typedef struct { size_t n, *start, *to; } Arcs;
 
 static Arcs arcs_of(ManyanValue *nodes, ManyanValue *edges, int transpose) {
     size_t n = manyan_size(nodes), m = manyan_size(edges), k = 0;
-    long *from = malloc(sizeof(long) * (m + 1)), *to = malloc(sizeof(long) * (m + 1));
-    Arcs a = {n, calloc(n + 2, sizeof(size_t)), malloc(sizeof(size_t) * (m + 1))};
+    long *from = xmalloc(sizeof(long) * (m + 1)), *to = xmalloc(sizeof(long) * (m + 1));
+    Arcs a = {n, xcalloc(n + 2, sizeof(size_t)), xmalloc(sizeof(size_t) * (m + 1))};
     for (size_t i = 0; i < m; i++) {
         ManyanValue *e = manyan_element(edges, i);
         if (manyan_kind(e) != MANYAN_TUPLE || manyan_size(e) != 2) continue;
@@ -509,7 +526,7 @@ static void arcs_free(Arcs a) { free(a.start), free(a.to); }
 
 /* How many nodes are reachable from node s, each marked in seen. */
 static size_t reach(Arcs a, size_t s, char *seen) {
-    size_t *queue = malloc(sizeof(size_t) * (a.n + 1)), head = 0, tail = 0;
+    size_t *queue = xmalloc(sizeof(size_t) * (a.n + 1)), head = 0, tail = 0;
     seen[s] = 1, queue[tail++] = s;
     while (head < tail)
         for (size_t i = queue[head++], k = a.start[i]; k < a.start[i + 1]; k++)
@@ -525,7 +542,7 @@ static ManyanValue *are_connected_in(ManyanCall *call, ManyanValue **a) {
     if (m < 0 || n < 0) return manyan_bool(0);
     if (m == n) return manyan_bool(1);
     Arcs arcs = arcs_of(nodes, edges, 0);
-    char *seen = calloc(arcs.n, 1);
+    char *seen = xcalloc(arcs.n, 1);
     reach(arcs, (size_t)m, seen);
     int r = seen[n];
     free(seen), arcs_free(arcs);
@@ -539,7 +556,7 @@ static ManyanValue *is_strongly_connected(ManyanCall *call, ManyanValue **a) {
     int r = 1;
     for (int transpose = 0; transpose < 2 && r && manyan_size(nodes); transpose++) {
         Arcs arcs = arcs_of(nodes, edges, transpose);
-        char *seen = calloc(arcs.n, 1);
+        char *seen = xcalloc(arcs.n, 1);
         r = reach(arcs, 0, seen) == arcs.n;
         free(seen), arcs_free(arcs);
     }
@@ -548,7 +565,7 @@ static ManyanValue *is_strongly_connected(ManyanCall *call, ManyanValue **a) {
 
 /* Each simple path that path, of n nodes, starts. */
 static void simple_paths(Arcs a, size_t *path, size_t n, char *on, ManyanValue *nodes, Values *out) {
-    ManyanValue **elems = malloc(sizeof(ManyanValue *) * n);
+    ManyanValue **elems = xmalloc(sizeof(ManyanValue *) * n);
     for (size_t i = 0; i < n; i++) elems[i] = manyan_element(nodes, path[i]);
     add(out, manyan_tuple(n, elems));
     free(elems);
@@ -564,8 +581,8 @@ static ManyanValue *simple_path(ManyanCall *call, ManyanValue **a) {
     ManyanValue *nodes, *edges;
     to_graph(call, "SimplePath", "first", "graph", a[0], &nodes, &edges);
     Arcs arcs = arcs_of(nodes, edges, 0);
-    size_t *path = malloc(sizeof(size_t) * (arcs.n + 1));
-    char *on = calloc(arcs.n + 1, 1);
+    size_t *path = xmalloc(sizeof(size_t) * (arcs.n + 1));
+    char *on = xcalloc(arcs.n + 1, 1);
     Values out = {0};
     for (size_t s = 0; s < arcs.n; s++) on[path[0] = s] = 1, simple_paths(arcs, path, 1, on, nodes, &out), on[s] = 0;
     ManyanValue *r = manyan_set(out.n, out.v);
@@ -630,7 +647,7 @@ static char **lines_of(ManyanCall *call, ManyanValue *file, size_t *n) {
     char chunk[1 << 16];
     for (size_t got; (got = fread(chunk, 1, sizeof chunk, f)) > 0;) put(&t, chunk, got);
     fclose(f);
-    char **lines = malloc(sizeof(char *) * (t.n + 2));
+    char **lines = xmalloc(sizeof(char *) * (t.n + 2));
     *n = 0;
     for (char *p = t.s, *end = t.s + t.n; p < end;) {
         char *eol = p + strcspn(p, "\r\n");
@@ -684,7 +701,7 @@ static ManyanValue *csv_read(ManyanCall *call, ManyanValue **a) {
     size_t n = 0, ncols = manyan_size(columns);
     char **lines = lines_of(call, a[2], &n);
     if (!lines) return manyan_tuple(0, NULL);
-    ManyanValue **names = calloc(ncols + 1, sizeof *names);
+    ManyanValue **names = xcalloc(ncols + 1, sizeof *names);
     for (size_t i = 0; i < ncols; i++) {
         names[i] = manyan_value(columns, i);
         if (manyan_kind(names[i]) != MANYAN_STRING)
