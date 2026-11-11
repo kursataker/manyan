@@ -7,7 +7,9 @@ configuration (SANY ignores text after a module). NAME.out is the
 normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
-NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it.
+NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it (which may give
+its own -config, which the oracle does not run; the configuration is also the
+engine's standard input).
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
 behaviors it writes (`-simulate file=FILE`).
@@ -114,8 +116,13 @@ def run(command, path):
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
+        named = options(path)
+        config = [] if "-config" in named else ["-config", path.stem + ".cfg"]
         try:
-            done = subprocess.run(place(command, options(path)) + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
+            # The configuration is also the engine's standard input, a pipe
+            # for `-config /dev/stdin`.
+            done = subprocess.run(place(command, named) + config + [path.stem], cwd=directory,
+                                  input=(directory / (path.stem + ".cfg")).read_text(),
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
             output, code = done.stdout, done.returncode
         except subprocess.TimeoutExpired:
@@ -147,7 +154,7 @@ def main():
     def check(path):
         expected_path = path.with_suffix(".out")
         notes = []
-        if args.oracle:
+        if args.oracle and "-config" not in options(path):   # TLC reads a file whose name ends in .cfg
             reference = run(oracle_command(args.oracle), path)
             if args.bless:
                 expected_path.write_text(reference)

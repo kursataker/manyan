@@ -3673,14 +3673,12 @@ static char *spec_dir;
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *s = xmalloc((size_t)n + 1);
-    if (fread(s, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(s); return NULL; }
-    s[n] = 0;
+    Buf b = {0};
+    char chunk[1 << 16];   /* not the file's size: a pipe has none */
+    for (size_t got; (got = fread(chunk, 1, sizeof chunk, f)) > 0;) buf_add(&b, chunk, got);
     fclose(f);
-    return s;
+    if (!b.s) buf_add(&b, "", 0);
+    return b.s;
 }
 
 static void collect_nested(Module *m) {
