@@ -14073,7 +14073,10 @@ static int bv_lt(const int *a, const int *b) {
 
 static int bv_le(const int *a, const int *b) { return bv_lt(b, a) ^ 1; }
 
-static void no_overflow(int ovf) { if (ovf != L_FALSE) sat_unit(ovf ^ 1); }
+static void no_overflow(int ovf) {
+    if (ovf == L_TRUE) fail("Symbolic checking cannot represent an integer of more than %d bits.", BW);
+    if (ovf != L_FALSE) sat_unit(ovf ^ 1);
+}
 
 static int *bv_add_carry(const int *a, const int *b, int carry, int *ovf) {
     int *s = NEWN(int, BW);
@@ -14460,13 +14463,16 @@ static SVal *sv_ite(int c, SVal *a, SVal *b) {
     fail("Symbolic checking cannot choose between two infinite sets by a condition.");
 }
 
+/* An undefined value used as a Boolean or an integer becomes an arbitrary
+   one, the same wherever it is shared, as Apalache leaves it. */
 static int sv_lit(SVal *s, Expr *where) {
-    if (s->kind == SV_UNDEF) return 2 * sat_var();   /* unspecified, as Apalache leaves it */
+    if (s->kind == SV_UNDEF) { s->kind = SV_BOOL; s->u.lit = 2 * sat_var(); }
     if (sv_class(s) != C_BOOL) fail_at(where, "A non-boolean expression (%s) was used as a condition.", class_name(sv_class(s)));
     return sv_open(s)->u.lit;
 }
 
 static int *sv_word(SVal *s, Expr *where) {
+    if (s->kind == SV_UNDEF) { s->kind = SV_INT; s->u.bits = bv_fresh(); }
     if (sv_class(s) != C_INT) fail_at(where, "Symbolic checking expected an integer, but has %s.", class_name(sv_class(s)));
     return sv_open(s)->u.bits;
 }
@@ -14564,16 +14570,17 @@ static int values_in(SVal *f, SVal *s) {
 }
 
 static int sv_in(SVal *x, SVal *s) {
-    if (x->kind == SV_UNDEF || s->kind == SV_UNDEF) return 2 * sat_var();
+    if (s->kind == SV_UNDEF) return 2 * sat_var();
     Value *xv = sv_known(x), *sv = sv_known(s);
     if (xv && sv && sv->kind != V_LAZY) return set_member(xv, sv) ? L_TRUE : L_FALSE;
     s = sv_open(s);
-    if (s->kind == SV_SET) {
+    if (s->kind == SV_SET) {   /* an undefined x is equal to each element or not, and in no empty set */
         int r = L_FALSE;
         for (int i = 0; i < s->n && r != L_TRUE; i++) r = g_or(r, g_and(s->u.set.guards[i], sv_eq(x, s->u.set.elems[i])));
         return r;
     }
     if (s->kind != SV_INF) fail("Symbolic checking found \\in applied to %s, not a set.", class_name(sv_class(s)));
+    if (x->kind == SV_UNDEF) return 2 * sat_var();
     int cx = sv_class(x);
     switch (s->inf) {
     case INF_INT: return cx == C_INT ? L_TRUE : L_FALSE;
@@ -15133,7 +15140,10 @@ static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, 
 static SVal *sym_bound(Def *d, SCtx sc, Expr *where) {
     SEnv *b = senv_find(sc.s, d);
     if (b) return senv_force(b);
-    return sym_plain_eval(where, sc.c);
+    SVal *v = sym_plain_eval(where, sc.c);
+    Env *arg = v->kind == SV_UNDEF ? env_find(sc.c.env, d) : NULL;
+    if (arg && arg->e) return sym(arg->e, (SCtx){{arg->ctx_env, arg->ctx_inst}, NULL}, P_BOTH);   /* the argument, by its parts */
+    return v;
 }
 
 /* A constant's or variable's value in sc, through the substitutions of
@@ -15366,8 +15376,26 @@ static SCtx let_ctx(Expr *e, SCtx sc) {
 
 static SVal *seq_len(SVal *s);
 
+static SVal *sym_parts(Expr *e, SCtx sc, int pol);
+
+/* Where the evaluator fails on e, only the part of e that fails is
+   undefined, as Apalache has it, and e has one meaning in its context
+   however often it is met: the first. */
 static SVal *sym(Expr *e, SCtx sc, int pol) {
-    if (sym_plain(e, sc)) return sym_plain_eval(e, sc.c);
+    static struct { Expr *e; Ctx c; SVal *v; } *failed;
+    static int nfailed;
+    if (!sym_plain(e, sc)) return sym_parts(e, sc, pol);
+    SVal *v = sym_plain_eval(e, sc.c);
+    if (v->kind != SV_UNDEF) return v;
+    for (int i = 0; i < nfailed; i++)
+        if (failed[i].e == e && failed[i].c.env == sc.c.env && failed[i].c.inst == sc.c.inst) return failed[i].v;
+    v = sym_parts(e, sc, pol);
+    failed = xrealloc(failed, sizeof *failed * (size_t)(nfailed + 1));
+    failed[nfailed].e = e, failed[nfailed].c = sc.c, failed[nfailed++].v = v;
+    return v;
+}
+
+static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     SVal *a, *b, *r;
     int l;
     switch (e->kind) {
@@ -15586,27 +15614,31 @@ static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
     SVal *a[3];
     Value *vals[3];
     int known = 1;
+    Native f = d->native;
+    int arith = f == n_plus || f == n_minus || f == n_times || f == n_lt || f == n_gt || f == n_leq || f == n_geq
+        || f == n_mod || f == n_div || f == n_range || f == n_pow;
     for (int i = 0; i < n; i++) {
         if (d->params[i]->arity) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
         a[i] = sym(args[i], sc, P_BOTH);
-        if (a[i]->kind == SV_UNDEF) return a[i];
+        if (a[i]->kind == SV_UNDEF && !arith) return a[i];   /* sv_word makes it an integer */
         known &= (vals[i] = sv_known(a[i])) != NULL;
     }
-    Native f = d->native;
     if (f == n_print) return a[1];
     if (f == n_printt || f == n_assert) return sv_const(TRUEV);
+    SVal *undef = NULL;   /* the operator's error on known arguments: what it means symbolically, if it has a meaning there */
     if (known) {   /* the operator itself */
         EvalState es = eval_save();
         sigjmp_buf here;
         handler = &here;
-        if (sigsetjmp(here, 0)) { eval_restore(es); return sv_undef(); }
-        Value *v = call_native(d, call, vals, sc.c);
-        eval_restore(es);
-        return sv_const(v);
+        if (sigsetjmp(here, 0)) { eval_restore(es); undef = sv_undef(); }
+        else {
+            Value *v = call_native(d, call, vals, sc.c);
+            eval_restore(es);
+            return sv_const(v);
+        }
     }
     int *x = NULL, *y = NULL, *q, *r;
-    if (f == n_plus || f == n_minus || f == n_times || f == n_lt || f == n_gt || f == n_leq || f == n_geq
-        || f == n_mod || f == n_div || f == n_range || f == n_pow) {
+    if (arith) {
         x = sv_word(a[0], args[0]);
         y = sv_word(a[1], args[1]);
     }
@@ -15691,6 +15723,7 @@ static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
         }
         return seq_make(nv, ng, m);
     }
+    if (undef) return undef;
     fail_at(call, "Symbolic checking does not support %s.", S(d->name));
 }
 
