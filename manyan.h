@@ -33,6 +33,7 @@ typedef struct {
     int difftrace;       /* print only what each step of a trace changes, as -difftrace */
     int view;            /* a trace shows each state as the VIEW's value, as -view */
     int keep_going;      /* report each violated invariant and action property, and go on (-continue) */
+    int stack;           /* expressions nest and calls go at most this deep, then TLC's StackOverflowError; 0 for calls 5000 deep (-stack) */
     const char *user_file;   /* write Print's output to this file instead, or NULL (-userFile) */
     int workers;         /* processes expanding states; 0 or 1 for one */
     int simulate;        /* random behaviors instead of the state graph, as -simulate */

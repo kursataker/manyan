@@ -2294,6 +2294,17 @@ typedef struct {
 
 static Parser *P;
 
+/* How deep expressions nest and definitions call (-stack): past it, TLC's
+   Java stack has overflowed. 0 leaves parsing to the C stack and calls
+   to 5000. */
+static int stack_limit;
+
+static const char stack_overflow[] =
+    "This was a Java StackOverflowError. It was probably the result\n"
+    "of an incorrect recursive function definition that caused TLC to enter\n"
+    "an infinite loop when trying to compute the function or its application\n"
+    "to an element in its putative domain.";
+
 static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...) {
     char msg[1024];
     va_list ap;
@@ -3092,6 +3103,11 @@ static Expr *parse_unary(const OpInfo **prefix) {
 
 /* An expression whose operators all bind tighter than `bound` (§6.1). */
 static Expr *parse_binary(int bound) {
+    static int nesting;   /* every nesting of expressions passes here */
+    if (++nesting > stack_limit && stack_limit) {
+        printf("Error: %s\n", stack_overflow);
+        exit(MANYAN_ERROR);
+    }
     const OpInfo *last;   /* the operator before the next one, as on SANY's stack */
     Expr *left = parse_unary(&last);
     for (;;) {
@@ -3140,6 +3156,7 @@ static Expr *parse_binary(int bound) {
         left = e;
         last = info;
     }
+    nesting--;
     return left;
 }
 
@@ -4964,16 +4981,10 @@ static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to appl
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
 
-static const char stack_overflow[] =
-    "This was a Java StackOverflowError. It was probably the result\n"
-    "of an incorrect recursive function definition that caused TLC to enter\n"
-    "an infinite loop when trying to compute the function or its application\n"
-    "to an element in its putative domain.";
-
 /* A definition's body is entered: only calls nest without bound. Past
    the bound, TLC's Java stack has overflowed. */
 static void deeper(void) {
-    if (++eval_depth <= 5000) return;
+    if (++eval_depth <= (stack_limit ? stack_limit : 5000)) return;
     eval_depth = 0;
     error_reset();
     buf_puts(&error_message, stack_overflow);
@@ -16455,6 +16466,7 @@ static int symbolic(void) {
 
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
+    stack_limit = o->stack > 0 ? o->stack : 0;
     symbolic_mode = o->symbolic;
     sym_cinit_name = o->symbolic ? o->cinit : NULL;
     size_t len = strlen(o->spec);
@@ -16640,6 +16652,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
+        else if (strcmp(argv[i], "-stack") == 0 && i + 1 < argc) o.stack = atoi(argv[++i]);
         else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);
         else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) {
             i++;

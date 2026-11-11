@@ -8,8 +8,8 @@ normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
 NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it (which may give
-its own -config, which the oracle does not run; the configuration is also the
-engine's standard input).
+its own -config; the configuration is also the engine's standard input). The
+oracle does not run a test with an option in ORACLE_SKIPS.
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
 behaviors it writes (`-simulate file=FILE`).
@@ -54,6 +54,10 @@ LOW_MEMORY = re.compile(
 
 
 OUTPUT_LIMIT = 64 << 20
+
+# Options a test may give that the oracle cannot run: TLC reads a
+# configuration only from a file whose name ends in .cfg, and has no -stack.
+ORACLE_SKIPS = {"-config", "-stack"}
 
 
 def guarded(command, directory, timeout, memory, input=None):
@@ -228,7 +232,7 @@ def main():
     def check(path):
         expected_path = path.with_suffix(".out")
         notes = []
-        if args.oracle and "-config" not in options(path):   # TLC reads a file whose name ends in .cfg
+        if args.oracle and not ORACLE_SKIPS & set(options(path)):
             reference = run(oracle_command(args.oracle), path, memory)
             if args.bless:
                 expected_path.write_text(reference)
