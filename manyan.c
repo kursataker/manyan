@@ -6691,10 +6691,17 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
     for (const char *p = f; *p; p++) {
         if (*p != '%') { buf_add(b, p, 1); continue; }
         const char *spec = p++;
-        int index = 0, left = 0, width = 0, prec = -1;
+        long index = 0;
+        int left = 0, width = 0, prec = -1;
         const char *q = p;
-        while (isdigit((unsigned char)*q)) index = index * 10 + (*q++ - '0');
-        if (*q == '$' && q > p) p = q + 1;
+        for (; isdigit((unsigned char)*q); q++) if (index <= INT32_MAX) index = index * 10 + (*q - '0');
+        if (*q == '$' && q > p) {
+            if (index > INT32_MAX) {
+                *cls = "java.util.IllegalFormatArgumentIndexException";
+                return "Format argument index: (not representable as int)";
+            }
+            p = q + 1;
+        }
         else index = 0;
         for (; *p && strchr("-#+ 0,(<", *p); p++) left |= *p == '-';
         while (isdigit((unsigned char)*p)) width = width * 10 + (*p++ - '0');
@@ -6706,7 +6713,7 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
             *cls = "java.util.UnknownFormatConversionException";
             return msg;
         }
-        int i = index ? index - 1 : next++;
+        int i = index ? (int)index - 1 : next++;
         if (i >= n) {
             snprintf(msg, sizeof msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
             *cls = "java.util.MissingFormatArgumentException";
