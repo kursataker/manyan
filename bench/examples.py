@@ -18,16 +18,11 @@ import difflib
 import hashlib
 import json
 import math
-import os
 import platform
 import re
 import shutil
-import signal
-import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,50 +32,14 @@ import spec_runner  # noqa: E402
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags",
             "Randomization", "RealTime", "Toolbox", "TLCExt"}
 COUNTS = re.compile(r"^(\d+) states generated, (\d+) distinct states found", re.M)
-OUTPUT_LIMIT = 64 << 20
-
-
-def finished(process, seconds):
-    try:
-        process.wait(seconds)
-        return True
-    except subprocess.TimeoutExpired:
-        return False
 
 
 def run(command, directory, timeout, memory):
     """The seconds command takes and its output, or why it was killed."""
-    start = time.perf_counter()
-    process = subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               start_new_session=True)
-    chunks, size = [], [0]
-
-    def pump():
-        for chunk in iter(lambda: process.stdout.read(1 << 16), b""):
-            size[0] += len(chunk)
-            if size[0] <= OUTPUT_LIMIT:
-                chunks.append(chunk)
-    reader = threading.Thread(target=pump)
-    reader.start()
-    killed = None
-    while not finished(process, 0.05):
-        rss = subprocess.run(["ps", "-o", "rss=", "-g", str(process.pid)], capture_output=True, text=True).stdout
-        if sum(map(int, rss.split())) > memory * 1024:
-            killed = f"over {memory} MB"
-        elif time.perf_counter() - start > timeout:
-            killed = f"over {timeout} s"
-        elif size[0] > OUTPUT_LIMIT:
-            killed = f"over {OUTPUT_LIMIT >> 20} MB of output"
-        if killed:
-            os.killpg(process.pid, signal.SIGKILL)
-            break
-    process.wait()
-    reader.join()
-    seconds = time.perf_counter() - start
+    seconds, output, code, killed = spec_runner.guarded(command, directory, timeout, memory)
     if killed:
         return seconds, None, killed
-    output = spec_runner.normalize(b"".join(chunks).decode(errors="replace"), directory)
-    return seconds, output + f"exit {process.returncode}\n", None
+    return seconds, spec_runner.normalize(output, directory) + f"exit {code}\n", None
 
 
 def stage(spec, libraries, directory):

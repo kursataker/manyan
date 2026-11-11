@@ -3,26 +3,28 @@
 usage: symbolic_runner.py MANYAN [--oracle APALACHE] [--bless] [--only SUBSTRING] [--strict]
 
 A test is NAME.tla, a module and then its model configuration, as in
-tests/spec; a line `\\* options: -length N -deadlock` gives the length (10
-by default) and turns deadlock checking off. NAME.out is the outcome
+tests/spec; a line `\\* options: -length N -deadlock -cinit C` gives the
+length (10 by default), turns deadlock checking off and names the
+operator that chooses the constants. NAME.out is the outcome
 Apalache gives: NoError, Error with the violated invariant, or Deadlock,
 then the number of states in the counterexample, then the exit status.
 The traces themselves are the solver's choice and are not compared;
 Manyan replays each of its own through its evaluator.
 
 With --oracle, Apalache (its apalache-mc) must give NAME.out too, which
-validates the test; --bless writes NAME.out from it.
+validates the test; --bless writes NAME.out from it. Each run is killed
+past --memory MB resident (1000, or 3000 with Apalache's JVM), and only
+as many run at once as keep to half the machine's memory.
 """
 import argparse
 import re
 import shlex
-import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from spec_runner import ROOT, stage
+from spec_runner import ROOT, guarded, stage, workers
 
 TESTS = ROOT / "tests/symbolic"
 
@@ -31,7 +33,8 @@ def options(path):
     found = re.search(r"^\\\* options: (.*)$", path.read_text(), flags=re.M)
     words = shlex.split(found.group(1)) if found else []
     length = words[words.index("-length") + 1] if "-length" in words else "10"
-    return length, "-deadlock" in words
+    cinit = words[words.index("-cinit") + 1] if "-cinit" in words else None
+    return length, "-deadlock" in words, cinit
 
 
 def invariants(config):
@@ -75,8 +78,8 @@ def apalache_outcome(output, code, directory, config):
     return f"{outcome} {name} {states}\nexit {code}\n"
 
 
-def run(command, path, oracle):
-    length, no_deadlock = options(path)
+def run(command, path, oracle, memory):
+    length, no_deadlock, cinit = options(path)
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
@@ -84,14 +87,15 @@ def run(command, path, oracle):
         if oracle:
             args = command + ["check", f"--config={cfg}", f"--length={length}", f"--out-dir={directory}/out"]
             args += ["--no-deadlock"] if no_deadlock else []
+            args += [f"--cinit={cinit}"] if cinit else []
             args += [path.name]
         else:
-            args = command + ["-symbolic", "-length", length] + (["-deadlock"] if no_deadlock else []) + ["-config", cfg, path.stem]
-        try:
-            done = subprocess.run(args, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
-            output, code = done.stdout, done.returncode
-        except subprocess.TimeoutExpired:
-            return "timeout\n", "timeout\n"
+            args = command + ["-symbolic", "-length", length] + (["-deadlock"] if no_deadlock else [])
+            args += ["-cinit", cinit] if cinit else []
+            args += ["-config", cfg, path.stem]
+        _, output, code, killed = guarded(args, directory, 600, memory)
+        if killed:
+            return f"{killed}\n", output
         if oracle:
             return apalache_outcome(output, code, directory, (directory / cfg).read_text()), output
         return manyan_outcome(output, code), output
@@ -105,33 +109,35 @@ def main():
     parser.add_argument("--only", default="")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--memory", type=int)
     args = parser.parse_args()
+    memory = args.memory or (3000 if args.oracle else 1000)
     engine = shlex.split(args.engine)
     if "/" in engine[0]:
         engine[0] = str(Path(engine[0]).resolve())
     oracle = shlex.split(args.oracle) if args.oracle else None
     if oracle and "/" in oracle[0]:
         oracle[0] = str(Path(oracle[0]).resolve())
-    tests = sorted(p for p in TESTS.glob("*.tla") if args.only in p.name)
+    tests = sorted(p for p in TESTS.rglob("*.tla") if ".files" not in p.parent.name and args.only in str(p.relative_to(TESTS)))
 
     def check(path):
         expected_path = path.with_suffix(".out")
         notes = []
         if args.oracle:
-            reference, log = run(oracle, path, True)
+            reference, log = run(oracle, path, True, memory)
             if args.bless:
                 expected_path.write_text(reference)
             elif not expected_path.exists() or reference != expected_path.read_text():
                 notes.append("oracle disagrees with " + expected_path.name + ": " + reference.replace("\n", " "))
         if not expected_path.exists():
             return path, False, ["no " + expected_path.name], ""
-        actual, output = run(engine, path, False)
+        actual, output = run(engine, path, False, memory)
         if actual != expected_path.read_text():
             notes.append("outcome differs: " + actual.replace("\n", " "))
         return path, not notes, notes, output
 
     failed = 0
-    with ThreadPoolExecutor(max_workers=2 if args.oracle else 8) as pool:
+    with ThreadPoolExecutor(max_workers=workers(memory)) as pool:
         for path, ok, notes, output in pool.map(check, tests):
             if not ok:
                 failed += 1

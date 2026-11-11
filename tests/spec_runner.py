@@ -15,14 +15,20 @@ behaviors it writes (`-simulate file=FILE`).
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
 With --strict the exit status is nonzero when the engine fails any test.
+Each run is killed past --memory MB resident (1000, or 3000 with an
+oracle), and only as many run at once as keep to half the machine's memory.
 """
 import argparse
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -43,6 +49,60 @@ LOW_MEMORY = re.compile(
     r"^Warning: Liveness checking will be extremely slow because TLC is running low on memory\.\n"
     r"Try allocating more memory to the Java pool \(heap\) in future TLC runs\.\n"
     r"(\(Use the -nowarning option to disable this warning\.\)\n)?", re.M)
+
+
+OUTPUT_LIMIT = 64 << 20
+
+
+def guarded(command, directory, timeout, memory):
+    """The seconds command takes, its output and exit status, or why it was
+    killed: past timeout seconds, memory MB resident (with what it starts),
+    or OUTPUT_LIMIT bytes of output."""
+    start = time.perf_counter()
+    try:
+        process = subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+    except OSError as error:
+        return 0, f"{error}\n", "error", None
+    chunks, size = [], [0]
+
+    def pump():
+        for chunk in iter(lambda: process.stdout.read(1 << 16), b""):
+            size[0] += len(chunk)
+            if size[0] <= OUTPUT_LIMIT:
+                chunks.append(chunk)
+    reader = threading.Thread(target=pump)
+    reader.start()
+    killed, wait = None, 0.01
+    while not finished(process, wait):
+        wait = min(2 * wait, 0.25)
+        rss = subprocess.run(["ps", "-o", "rss=", "-g", str(process.pid)], capture_output=True, text=True).stdout
+        if sum(map(int, rss.split())) > memory * 1024:
+            killed = f"over {memory} MB"
+        elif time.perf_counter() - start > timeout:
+            killed = f"over {timeout} s"
+        elif size[0] > OUTPUT_LIMIT:
+            killed = f"over {OUTPUT_LIMIT >> 20} MB of output"
+        if killed:
+            os.killpg(process.pid, signal.SIGKILL)
+            break
+    process.wait()
+    reader.join()
+    return time.perf_counter() - start, b"".join(chunks).decode(errors="replace"), process.returncode, killed
+
+
+def finished(process, seconds):
+    try:
+        process.wait(seconds)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def workers(memory, most=8):
+    """At most most runs at once, of memory MB each, within half the machine's memory."""
+    total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20
+    return max(1, min(most, total // 2 // memory))
 
 
 def normalize(output, directory):
@@ -110,18 +170,14 @@ def place(command, options):
     return command[:at] + java + command[at:] + [o for o in options if o not in java]
 
 
-def run(command, path):
+def run(command, path, memory):
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
-        try:
-            done = subprocess.run(place(command, options(path)) + ["-config", path.stem + ".cfg", path.stem], cwd=directory,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
-            output, code = done.stdout, done.returncode
-        except subprocess.TimeoutExpired:
-            output, code = "timeout\n", "timeout"
-        except OSError as error:
-            output, code = f"{error}\n", "error"
+        _, output, code, killed = guarded(place(command, options(path)) + ["-config", path.stem + ".cfg", path.stem],
+                                          directory, 300, memory)
+        if killed:
+            output, code = f"{killed}\n", "killed"
         return normalize(output, directory) + f"exit {code}\n" + dumped(directory)
 
 
@@ -138,7 +194,9 @@ def main():
     parser.add_argument("--only", default="")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--memory", type=int)
     args = parser.parse_args()
+    memory = args.memory or (3000 if args.oracle else 1000)
     engine = shlex.split(args.engine)
     if "/" in engine[0]:
         engine[0] = str(Path(engine[0]).resolve())
@@ -148,7 +206,7 @@ def main():
         expected_path = path.with_suffix(".out")
         notes = []
         if args.oracle:
-            reference = run(oracle_command(args.oracle), path)
+            reference = run(oracle_command(args.oracle), path, memory)
             if args.bless:
                 expected_path.write_text(reference)
             elif not expected_path.exists() or reference != expected_path.read_text():
@@ -156,7 +214,7 @@ def main():
         expected = expected_path.read_text() if expected_path.exists() else None
         if expected is None:
             return path, False, ["no " + expected_path.name], ""
-        actual = run(engine, path)
+        actual = run(engine, path, memory)
         if actual != expected:
             notes.append("output differs")
         return path, not notes, notes, actual if actual != expected else ""
@@ -164,7 +222,7 @@ def main():
     failed = 0
     chapters = {}
     # TLC unpacks its standard modules into one shared directory, so it runs alone.
-    with ThreadPoolExecutor(max_workers=1 if args.oracle else 8) as pool:
+    with ThreadPoolExecutor(max_workers=1 if args.oracle else workers(memory)) as pool:
         for path, ok, notes, actual in pool.map(check, tests):
             chapter = path.parent.relative_to(SPEC).as_posix()
             passed, total = chapters.get(chapter, (0, 0))
