@@ -89,7 +89,7 @@ static void *alloc(size_t n) { return memset(alloc_raw(n), 0, n); }
    then doubles. */
 static void *grow(void *v, int n, size_t size) {
     if (n && (n < 8 || n & (n - 1))) return v;
-    void *g = alloc_raw(size * (size_t)(n ? 2 * n : 8));
+    void *g = alloc_raw(size * (n ? 2 * (size_t)n : 8));
     if (n) memcpy(g, v, size * (size_t)n);
     return g;
 }
