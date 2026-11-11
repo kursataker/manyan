@@ -76,8 +76,7 @@ def guarded(command, directory, timeout, memory):
     killed, wait = None, 0.01
     while not finished(process, wait):
         wait = min(2 * wait, 0.25)
-        rss = subprocess.run(["ps", "-o", "rss=", "-g", str(process.pid)], capture_output=True, text=True).stdout
-        if sum(map(int, rss.split())) > memory * 1024:
+        if resident(process.pid) > memory * 1024:
             killed = f"over {memory} MB"
         elif time.perf_counter() - start > timeout:
             killed = f"over {timeout} s"
@@ -91,6 +90,15 @@ def guarded(command, directory, timeout, memory):
     return time.perf_counter() - start, b"".join(chunks).decode(errors="replace"), process.returncode, killed
 
 
+def resident(group):
+    """The KB a process group holds resident; 0 where ps cannot say (Cygwin)."""
+    try:
+        rss = subprocess.run(["ps", "-o", "rss=", "-g", str(group)], capture_output=True, text=True).stdout
+    except OSError:
+        return 0
+    return sum(int(w) for w in rss.split() if w.isdigit())
+
+
 def finished(process, seconds):
     try:
         process.wait(seconds)
@@ -101,7 +109,10 @@ def finished(process, seconds):
 
 def workers(memory, most=8):
     """At most most runs at once, of memory MB each, within half the machine's memory."""
-    total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20
+    except (AttributeError, ValueError, OSError):
+        return most
     return max(1, min(most, total // 2 // memory))
 
 
