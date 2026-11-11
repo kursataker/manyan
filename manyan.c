@@ -12114,6 +12114,26 @@ static void check_substitution(Def *d, int module) {
         config_error("The configuration file substitutes for %s with %s of different number of arguments.", S(d->name), S(target));
 }
 
+static void collect_names(Expr *e, Def ***defs, int *n, int *cap);
+
+/* Whether a definition or assumption of the root module names constant
+   c: Apalache asks a value only of a constant the specification uses. */
+static int names_const(Def *c) {
+    Def **ds = NULL;
+    int n = 0, cap = 0;
+    for (int i = 0; i < root->nsyms; i++) {
+        Def *d = root->syms[i].def;
+        collect_names(d->body, &ds, &n, &cap);
+        for (int k = 0; k < d->nb; k++) collect_names(d->bounds[k].set, &ds, &n, &cap);
+        if (d->kind == D_INST) for (int k = 0; k < d->nsubst; k++) collect_names(d->subst_expr[k], &ds, &n, &cap);
+    }
+    for (int i = 0; i < root->nunits; i++) if (root->units[i].kind == 2) collect_names(root->units[i].expr, &ds, &n, &cap);
+    int found = 0;
+    for (int i = 0; i < n && !found; i++) found = ds[i] == c;
+    free(ds);
+    return found;
+}
+
 static int setup_model(void) {
     for (int i = 0; i < root->ndecls; i++)
         if (root->decls[i]->kind == D_VAR) {
@@ -12141,7 +12161,7 @@ static int setup_model(void) {
         int n;
         Def **c = tlc_constants(&n);
         for (int i = 0; i < n; i++)
-            if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target && !sym_cinit_name)
+            if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target && !sym_cinit_name && (!symbolic_mode || names_const(c[i])))
                 config_error("The constant parameter %s is not assigned a value by the configuration file.", S(c[i]->name));
         for (int i = 0; i < n; i++) check_substitution(c[i], 0);
         for (int i = 0; i < root->nsyms; i++) check_substitution(root->syms[i].def, 0);
@@ -15947,11 +15967,18 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
     case X_LET: act(e->args[0], let_ctx(e, sc), in, out); return;
     case K_CALL: case K_PARAMCALL: case K_INSTCALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
+        SCtx at = sc;   /* where d is defined */
+        while (d->kind == D_PARAM) {   /* an operator argument: the operator it stands for */
+            SEnv *b = senv_find(at.s, d);
+            Expr *op = b ? b->e : NULL;
+            if (!op || !(op->kind == X_LAMBDA || ((op->kind == K_CALL || op->kind == K_PARAMCALL) && !op->n))) break;
+            d = op->def, at = b->ctx;
+        }
         if (d->kind != D_OP || d->native) break;
-        SCtx inner = {{NULL, e->kind == K_INSTCALL && d == e->def ? sym_instance(e, sc) : sc.c.inst}, NULL};
+        SCtx inner = {{NULL, e->kind == K_INSTCALL && d == e->def ? sym_instance(e, sc) : at.c.inst}, NULL};
         if (d->local == 2) {
-            SEnv *b = senv_find(sc.s, d);
-            Env *cb = b ? NULL : env_find(sc.c.env, d);
+            SEnv *b = senv_find(at.s, d);
+            Env *cb = b ? NULL : env_find(at.c.env, d);
             if (!b && !cb) break;
             inner = b ? b->ctx : (SCtx){{cb->ctx_env, cb->ctx_inst}, NULL};
         }
