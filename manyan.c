@@ -14048,8 +14048,7 @@ static int gate_slot(Gate *t, int cap, int op, int a, int b, int c) {
 static int gate(int op, int a, int b, int c, int *fresh) {
     if (2 * (ngates + 1) > capgates) {
         int cap = capgates ? 2 * capgates : 1 << 16;
-        Gate *t = calloc((size_t)cap, sizeof(Gate));
-        if (!t) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+        Gate *t = xcalloc((size_t)cap, sizeof(Gate));
         for (int i = 0; i < capgates; i++)
             if (gates[i].op) t[gate_slot(t, cap, gates[i].op, gates[i].a, gates[i].b, gates[i].c)] = gates[i];
         free(gates);
@@ -15114,8 +15113,7 @@ static ExprInfo *expr_info(Expr *e) {
         int size = capinfos ? 2 * capinfos : 1 << 12;
         ExprInfo *old = infos;
         int oldcap = capinfos;
-        infos = calloc((size_t)size, sizeof(ExprInfo));
-        if (!infos) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+        infos = xcalloc((size_t)size, sizeof(ExprInfo));
         capinfos = size;
         for (int i = 0; i < oldcap; i++) if (old[i].e) *info_slot(old[i].e) = old[i];
         free(old);
