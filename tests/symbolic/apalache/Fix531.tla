@@ -1,0 +1,18 @@
+\* options: -length 1
+\* apalache-mc check --length=1 Fix531.tla: OK
+-------------------------------- MODULE Fix531 --------------------------------
+EXTENDS Integers
+
+VARIABLE
+    \* @type: <<Int, Int>> -> Int;
+    f
+
+Init ==
+    f = [<<a, b>> \in { <<1, 3>>, <<2, 4>> } |-> a + b]
+
+Next ==
+    UNCHANGED f
+
+===============================================================================
+INIT Init
+NEXT Next

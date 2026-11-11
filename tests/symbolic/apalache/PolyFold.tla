@@ -1,0 +1,23 @@
+\* options: -length 1
+\* apalache-mc check --inv=Inv --length=1 PolyFold.tla: OK
+---------- MODULE PolyFold ----------
+
+EXTENDS Integers, Apalache
+
+\* @type: (Set(a)) => a -> Int;
+PolyOper(S) == 
+  LET
+    \* @type: (a -> Int, a) => a -> Int;
+    Add(f,e) == [ x \in DOMAIN f \union {e} |-> 0 ]
+  IN ApaFoldSet( Add, [x \in {} |-> 0], S )
+
+Init == TRUE
+
+Next == TRUE
+
+Inv == PolyOper({1}) = [x \in {1} |-> 0]
+
+====================
+INIT Init
+NEXT Next
+INVARIANT Inv

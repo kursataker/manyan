@@ -3432,6 +3432,7 @@ static Module *parse_module(Module *outer) {
 /* ---------------------------------------------------------------- modules */
 
 static int symbolic_mode;   /* -symbolic: the configuration is read as Apalache reads it */
+static const char *sym_cinit_name;   /* -cinit: the operator that chooses the constants left */
 
 /* The modules manyan_module gives. */
 static struct { const char *name, *text; } *library;
@@ -12044,6 +12045,7 @@ static void warn_symmetry_sets(Expr *body, Value *g) {
 static int literal_def(Expr *e) { return e->def->body->kind == X_NUM || e->def->body->kind == X_STR; }
 
 static int config_check(Expr *e, const char *what) {
+    if (symbolic_mode) return 1;   /* Apalache checks a constant as it does any formula */
     Value *v = literal_def(e) ? NULL : constant_value(e);
     if (!v) return 1;
     if (v->kind == V_BOOL && v->u.i) {
@@ -12131,7 +12133,7 @@ static int setup_model(void) {
         int n;
         Def **c = tlc_constants(&n);
         for (int i = 0; i < n; i++)
-            if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target)
+            if (!c[i]->value && !c[i]->replacement && !c[i]->bad_target && !sym_cinit_name)
                 config_error("The constant parameter %s is not assigned a value by the configuration file.", S(c[i]->name));
         for (int i = 0; i < n; i++) check_substitution(c[i], 0);
         for (int i = 0; i < root->nsyms; i++) check_substitution(root->syms[i].def, 0);
@@ -12166,7 +12168,7 @@ static int setup_model(void) {
         } else if (strcmp(k, "INIT") == 0 || strcmp(k, "NEXT") == 0) {
             const char *what = k[0] == 'I' ? "initial predicate" : "next state action";
             e = config_call(it->name, what, 'r');
-            if (!literal_def(e) && constant_value(e)) config_error("The %s %s cannot be a constant.", what, S(it->name));
+            if (!symbolic_mode && !literal_def(e) && constant_value(e)) config_error("The %s %s cannot be a constant.", what, S(it->name));
             *(k[0] == 'I' ? &init : &next) = e;
         } else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
@@ -13564,11 +13566,15 @@ static Expr *odd_literal(Module *m) {
    states, as Apalache does: it unrolls Init and Next into a formula, one
    step after another, and asks a solver whether a behavior that far
    violates an invariant or cannot go on. The solver is a CDCL SAT solver:
-   two watched literals, VSIDS, first-UIP learning, Luby restarts, and
-   assumptions, so each question about the unrolled formula keeps what the
-   last one learned. A literal is 2v + negated; variable 0 is true. */
-typedef struct { int n, learnt; float act; int lits[]; } Clause;
+   two watched literals with a blocker each, VSIDS, first-UIP learning,
+   learned clauses kept by their glue (the levels they span, as Glucose
+   keeps them), Luby restarts, and assumptions, so each question about the
+   unrolled formula keeps what the last one learned. A literal is
+   2v + negated; variable 0 is true. */
+typedef struct { int n, learnt, glue; float act; int lits[]; } Clause;
 typedef struct { Clause **c; int n, cap; } Clauses;
+typedef struct { Clause *c; int blocker; } Watch;   /* blocker: a literal of c that, true, satisfies it */
+typedef struct { Watch *w; int n, cap; } Watches;
 
 #define L_TRUE 0
 #define L_FALSE 1
@@ -13581,10 +13587,12 @@ static struct {
     double *act, var_inc, cla_inc, max_learnts;
     unsigned char *phase, *seen, *model;
     int *trail, ntrail, qhead, *lim, nlim;
-    Clauses *watch;          /* per literal: the clauses watching it, visited when it becomes false */
+    Watches *watch;          /* per literal: the clauses watching it, visited when it becomes false */
     Clauses clauses, learnts;
     int *heap, nheap, *at;   /* unassigned variables by activity; at: a variable's index, -1 if out */
     int *buf, *buf2, capbuf;
+    long *stamp, nconflicts;   /* per level: the conflict that last counted it in a glue */
+    int glue;                  /* the last learned clause's */
     int ok;
 } sat;
 
@@ -13638,10 +13646,12 @@ static int sat_var(void) {
         sat.model = xrealloc(sat.model, cap);
         sat.trail = xrealloc(sat.trail, sizeof(int) * cap);
         sat.lim = xrealloc(sat.lim, sizeof(int) * 2 * cap);   /* a level per variable and per assumption */
+        sat.stamp = xrealloc(sat.stamp, sizeof(long) * (2 * cap + 1));
+        memset(sat.stamp + 2 * v, 0, sizeof(long) * (2 * cap + 1 - 2 * (size_t)v));
         sat.heap = xrealloc(sat.heap, sizeof(int) * cap);
         sat.at = xrealloc(sat.at, sizeof(int) * cap);
-        sat.watch = xrealloc(sat.watch, sizeof(Clauses) * 2 * cap);
-        memset(sat.watch + 2 * v, 0, sizeof(Clauses) * (2 * cap - 2 * (size_t)v));
+        sat.watch = xrealloc(sat.watch, sizeof(Watches) * 2 * cap);
+        memset(sat.watch + 2 * v, 0, sizeof(Watches) * (2 * cap - 2 * (size_t)v));
     }
     sat.val[2 * v] = sat.val[2 * v + 1] = -1;
     sat.level[v] = 0;
@@ -13668,33 +13678,41 @@ static void sat_init(void) {
     sat_assign(2 * sat_var(), NULL);
 }
 
+static void watch_push(Watches *ws, Clause *c, int blocker) {
+    if (ws->n == ws->cap) ws->w = xrealloc(ws->w, sizeof(Watch) * (size_t)(ws->cap = ws->cap ? 2 * ws->cap : 4));
+    ws->w[ws->n++] = (Watch){c, blocker};
+}
+
 static void sat_watch(Clause *c) {
-    clauses_push(&sat.watch[c->lits[0]], c);
-    clauses_push(&sat.watch[c->lits[1]], c);
+    watch_push(&sat.watch[c->lits[0]], c, c->lits[1]);
+    watch_push(&sat.watch[c->lits[1]], c, c->lits[0]);
 }
 
 /* The implied literal of a reason is its first. */
 static Clause *sat_propagate(void) {
     while (sat.qhead < sat.ntrail) {
         int f = sat.trail[sat.qhead++] ^ 1;
-        Clauses *ws = &sat.watch[f];
-        int i = 0, j = 0;
-        while (i < ws->n) {
-            Clause *c = ws->c[i++];
+        Watches *ws = &sat.watch[f];
+        Watch *w = ws->w;
+        int i = 0, j = 0, n = ws->n;
+        while (i < n) {
+            if (sat.val[w[i].blocker] == 1) { w[j++] = w[i++]; continue; }
+            Clause *c = w[i++].c;
             int *l = c->lits;
             if (l[0] == f) { l[0] = l[1]; l[1] = f; }
-            if (sat.val[l[0]] == 1) { ws->c[j++] = c; continue; }
+            int first = l[0];
+            if (sat.val[first] == 1) { w[j++] = (Watch){c, first}; continue; }
             int k = 2;
             while (k < c->n && sat.val[l[k]] == 0) k++;
-            if (k < c->n) { l[1] = l[k]; l[k] = f; clauses_push(&sat.watch[l[1]], c); continue; }
-            ws->c[j++] = c;
-            if (sat.val[l[0]] == 0) {
-                while (i < ws->n) ws->c[j++] = ws->c[i++];
+            if (k < c->n) { l[1] = l[k]; l[k] = f; watch_push(&sat.watch[l[1]], c, first); continue; }
+            w[j++] = (Watch){c, first};
+            if (sat.val[first] == 0) {
+                while (i < n) w[j++] = w[i++];
                 ws->n = j;
                 sat.qhead = sat.ntrail;
                 return c;
             }
-            sat_assign(l[0], c);
+            sat_assign(first, c);
         }
         ws->n = j;
     }
@@ -13768,6 +13786,11 @@ static int sat_analyze(Clause *c, int *nout) {
         if (keep) out[m++] = out[i];
     }
     for (int i = 1; i < n; i++) sat.seen[sat.buf2[i] >> 1] = 0;
+    sat.glue = 0;
+    for (int i = 0; i < m; i++) {
+        int lv = sat.level[out[i] >> 1];
+        if (sat.stamp[lv] != sat.nconflicts) { sat.stamp[lv] = sat.nconflicts; sat.glue++; }
+    }
     int back = 0;
     if (m > 1) {
         int best = 1;
@@ -13783,26 +13806,30 @@ static Clause *sat_clause(const int *lits, int n, int learnt) {
     Clause *c = xmalloc(sizeof(Clause) + sizeof(int) * (size_t)n);
     c->n = n;
     c->learnt = learnt;
+    c->glue = sat.glue;
     c->act = 0;
     memcpy(c->lits, lits, sizeof(int) * (size_t)n);
     return c;
 }
 
-static int clause_act_cmp(const void *x, const void *y) {
-    float a = (*(Clause *const *)x)->act, b = (*(Clause *const *)y)->act;
-    return (a > b) - (a < b);
+/* The worse first: more glue, then less active. */
+static int clause_cmp(const void *x, const void *y) {
+    const Clause *a = *(Clause *const *)x, *b = *(Clause *const *)y;
+    if (a->glue != b->glue) return b->glue - a->glue;
+    return (a->act > b->act) - (a->act < b->act);
 }
 
-/* Forgets the less active half of the learned clauses not in use. */
+/* Forgets the worse half of the learned clauses not in use, but those of
+   glue 2, which tie two levels. */
 static void sat_reduce(void) {
     Clauses *l = &sat.learnts;
-    qsort(l->c, (size_t)l->n, sizeof(Clause *), clause_act_cmp);
+    qsort(l->c, (size_t)l->n, sizeof(Clause *), clause_cmp);
     Clause **dead = xmalloc(sizeof(Clause *) * (size_t)(l->n + 1));
     int j = 0, nd = 0;
     for (int i = 0; i < l->n; i++) {
         Clause *c = l->c[i];
         int locked = sat.reason[c->lits[0] >> 1] == c && sat.val[c->lits[0]] == 1;
-        if (i < l->n / 2 && c->n > 2 && !locked) dead[nd++] = c;
+        if (i < l->n / 2 && c->n > 2 && c->glue > 2 && !locked) dead[nd++] = c;
         else l->c[j++] = c;
     }
     l->n = j;
@@ -13826,6 +13853,7 @@ static int sat_search(long budget, const int *assume, int nassume) {
         Clause *c = sat_propagate();
         if (c) {
             conflicts++;
+            sat.nconflicts++;
             if (!sat.nlim) return sat.ok = 0;
             int n, back = sat_analyze(c, &n);
             sat_cancel(back);
@@ -14172,6 +14200,15 @@ static void set_add(SVal *s, SVal *e, int g) {
     s->u.set.guards[s->n++] = g;
 }
 
+static int sv_same(SVal *a, SVal *b);
+
+/* Adds e to s under g, or, if s has it, under its guard or g. */
+static void set_join(SVal *s, SVal *e, int g) {
+    for (int i = 0; i < s->n; i++)
+        if (sv_same(s->u.set.elems[i], e)) { s->u.set.guards[i] = g_or(s->u.set.guards[i], g); return; }
+    set_add(s, e, g);
+}
+
 static SVal *sv_fcn(int n, int rec) {
     SVal *s = sv_new(SV_FCN);
     s->rec = (unsigned char)rec;
@@ -14250,9 +14287,14 @@ static SVal *sv_open(SVal *s) {
         o = sv_set(v->n);
         for (int i = 0; i < v->n; i++) set_add(o, sv_const(v->u.set.elems[i]), L_TRUE);
         return o;
-    case V_INTERVAL: {
+    case V_INTERVAL: {   /* a large one as a range, which sv_enum lists only where its elements are needed */
         int n = interval_size(v);
-        if (n > 1 << 20) fail("Symbolic checking cannot enumerate the interval %s.", pretty(v));
+        if (n > 4096) {
+            o = sv_inf(INF_RANGE, 2);
+            o->u.inf.parts[0] = sv_int_const(v->u.range.lo);
+            o->u.inf.parts[1] = sv_int_const(v->u.range.hi);
+            return o;
+        }
         o = sv_set(n);
         for (int i = 0; i < n; i++) set_add(o, sv_int_const(v->u.range.lo + i), L_TRUE);
         return o;
@@ -14807,6 +14849,15 @@ static SVal **sym_next;    /* the next state as far as assigned */
 static int sym_primed;     /* reading the next state */
 static int sym_init;       /* an initial predicate: assigning unprimed variables */
 static SVal *sym_at;       /* @ in an EXCEPT */
+static Def **sym_consts;   /* the constants -cinit chooses */
+static SVal **sym_const_vals;
+static int nsym_consts;
+static int sym_cinit;      /* the constant initializer: assigning constants */
+
+static int sym_const_index(Def *d) {
+    for (int i = 0; i < nsym_consts; i++) if (sym_consts[i] == d) return i;
+    return -1;
+}
 
 enum { P_POS = 1, P_NEG = 2, P_BOTH = 3 };   /* where a formula is: under no negation, one, or either */
 
@@ -14950,7 +15001,8 @@ static int sym_plain(Expr *e, SCtx sc) {
     for (int i = 0; i < in->n; i++) {
         Def *d = in->defs[i];
         if (d == &at_mark) { if (!sym_at || !sv_known(sym_at)) return 0; }
-        else if (d->kind == D_CONST) {   /* an instance's, substituted */
+        else if (d->kind == D_CONST) {   /* chosen by -cinit, or an instance's, substituted */
+            if (sym_const_index(d) >= 0) return 0;
             Ctx c = sc.c;
             Expr *x = sc.c.inst ? substitute(d, &c) : NULL;
             if (x && x->kind != X_OPREF && !sym_plain(x, (SCtx){c, NULL})) return 0;
@@ -15087,6 +15139,12 @@ static SVal *sym_bound(Def *d, SCtx sc, Expr *where) {
 /* A constant's or variable's value in sc, through the substitutions of
    the instances sc is in. */
 static SVal *sym_decl(Def *d, SCtx sc, Expr *where) {
+    int k = d->kind == D_CONST ? sym_const_index(d) : -1;
+    if (k >= 0) {
+        SVal *v = sym_cinit ? sym_next[k] : sym_const_vals[k];
+        if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+        return v;
+    }
     if (d->kind == D_VAR && d->var_index >= 0) {
         SVal *v = sym_primed ? sym_next[d->var_index] : sym_cur[d->var_index];
         if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
@@ -15236,7 +15294,7 @@ static SVal *sym_set_op(Expr *e, SVal *a, SVal *b) {
         b = sv_enum(b);
         r = sv_set(a->n + b->n);
         for (int i = 0; i < a->n; i++) set_add(r, a->u.set.elems[i], a->u.set.guards[i]);
-        for (int i = 0; i < b->n; i++) set_add(r, b->u.set.elems[i], b->u.set.guards[i]);
+        for (int i = 0; i < b->n; i++) set_join(r, b->u.set.elems[i], b->u.set.guards[i]);
         return r;
     }
     r = sv_set(a->n);
@@ -15252,7 +15310,7 @@ static SVal *sym_union(SVal *s) {
     for (int i = 0; i < s->n; i++) n += (parts[i] = sv_enum(s->u.set.elems[i]))->n;
     SVal *r = sv_set(n);
     for (int i = 0; i < s->n; i++)
-        for (int j = 0; j < parts[i]->n; j++) set_add(r, parts[i]->u.set.elems[j], g_and(s->u.set.guards[i], parts[i]->u.set.guards[j]));
+        for (int j = 0; j < parts[i]->n; j++) set_join(r, parts[i]->u.set.elems[j], g_and(s->u.set.guards[i], parts[i]->u.set.guards[j]));
     return r;
 }
 
@@ -15713,15 +15771,18 @@ static void sym_act_fn(SCtx inner, int g, SVal *key, void *data) {
     act(a->body, inner, branch_and(a->in, g), a->out);
 }
 
-/* What e stands for, in its context, as far as parameters and the
-   substitutions of instances for variables go. */
+/* What e stands for, in its context, as far as parameters, definitions
+   without them and the substitutions of instances for variables go. */
 static Expr *sym_arg(Expr *e, SCtx *sc) {
     for (;;) {
         SEnv *b;
         Ctx c = sc->c;
         Expr *x;
-        if (e->kind == K_BOUND && (b = senv_find(sc->s, e->def)) && b->e) e = b->e, *sc = b->ctx;
-        else if (e->kind == K_DECL && e->def->kind == D_VAR && e->def->var_index < 0 && (x = substitute(e->def, &c))) e = x, *sc = (SCtx){c, NULL};
+        Def *d = e->def;
+        if (e->kind == K_BOUND && (b = senv_find(sc->s, d)) && b->e) e = b->e, *sc = b->ctx;
+        else if (e->kind == K_DECL && d->kind == D_VAR && d->var_index < 0 && (x = substitute(d, &c))) e = x, *sc = (SCtx){c, NULL};
+        else if ((e->kind == K_CALL || e->kind == K_INSTCALL) && !e->n && d->kind == D_OP && !d->native && !d->replacement && d->local != 2)
+            *sc = (SCtx){{NULL, e->kind == K_INSTCALL ? sym_instance(e, *sc) : sc->c.inst}, NULL}, e = d->body;
         else return e;
     }
 }
@@ -15731,6 +15792,7 @@ static int act_level(Expr *e, SCtx sc) {
     ExprInfo *in = expr_info(e);
     int l = in->level;
     for (int i = 0; i < in->n && l < 2; i++) {
+        if (in->defs[i]->kind == D_CONST && sym_const_index(in->defs[i]) >= 0 && l < 1) l = 1;
         SEnv *b = in->defs[i] == &at_mark ? NULL : senv_find(sc.s, in->defs[i]);
         if (b && b->e) { int a = act_level(b->e, b->ctx); if (a > l) l = a; }
     }
@@ -15744,7 +15806,9 @@ static int assign_target(Expr *lhs, SCtx sc) {
         if (lhs->kind != K_PRIME) return -1;
         lhs = sym_arg(lhs->args[0], &sc);
     }
-    if (lhs->kind != K_DECL || lhs->def->kind != D_VAR || lhs->def->var_index < 0) return -1;
+    if (lhs->kind != K_DECL) return -1;
+    if (sym_cinit) return lhs->def->kind == D_CONST ? sym_const_index(lhs->def) : -1;
+    if (lhs->def->kind != D_VAR || lhs->def->var_index < 0) return -1;
     return lhs->def->var_index;
 }
 
@@ -15754,8 +15818,6 @@ static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
         for (int i = 0; i < e->n; i++) b = act_unchanged(e->args[i], sc, b);
         return b;
     }
-    if ((e->kind == K_CALL || e->kind == K_INSTCALL) && e->def->kind == D_OP && !e->def->native && !e->def->replacement && !e->n && e->def->local != 2)
-        return act_unchanged(e->def->body, (SCtx){{NULL, e->kind == K_INSTCALL ? sym_instance(e, sc) : sc.c.inst}, NULL}, b);
     if (e->kind == K_DECL && e->def->kind == D_VAR && e->def->var_index >= 0) {
         int v = e->def->var_index;
         return b.next[v] ? branch_and(b, sv_eq(b.next[v], sym_cur[v])) : branch_set(b, v, sym_cur[v]);
@@ -15917,6 +15979,7 @@ static void sym_print(Value ***s, int *act_of, int n) {
    state does not satisfy the invariant. A behavior that does not replay
    is a fault of the symbolic encoding, reported as such. */
 static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, Value ****out, int **acts) {
+    for (int i = 0; i < nsym_consts; i++) sym_consts[i]->value = sv_model(sym_const_vals[i]);
     Value ***s = NEWN(Value **, n);
     int *act_of = NEWN(int, n);
     for (int i = 0; i < n; i++) {
@@ -15958,6 +16021,24 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
 }
 
 
+/* The constants the configuration leaves, as -cinit's operator chooses
+   them, as the initial predicate chooses the variables: its branch. */
+static Branch *sym_constants(void) {
+    Sym *s = root_sym(intern(sym_cinit_name));
+    if (!s || s->def->kind != D_OP || s->def->nparams) fail("The constant initializer %s is not an operator without parameters of the specification.", sym_cinit_name);
+    int n;
+    Def **c = tlc_constants(&n);
+    sym_consts = NEWN(Def *, n + 1);
+    for (int i = 0; i < n; i++) if (!c[i]->value && !c[i]->replacement && !c[i]->arity) sym_consts[nsym_consts++] = c[i];
+    int saved = nvars;
+    Def **saved_vars = vars;
+    nvars = nsym_consts, vars = sym_consts, sym_cinit = 1;
+    Branch *b = act_step(s->def->body, root_ctx, "The constant initializer");
+    nvars = saved, vars = saved_vars, sym_cinit = 0;
+    if (b) sym_const_vals = b->next;
+    return b;
+}
+
 static int symbolic(void) {
     if (ntemporal_props || naction_props || nconstraints || naction_constraints || nimplied_inits) {
         printf("Error: Symbolic checking checks invariants and deadlock only: the configuration has properties or constraints.\n");
@@ -15975,7 +16056,9 @@ static int symbolic(void) {
         return MANYAN_ERROR;
     }
     sym_init = sym_primed = 1;
-    Branch *init = act_step(init_expr, root_ctx, "The initial predicate");
+    Branch *init = sym_cinit_name ? sym_constants() : &(Branch){L_TRUE, NULL};
+    if (init) sat_unit(init->guard);
+    if (init) init = act_step(init_expr, root_ctx, "The initial predicate");
     sym_init = sym_primed = 0;
     if (init) {
         sat_unit(init->guard);
@@ -16035,6 +16118,7 @@ static int symbolic(void) {
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
     symbolic_mode = o->symbolic;
+    sym_cinit_name = o->symbolic ? o->cinit : NULL;
     size_t len = strlen(o->spec);
     char *path = xmalloc(len + 5);
     strcpy(path, o->spec);
@@ -16216,6 +16300,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
         else if (strcmp(argv[i], "-symbolic") == 0) o.symbolic = 1;
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
+        else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
         else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);
         else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) {
