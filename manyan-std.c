@@ -808,6 +808,42 @@ static ManyanValue *chi_square(ManyanCall *call, ManyanValue **a) {
     return manyan_bool(!(p < alpha));
 }
 
+/* ---------------------------------------------------------------- Apalache */
+
+/* Apalache's module, its operators as TLC evaluates them from it with
+   apalache.jar on its class path. */
+static const char apalache[] =
+    "---- MODULE Apalache ----\n"
+    "__x := __e == __x = __e\n"
+    "Gen(__size) == {}\n"
+    "Guess(__S) == CHOOSE __x \\in __S: TRUE\n"
+    "SetAsFun(__S) ==\n"
+    "    LET __Dom == { __x: <<__x, __y>> \\in __S }\n"
+    "        __Rng == { __y: <<__x, __y>> \\in __S }\n"
+    "    IN [ __x \\in __Dom |-> CHOOSE __y \\in __Rng: <<__x, __y>> \\in __S ]\n"
+    "LOCAL INSTANCE Integers\n"
+    "MkSeq(__N, __F(_)) == [ __i \\in (1..__N) |-> __F(__i) ]\n"
+    "LOCAL INSTANCE Sequences\n"
+    "FunAsSeq(__fn, __len, __capacity) ==\n"
+    "    LET __FunAsSeq_elem_ctor(__i) == __fn[__i] IN\n"
+    "    SubSeq(MkSeq(__capacity, __FunAsSeq_elem_ctor), 1, __len)\n"
+    "Skolem(__e) == __e\n"
+    "Expand(__S) == __S\n"
+    "ConstCardinality(__cardExpr) == __cardExpr\n"
+    "RECURSIVE ApaFoldSet(_, _, _)\n"
+    "ApaFoldSet(__Op(_,_), __v, __S) ==\n"
+    "    IF __S = {} THEN __v\n"
+    "    ELSE LET __w == CHOOSE __x \\in __S: TRUE IN\n"
+    "         ApaFoldSet(__Op, __Op(__v, __w), __S \\ {__w})\n"
+    "RECURSIVE ApaFoldSeqLeft(_, _, _)\n"
+    "ApaFoldSeqLeft(__Op(_,_), __v, __seq) ==\n"
+    "    IF __seq = <<>> THEN __v\n"
+    "    ELSE ApaFoldSeqLeft(__Op, __Op(__v, Head(__seq)), Tail(__seq))\n"
+    "RECURSIVE Repeat(_, _, _)\n"
+    "Repeat(__F(_,_), __N, __x) ==\n"
+    "    IF __N <= 0 THEN __x ELSE __F(Repeat(__F, __N - 1, __x), __N)\n"
+    "====\n";
+
 /* ---------------------------------------------------------------- the table */
 
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
@@ -843,5 +879,5 @@ int manyan_std_init(void) {
     };
     for (size_t i = 0; i < sizeof natives / sizeof *natives; i++)
         if (manyan_define(natives[i].module, natives[i].name, natives[i].arity, natives[i].fn, natives[i].java)) return -1;
-    return 0;
+    return manyan_module("Apalache", apalache);
 }

@@ -69,6 +69,13 @@ typedef ManyanValue *(*ManyanNative)(ManyanCall *call, ManyanValue **args);
 #define MANYAN_LAZY (-1)
 int manyan_define(const char *module, const char *name, int arity, ManyanNative fn, const char *java);
 
+/* == Modules ==
+   manyan_module gives the text of the module NAME, which a spec loads when
+   no file beside it has that name, as TLC loads one from its class path.
+   manyan-std.c gives Apalache's (docs/std.md). Give before manyan_check;
+   returns 0, or -1 when out of memory. */
+int manyan_module(const char *name, const char *text);
+
 /* Values live until the evaluation that made them ends; a native's
    arguments, as they are given, and what it makes. Sets and functions are
    given in TLC's order: sorted. */

@@ -3431,6 +3431,20 @@ static Module *parse_module(Module *outer) {
 
 /* ---------------------------------------------------------------- modules */
 
+static int symbolic_mode;   /* -symbolic: the configuration is read as Apalache reads it */
+
+/* The modules manyan_module gives. */
+static struct { const char *name, *text; } *library;
+static int nlibrary;
+
+int manyan_module(const char *name, const char *text) {
+    void *grown = realloc(library, sizeof *library * (size_t)(nlibrary + 1));
+    if (!grown) return -1;
+    library = grown;
+    library[nlibrary].name = name, library[nlibrary++].text = text;
+    return 0;
+}
+
 /* The standard modules of tla2tools, without their comments (§8). Their
    operators are evaluated natively; their identifiers are interned as
    TLC interns them. */
@@ -3782,6 +3796,7 @@ static Module *load_module(int name, Module *from) {
     else {
         for (int i = 0; standard_modules[i].name; i++)
             if (strcmp(standard_modules[i].name, S(name)) == 0) { text = standard_modules[i].text; standard = 1; }
+        for (int i = 0; !text && i < nlibrary; i++) if (strcmp(library[i].name, S(name)) == 0) text = library[i].text;
         sprintf(path, "%s.tla", S(name));
         if (!text) text = file = monolith_module(S(name));
     }
@@ -11208,6 +11223,10 @@ static int cfg_name(CfgLexer *L, int kind) {
    when no value is made (§7.5). */
 static Value *cfg_value(CfgLexer *L, int kind) {
     if (!kind) cfg_fail(L, "It was expecting a value, but did not find it.");
+    if (symbolic_mode && cfg_is(kind, "-") && isdigit((unsigned char)L->s[L->pos])) {   /* a negative integer */
+        cfg_token(L);
+        return cfg_scanning ? NULL : mk_int(-cfg_num);
+    }
     if (cfg_is(kind, "{")) {
         List l = {0};
         kind = cfg_token(L);
@@ -14811,7 +14830,7 @@ static int ninfos, capinfos;
 
 static void collect_names(Expr *e, Def ***defs, int *n, int *cap) {
     if (!e) return;
-    Def *d = e->kind == K_BOUND || e->kind == K_PARAMCALL || (e->kind == K_CALL && e->def->local == 2) ? e->def
+    Def *d = e->kind == K_BOUND || e->kind == K_PARAMCALL || (e->kind == K_CALL && e->def->local == 2) || (e->kind == K_DECL && e->def->kind == D_CONST) ? e->def
            : e->kind == X_AT ? &at_mark : NULL;
     if (d) {
         int i = 0;
@@ -14849,6 +14868,11 @@ static int def_sym_level(Def *d) {
     static int nbusy;
     if (d->replacement) d = d->replacement;
     if (d->kind == D_VAR || (d->native && sym_impure(d->native))) return 1;
+    if (d->kind == D_INST) {
+        int l = 0;
+        for (int i = 0; i < d->nsubst; i++) if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_info(d->subst_expr[i])->level; if (b > l) l = b; }
+        return l;
+    }
     if (d->native || !d->body || d->kind == D_CONST || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
     for (int i = 0; i < nbusy; i++) if (busy[i] == d) return 0;
     if (nbusy == 256) return expr_level(d->body);
@@ -14878,7 +14902,11 @@ static int sym_level(Expr *e) {
     case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_CDOT: own = 2; break;
     case K_ENABLED: return 1;
     case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case X_WF: case X_SF: case K_WHILE: case X_TFORALL: case X_TEXISTS: own = 3; break;
-    case K_CALL: case K_INSTCALL: own = def_sym_level(e->def); break;
+    case K_CALL: own = def_sym_level(e->def); break;
+    case K_INSTCALL:
+        own = def_sym_level(e->def);
+        for (int i = 0; i < e->ndefs; i++) { int d = def_sym_level(e->defs[i]); if (d > own) own = d; }
+        break;
     case X_LET: for (int i = 0; i < e->ndefs; i++) { int d = def_sym_level(e->defs[i]); if (d > own) own = d; } break;
     case X_LAMBDA: own = expr_info(e->def->body)->level; break;
     case X_OPREF: own = def_sym_level(e->def); break;
@@ -14920,8 +14948,14 @@ static int sym_plain(Expr *e, SCtx sc) {
     ExprInfo *in = expr_info(e);
     if (in->level) return 0;
     for (int i = 0; i < in->n; i++) {
-        if (in->defs[i] == &at_mark) { if (!sym_at || !sv_known(sym_at)) return 0; }
-        else if (sc.s && senv_find(sc.s, in->defs[i])) return 0;
+        Def *d = in->defs[i];
+        if (d == &at_mark) { if (!sym_at || !sv_known(sym_at)) return 0; }
+        else if (d->kind == D_CONST) {   /* an instance's, substituted */
+            Ctx c = sc.c;
+            Expr *x = sc.c.inst ? substitute(d, &c) : NULL;
+            if (x && x->kind != X_OPREF && !sym_plain(x, (SCtx){c, NULL})) return 0;
+        }
+        else if (sc.s && senv_find(sc.s, d)) return 0;
     }
     return 1;
 }
@@ -14973,6 +15007,8 @@ static SCtx sym_bind_args(Def *d, Expr **args, int n, SCtx caller, SCtx inner) {
 static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call);
 static SVal *sym_fcndef(Def *d, SCtx sc);
 
+static SVal *sym_oper(Value *v, Expr **args, int n, SCtx sc, Expr *call, int pol);
+
 /* The operator argument d, bound in at, applied to args written in sc. */
 static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, int pol);
 static SVal *sym_param_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, int pol) {
@@ -14985,13 +15021,29 @@ static SVal *sym_param_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *
     }
     Env *cb = env_find(at.c.env, d);
     if (!cb) fail_at(call, "Unbound operator parameter %s.", S(d->name));
-    Value *v = force(cb);
-    if (v->kind != V_OPER || v->u.op.table) fail_at(call, "Symbolic checking cannot apply %s.", S(d->name));
-    if (v->u.op.inst) fail_at(call, "Symbolic checking does not support instances yet.");
+    return sym_oper(force(cb), args, n, sc, call, pol);
+}
+
+/* The operator value v applied to args written in sc. */
+static SVal *sym_oper(Value *v, Expr **args, int n, SCtx sc, Expr *call, int pol) {
+    if (v->kind != V_OPER || v->u.op.table) fail_at(call, "Symbolic checking cannot apply this operator.");
     Def *od = v->u.op.def->replacement ? v->u.op.def->replacement : v->u.op.def;
     SCtx oc = {{v->u.op.env, v->u.op.inst}, NULL};
     if (od->local == 2 && !od->native) { Env *lb = env_find(oc.c.env, od); if (lb) oc.c.env = lb->ctx_env; }
     return sym_call(od, args, n, sc, oc, call, pol);
+}
+
+/* The operator argument op, written in sc, applied to x. */
+static SVal *sym_apply_op(Expr *op, SCtx sc, SVal *x, Expr *call) {
+    Def *d = NEW(Def);
+    d->kind = D_BOUND;
+    Expr *arg = NEW(Expr);
+    arg->kind = K_BOUND;
+    arg->def = d;
+    SCtx at = {sc.c, senv_bind(d, x, NULL, sc, sc.s)};
+    if (op->kind == X_LAMBDA) return sym_call(op->def, &arg, 1, at, sc, call, P_BOTH);
+    if (!sym_plain(op, sc)) fail_at(call, "Symbolic checking cannot apply this operator argument.");
+    return sym_oper(eval_operator_arg(op, sc.c), &arg, 1, at, call, P_BOTH);
 }
 
 /* The context a definition's body is evaluated in, before its parameters:
@@ -15032,11 +15084,27 @@ static SVal *sym_bound(Def *d, SCtx sc, Expr *where) {
     return sym_plain_eval(where, sc.c);
 }
 
-static SVal *sym_var(Def *d, Expr *where) {
-    if (d->var_index < 0) fail_at(where, "Symbolic checking cannot read the variable %s of an instance.", S(d->name));
-    SVal *v = sym_primed ? sym_next[d->var_index] : sym_cur[d->var_index];
-    if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
-    return v;
+/* A constant's or variable's value in sc, through the substitutions of
+   the instances sc is in. */
+static SVal *sym_decl(Def *d, SCtx sc, Expr *where) {
+    if (d->kind == D_VAR && d->var_index >= 0) {
+        SVal *v = sym_primed ? sym_next[d->var_index] : sym_cur[d->var_index];
+        if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+        return v;
+    }
+    Ctx c = sc.c;
+    Expr *x = substitute(d, &c);
+    if (x && x->kind == X_OPREF && x->def->kind == D_CONST) return sym_decl(x->def, (SCtx){c, NULL}, where);
+    if (!x || x->kind == X_OPREF) return sym_plain_eval(where, sc.c);
+    return sym(x, (SCtx){c, NULL}, P_BOTH);
+}
+
+/* The instances an instance call goes through. */
+static Inst *sym_instance(Expr *e, SCtx sc) {
+    for (int i = 0; i < e->nseg; i++)
+        for (int k = 0; k < e->segs[i].n; k++)
+            if (!sym_plain(e->segs[i].args[k], sc)) fail_at(e, "Symbolic checking cannot instantiate a module with arguments of the state.");
+    return instance_chain(e, sc.c);
 }
 
 /* Calls fn for each binding of the bounds, in sc; key is the element
@@ -15246,13 +15314,17 @@ static SVal *sym(Expr *e, SCtx sc, int pol) {
     int l;
     switch (e->kind) {
     case K_BOUND: return sym_bound(e->def, sc, e);
-    case K_DECL:
-        if (e->def->kind == D_VAR) return sym_var(e->def, e);
-        return sym_plain_eval(e, sc.c);
+    case K_DECL: return sym_decl(e->def, sc, e);
     case K_CALL: case K_PARAMCALL:
-        if (e->def->kind == D_VAR) return sym_var(e->def, e);
+        if (e->def->kind == D_VAR) return sym_decl(e->def, sc, e);
         return sym_call(e->def, e->args, e->n, sc, sc, e, pol);
-    case K_INSTCALL: fail_at(e, "Symbolic checking does not support instances yet.");
+    case K_INSTCALL: {
+        Def *d = e->def;
+        if (d->replacement) return sym_call(d, e->args, e->n, sc, sc, e, pol);
+        SCtx at = {{NULL, sym_instance(e, sc)}, NULL};
+        if (d->kind == D_CONST || d->kind == D_VAR) return sym_decl(d, at, e);
+        return sym_call(d, e->args, e->n, sc, at, e, pol);
+    }
     case K_AND: case K_OR: {
         int and = e->kind == K_AND;
         l = and ? L_TRUE : L_FALSE;
@@ -15426,7 +15498,32 @@ static SVal *seq_make(SVal **v, int *g, int n) {
     return r;
 }
 
+/* The elements of s that test, an operator argument, keeps: the one at j
+   is the element i kept with j kept before it. */
+static SVal *seq_select(SVal *s, Expr *test, SCtx sc, Expr *call) {
+    SVal **v;
+    int *g, m;
+    seq_open(s, &v, &g, &m, call);
+    int *keep = NEWN(int, m + 1), **before = NEWN(int *, m + 1);
+    before[0] = bv_const(0);
+    for (int i = 0; i < m; i++) {
+        keep[i] = g_and(g[i], sv_lit(sym_apply_op(test, sc, v[i], call), call));
+        int *one = bv_const(0);
+        one[0] = keep[i];
+        before[i + 1] = bv_add(before[i], one);
+    }
+    SVal **nv = NEWN(SVal *, m + 1);
+    int *ng = NEWN(int, m + 1);
+    for (int j = 0; j < m; j++) {
+        nv[j] = v[m - 1];
+        for (int i = m - 2; i >= j; i--) nv[j] = sv_ite(g_and(keep[i], bv_eq(before[i], bv_const(j))), v[i], nv[j]);
+        ng[j] = bv_lt(bv_const(j), before[m]);
+    }
+    return seq_make(nv, ng, m);
+}
+
 static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
+    if (d->native == n_selectseq) return seq_select(sym(args[0], sc, P_BOTH), args[1], sc, call);
     if (d->lazy || n > 3 || sym_impure(d->native)) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
     SVal *a[3];
     Value *vals[3];
@@ -15616,12 +15713,17 @@ static void sym_act_fn(SCtx inner, int g, SVal *key, void *data) {
     act(a->body, inner, branch_and(a->in, g), a->out);
 }
 
-/* The argument a parameter e stands for, in its context, as far as
-   parameters go. */
+/* What e stands for, in its context, as far as parameters and the
+   substitutions of instances for variables go. */
 static Expr *sym_arg(Expr *e, SCtx *sc) {
-    SEnv *b;
-    while (e->kind == K_BOUND && (b = senv_find(sc->s, e->def)) && b->e) { e = b->e; *sc = b->ctx; }
-    return e;
+    for (;;) {
+        SEnv *b;
+        Ctx c = sc->c;
+        Expr *x;
+        if (e->kind == K_BOUND && (b = senv_find(sc->s, e->def)) && b->e) e = b->e, *sc = b->ctx;
+        else if (e->kind == K_DECL && e->def->kind == D_VAR && e->def->var_index < 0 && (x = substitute(e->def, &c))) e = x, *sc = (SCtx){c, NULL};
+        else return e;
+    }
 }
 
 /* The level of e where its parameters stand for their arguments. */
@@ -15642,8 +15744,7 @@ static int assign_target(Expr *lhs, SCtx sc) {
         if (lhs->kind != K_PRIME) return -1;
         lhs = sym_arg(lhs->args[0], &sc);
     }
-    if (lhs->kind != K_DECL || lhs->def->kind != D_VAR) return -1;
-    if (lhs->def->var_index < 0) fail_at(lhs, "Symbolic checking cannot assign the variable %s of an instance.", S(lhs->def->name));
+    if (lhs->kind != K_DECL || lhs->def->kind != D_VAR || lhs->def->var_index < 0) return -1;
     return lhs->def->var_index;
 }
 
@@ -15653,8 +15754,8 @@ static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
         for (int i = 0; i < e->n; i++) b = act_unchanged(e->args[i], sc, b);
         return b;
     }
-    if (e->kind == K_CALL && e->def->kind == D_OP && !e->def->native && !e->def->replacement && !e->n && e->def->local != 2)
-        return act_unchanged(e->def->body, (SCtx){{NULL, sc.c.inst}, NULL}, b);
+    if ((e->kind == K_CALL || e->kind == K_INSTCALL) && e->def->kind == D_OP && !e->def->native && !e->def->replacement && !e->n && e->def->local != 2)
+        return act_unchanged(e->def->body, (SCtx){{NULL, e->kind == K_INSTCALL ? sym_instance(e, sc) : sc.c.inst}, NULL}, b);
     if (e->kind == K_DECL && e->def->kind == D_VAR && e->def->var_index >= 0) {
         int v = e->def->var_index;
         return b.next[v] ? branch_and(b, sv_eq(b.next[v], sym_cur[v])) : branch_set(b, v, sym_cur[v]);
@@ -15722,10 +15823,10 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
         return;
     }
     case X_LET: act(e->args[0], let_ctx(e, sc), in, out); return;
-    case K_CALL: case K_PARAMCALL: {
+    case K_CALL: case K_PARAMCALL: case K_INSTCALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native) break;
-        SCtx inner = {{NULL, sc.c.inst}, NULL};
+        SCtx inner = {{NULL, e->kind == K_INSTCALL && d == e->def ? sym_instance(e, sc) : sc.c.inst}, NULL};
         if (d->local == 2) {
             SEnv *b = senv_find(sc.s, d);
             Env *cb = b ? NULL : env_find(sc.c.env, d);
@@ -15933,6 +16034,7 @@ static int symbolic(void) {
 
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
+    symbolic_mode = o->symbolic;
     size_t len = strlen(o->spec);
     char *path = xmalloc(len + 5);
     strcpy(path, o->spec);

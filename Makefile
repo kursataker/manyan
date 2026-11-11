@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench full-bench-symbolic install clean
 
 all: manyan
 
@@ -165,6 +165,11 @@ full-bench: manyan $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
 	python3 bench/examples.py ./manyan --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
 		--library $(COMMUNITY) --library $(TLAPM)/library \
 		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME))
+
+# The models tlaplus/Examples checks with Apalache, with -symbolic.
+full-bench-symbolic: manyan $(APALACHE) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
+	python3 bench/symbolic.py ./manyan --apalache "$(APALACHE_RUN)" --examples $(EXAMPLES) \
+		--library $(COMMUNITY) --library $(TLAPM)/library $(if $(ONLY),--only $(ONLY))
 
 $(OBJDIR)/Examples-%:
 	rm -rf $@.tmp && git init -q $@.tmp
