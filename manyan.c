@@ -6250,14 +6250,16 @@ static __attribute__((noinline)) Value *ev_case(Expr *e, Ctx c) {
     fail_at(e, "Attempted to evaluate a CASE with no conditions true.");
 }
 
-static __attribute__((noinline)) Value *ev_let(Expr *e, Ctx c) {
+/* The context of a LET's body. */
+static Ctx let_env(Expr *e, Ctx c) {
     Env *env = c.env;
     for (int i = 0; i < e->ndefs; i++) env = mk_thunk(e->defs[i], e->defs[i]->body, c, env);
     /* The definitions see each other: close them over the new environment. */
     for (Env *b = env; b != c.env; b = b->next) b->ctx_env = env;
-    Ctx inner = {env, c.inst};
-    return eval(e->args[0], inner);
+    return (Ctx){env, c.inst};
 }
+
+static __attribute__((noinline)) Value *ev_let(Expr *e, Ctx c) { return eval(e->args[0], let_env(e, c)); }
 
 static __attribute__((noinline)) Value *ev_sqact(Expr *e, Ctx c) {
     /* [A]_v and <<A>>_v evaluated on a pair of states; as TLC, v only
@@ -12267,7 +12269,8 @@ static int setup_model(void) {
                 warning(b.s);
                 free(b.s);
             }
-            if (config_check(e, "property")) use_property(e);
+            if (symbolic_mode) add_check(&temporal_props, &ntemporal_props, e->def, e, root_ctx, it->name);   /* the whole formula, on a lasso */
+            else if (config_check(e, "property")) use_property(e);
         } else if (strncmp(k, "CONSTRAINT", 10) == 0) {
             e = config_call(it->name, "constraint", 'r');
             if (config_check(e, "constraint")) add_check(&constraints, &nconstraints, e->def, e, root_ctx, e->def->name);
@@ -12524,6 +12527,9 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         eval_restore(es);
         return d.acc ? d.acc : tf_new(d.op == TF_AND ? TF_TRUE : TF_FALSE, NULL, NULL);
     }
+    case X_LET:   /* which TLC cannot handle, and Apalache can */
+        if (symbolic_mode) return to_tf(e->args[0], let_env(e, c), neg);
+        break;
     default: break;
     }
     cannot_handle(e, NULL);
@@ -13052,14 +13058,14 @@ static void print_live_state(int number, int s, int action, int prev, int next) 
 
 /* Whether t holds from position pos of the lasso of the n states ls,
    whose last is followed by the one at cyc. */
-static int holds_on_lasso(TF *t, int *ls, int n, int cyc, int pos) {
+static int holds_on_lasso(TF *t, Value ***ls, int n, int cyc, int pos) {
     switch (t->op) {
     case TF_TRUE: return 1;
     case TF_FALSE: return 0;
     case TF_AND: return holds_on_lasso(t->a, ls, n, cyc, pos) && holds_on_lasso(t->b, ls, n, cyc, pos);
     case TF_OR: return holds_on_lasso(t->a, ls, n, cyc, pos) || holds_on_lasso(t->b, ls, n, cyc, pos);
     case TF_ATOM:
-        return holds_in(t->atom, t->c, state_values(ls[pos]), t->action ? state_values(ls[pos + 1 < n ? pos + 1 : cyc]) : NULL) != t->neg;
+        return holds_in(t->atom, t->c, ls[pos], t->action ? ls[pos + 1 < n ? pos + 1 : cyc] : NULL) != t->neg;
     default: {   /* from pos on, which in the cycle is all of it */
         int always = t->op == TF_ALWAYS;
         for (int i = pos < cyc ? pos : cyc; i < n; i++)
@@ -13069,9 +13075,16 @@ static int holds_on_lasso(TF *t, int *ls, int n, int cyc, int pos) {
     }
 }
 
+/* The values of the n states ls. */
+static Value ***lasso_values(int *ls, int n) {
+    Value ***v = NEWN(Value **, n);
+    for (int i = 0; i < n; i++) v[i] = state_values(ls[i]);
+    return v;
+}
+
 /* Prints, as TLC, the properties the lasso violates, each by the name of
    its PROPERTY; one that fails to evaluate is left out. */
-static void print_violated(int *ls, int n, int cyc) {
+static void print_violated(Value ***ls, int n, int cyc) {
     int saved_atoms = natoms, saved_eventualities = neventualities;
     int *names = NEWN(int, ntemporal_props + 1), nnames = 0;
     for (int p = 0; p < ntemporal_props; p++) {
@@ -13180,7 +13193,7 @@ static void print_counterexample(int *inits, int ninits) {
     int nlasso = path.n + (stutter_only ? 0 : cyc.n - 1);
     int *lasso = NEWN(int, nlasso + 1);
     for (int i = 0; i < nlasso; i++) lasso[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;
-    print_violated(lasso, nlasso, stutter_only ? nlasso - 1 : path.n - 1);
+    print_violated(lasso_values(lasso, nlasso), nlasso, stutter_only ? nlasso - 1 : path.n - 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     int number = 0;
     for (int i = 0; i < path.n; i++) {
@@ -13356,7 +13369,7 @@ static void print_cut(int at) {
         ls[n] = s;
         act[n++] = (int)acts.v[i]->u.i;
     }
-    print_violated(ls, n, n - 1);
+    print_violated(lasso_values(ls, n), n, n - 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
 }
@@ -14244,8 +14257,12 @@ static void bv_divmod(const int *a, const int *b, int **q, int **r) {
    The value of an expression that went wrong is undefined: it carries the
    error, and which one it is matters only if it is the value of a state. */
 enum { SV_CONST, SV_BOOL, SV_INT, SV_ATOM, SV_SET, SV_FCN, SV_INF, SV_UNDEF };
-enum { INF_INT, INF_NAT, INF_STRING, INF_SUBSET, INF_FCNSET, INF_RCDSET, INF_TIMES, INF_SEQ, INF_RANGE, INF_MINUS };
+enum { INF_INT, INF_NAT, INF_STRING, INF_SUBSET, INF_FCNSET, INF_RCDSET, INF_TIMES, INF_SEQ, INF_RANGE, INF_MINUS, INF_FILTER };
 enum { C_BOOL, C_INT, C_ATOM, C_SET, C_FCN, C_NONE };
+
+typedef struct SEnv SEnv;
+typedef struct { Ctx c; SEnv *s; } SCtx;
+struct Filter { Expr *e; SCtx sc; };   /* INF_FILTER: {x \in S : P}, where it is */
 
 typedef struct SVal SVal;
 struct SVal {
@@ -14257,7 +14274,7 @@ struct SVal {
         int *bits;
         struct { SVal **elems; int *guards; } set;
         struct { SVal **keys, **vals; int *guards; } fcn;
-        struct { SVal **parts; int *names; } inf;   /* RCDSET: field names */
+        struct { SVal **parts; int *names; struct Filter *filter; } inf;   /* RCDSET: field names */
         char *err;
     } u;
 };
@@ -14398,6 +14415,15 @@ static SVal *sv_open(SVal *s) {
                 o->u.inf.parts[i] = sv_const(v->u.l.names[v->n + i]);
             }
             return o;
+        case L_FILTER: {
+            Expr *e = v->u.l.expr;
+            if (enumerable(v->u.l.a) || e->bounds[0].n != 1 || e->bounds[0].tuple) return sv_open(sv_const(enumerate(v)));
+            o = sv_inf(INF_FILTER, 1);
+            o->u.inf.parts[0] = sv_const(v->u.l.a);
+            o->u.inf.filter = NEW(struct Filter);
+            *o->u.inf.filter = (struct Filter){e, {{v->u.l.env, v->u.l.inst}, NULL}};
+            return o;
+        }
         case L_DIFF:
             if (enumerable(v->u.l.a)) return sv_open(sv_const(enumerate(v)));
             o = sv_inf(INF_MINUS, 2);
@@ -14488,7 +14514,7 @@ static int sv_same(SVal *a, SVal *b) {
                 || !sv_same(a->u.fcn.vals[i], b->u.fcn.vals[i])) return 0;
         return 1;
     case SV_INF:
-        if (a->inf != b->inf) return 0;
+        if (a->inf != b->inf || a->u.inf.filter != b->u.inf.filter) return 0;
         for (int i = 0; i < a->n; i++)
             if (a->u.inf.names[i] != b->u.inf.names[i] || !sv_same(a->u.inf.parts[i], b->u.inf.parts[i])) return 0;
         return 1;
@@ -14562,6 +14588,7 @@ static int *sv_word(SVal *s, Expr *where) {
 
 static int sv_eq(SVal *a, SVal *b);
 static int sv_in(SVal *x, SVal *s);
+static int filter_holds(SVal *s, SVal *x);
 static SVal *sv_enum(SVal *s);
 
 static int sv_subseteq(SVal *a, SVal *b) {
@@ -14676,6 +14703,7 @@ static int sv_in(SVal *x, SVal *s) {
     }
     case INF_SUBSET: return cx == C_SET ? sv_subseteq(x, s->u.inf.parts[0]) : L_FALSE;
     case INF_MINUS: return g_and(sv_in(x, s->u.inf.parts[0]), sv_in(x, s->u.inf.parts[1]) ^ 1);
+    case INF_FILTER: return g_and(sv_in(x, s->u.inf.parts[0]), filter_holds(s, x));
     case INF_FCNSET:
         if (cx != C_FCN) return L_FALSE;
         return g_and(sv_eq(sv_domain(x), s->u.inf.parts[0]), values_in(x, s->u.inf.parts[1]));
@@ -14866,6 +14894,10 @@ static SVal *sv_pick(SVal *s, int *g) {
         r = sv_pick(s->u.inf.parts[0], g);
         *g = g_and(*g, sv_in(r, s->u.inf.parts[1]) ^ 1);
         return r;
+    case INF_FILTER:
+        r = sv_pick(s->u.inf.parts[0], g);
+        *g = g_and(*g, filter_holds(s, r));
+        return r;
     default: break;
     }
     fail("Symbolic checking cannot choose an element of this set.");
@@ -14929,8 +14961,6 @@ static Value *sv_model(SVal *s) {
    unevaluated arguments, in a symbolic environment. An expression that
    reads no state and names nothing symbolic is evaluated by the
    evaluator. */
-typedef struct SEnv SEnv;
-typedef struct { Ctx c; SEnv *s; } SCtx;
 struct SEnv {
     Def *def;
     SVal *v;     /* its value, once known */
@@ -15140,6 +15170,12 @@ static SCtx sym_bind(SCtx sc, Def *d, SVal *v) {
 }
 
 /* Binds d's parameters to args, written in caller, into inner. */
+/* Whether x satisfies the predicate of the filter s. */
+static int filter_holds(SVal *s, SVal *x) {
+    struct Filter *f = s->u.inf.filter;
+    return sym_bool(f->e->args[0], sym_bind(f->sc, f->e->bounds[0].defs[0], x), P_BOTH);
+}
+
 static SCtx sym_bind_args(Def *d, Expr **args, int n, SCtx caller, SCtx inner) {
     for (int i = 0; i < n && i < d->nparams; i++) {
         Def *p = d->params[i];
@@ -15623,6 +15659,13 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     case X_FILTER: case X_MAP: {
         SVal **sets = NEWN(SVal *, e->nb);
         int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
+        if (n < 0 && e->kind == X_FILTER && e->nb == 1 && e->bounds[0].n == 1 && !e->bounds[0].tuple) {   /* of an infinite set: as it is */
+            r = sv_inf(INF_FILTER, 1);
+            r->u.inf.parts[0] = sets[0];
+            r->u.inf.filter = NEW(struct Filter);
+            *r->u.inf.filter = (struct Filter){e, sc};
+            return r;
+        }
         if (n < 0) fail_at(e, "Symbolic checking cannot make a set from an infinite one.");
         SQuant q = {e->args[0], P_BOTH, 0, 0, sv_set((int)n)};
         sym_bindings(e->bounds, e->nb, sets, sc, e->kind == X_FILTER ? sym_filter_fn : sym_map_fn, &q, e);
@@ -16137,11 +16180,15 @@ static SVal *sym_history(SVal ***st, int depth) {
     return h;
 }
 
+/* The negation of each temporal property, in negation normal form. */
+static TF **sym_negated;
+
 /* Each state of the behavior the model gives, checked by the evaluator:
    it satisfies Init, each step its action and, for a violation, the last
-   state does not satisfy the invariant. A behavior that does not replay
-   is a fault of the symbolic encoding, reported as such. */
-static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, Value ****out, int **acts) {
+   state does not satisfy invariant bad, or the behavior is a lasso, back
+   to state *loop, that violates property prop. A behavior that does not
+   replay is a fault of the symbolic encoding, reported as such. */
+static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, int prop, int *loop, Value ****out, int **acts) {
     for (int i = 0; i < nsym_consts; i++) sym_consts[i]->value = sv_model(sym_const_vals[i]);
     Value ***s = NEWN(Value **, n);
     int *act_of = NEWN(int, n);
@@ -16185,6 +16232,16 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
             cur_state = s[n - 1 - action];
             next_state = action ? s[n - 1] : NULL;
             if (eval_bool(c->expr, at)) wrong = "the last state satisfies the invariant";
+        }
+        if (!wrong && prop >= 0) {
+            int l = 0;
+            for (int v; l < n - 1; l++) {
+                for (v = 0; v < nvars && veq(s[l][v], s[n - 1][v]); v++) {}
+                if (v == nvars) break;
+            }
+            *loop = l;
+            if (l == n - 1) wrong = "the last state is none before it";
+            else if (!holds_on_lasso(sym_negated[prop], s, n - 1, l, 0)) wrong = "the lasso satisfies the property";
         }
         eval_restore(es);
     }
@@ -16233,9 +16290,68 @@ static int sym_violated(int i, SVal ***st, int depth) {
     return sym_bool(c->expr, sc, P_NEG) ^ 1;
 }
 
+/* Temporal properties, as Apalache checks them: on a lasso, a behavior
+   of k steps whose last state is one before it, as the bounded encoding
+   of Biere et al. (2006) has it. A behavior with no such loop is no
+   counterexample. Each lasso Apalache finds is one, but where its
+   tableau's own variables differ, it may find only a longer one. */
+
+static int states_eq(SVal **a, SVal **b) {
+    int l = L_TRUE;
+    for (int v = 0; v < nvars && l != L_FALSE; v++) l = g_and(l, sv_eq(a[v], b[v]));
+    return l;
+}
+
+typedef struct { TF *t; int at, lit; } LassoMemo;
+
+/* Whether t holds from position i of the lasso st[0..k]: back[j] whether
+   the loop goes back to j or before, so that from any position on it, j
+   comes again. */
+static int sym_lasso(TF *t, SVal ***st, int k, int *back, int i, LassoMemo **memo, int *nmemo) {
+    for (int m = 0; m < *nmemo; m++) if ((*memo)[m].t == t && (*memo)[m].at == i) return (*memo)[m].lit;
+    int l;
+    switch (t->op) {
+    case TF_TRUE: return L_TRUE;
+    case TF_FALSE: return L_FALSE;
+    case TF_AND: l = g_and(sym_lasso(t->a, st, k, back, i, memo, nmemo), sym_lasso(t->b, st, k, back, i, memo, nmemo)); break;
+    case TF_OR: l = g_or(sym_lasso(t->a, st, k, back, i, memo, nmemo), sym_lasso(t->b, st, k, back, i, memo, nmemo)); break;
+    case TF_ATOM:
+        sym_cur = st[i];
+        sym_next = t->action ? st[i + 1] : NULL;
+        l = sym_bool(t->atom, (SCtx){t->c, NULL}, P_BOTH) ^ t->neg;
+        break;
+    default: {   /* at every position, or at some, that comes from i on */
+        int always = t->op == TF_ALWAYS;
+        l = always ? L_TRUE : L_FALSE;
+        for (int j = 0; j < k; j++) {
+            int comes = j >= i ? L_TRUE : back[j], h = sym_lasso(t->a, st, k, back, j, memo, nmemo);
+            l = always ? g_and(l, g_implies(comes, h)) : g_or(l, g_and(comes, h));
+        }
+    }
+    }
+    *memo = xrealloc(*memo, sizeof **memo * (size_t)(*nmemo + 1));
+    (*memo)[(*nmemo)++] = (LassoMemo){t, i, l};
+    return l;
+}
+
+/* The literal that the behavior st[0..k] is a lasso violating property p. */
+static int sym_lasso_violated(int p, SVal ***st, int k) {
+    if (!k) return L_FALSE;
+    int *back = NEWN(int, k);
+    for (int j = 0; j < k; j++) back[j] = g_or(j ? back[j - 1] : L_FALSE, states_eq(st[j], st[k]));
+    LassoMemo *memo = NULL;
+    int n = 0, l = g_and(back[k - 1], sym_lasso(sym_negated[p], st, k, back, 0, &memo, &n));
+    free(memo);
+    return l;
+}
+
 static int symbolic(void) {
-    if (ntemporal_props || naction_props || nconstraints || naction_constraints || nimplied_inits) {
-        printf("Error: Symbolic checking checks invariants and deadlock only: the configuration has properties or constraints.\n");
+    if (naction_props || nconstraints || naction_constraints || nimplied_inits) {
+        printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has constraints.\n");
+        return MANYAN_ERROR;
+    }
+    if (ntemporal_props && nfairness) {   /* which needs ENABLED, as Apalache's checking does */
+        printf("Error: Symbolic checking checks temporal properties without fairness: the specification has some.\n");
         return MANYAN_ERROR;
     }
     sat_init();
@@ -16269,13 +16385,19 @@ static int symbolic(void) {
         st[0] = init->next;
     }
     /* stuck: no behavior goes on, which is a deadlock if they are checked */
-    int depth = 0, bad = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
+    sym_negated = NEWN(TF *, ntemporal_props + 1);
+    for (int p = 0; p < ntemporal_props; p++) sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+    int depth = 0, bad = -1, prop = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
     for (; !stuck; depth++) {
         for (int i = 0; i < ninvariants && bad < 0; i++) {
             int violated = sym_violated(i, st, depth);
             if (sat_solve(&violated, 1)) bad = i;
         }
-        if (bad >= 0 || depth == sym_length || !nactions) break;
+        for (int p = 0; p < ntemporal_props && bad < 0 && prop < 0; p++) {
+            int violated = sym_lasso_violated(p, st, depth);
+            if (sat_solve(&violated, 1)) prop = p;
+        }
+        if (bad >= 0 || prop >= 0 || depth == sym_length || !nactions) break;
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
         enabled[depth] = NEWN(int, nactions);
         for (int k = 0; k < nactions; k++) {
@@ -16289,7 +16411,7 @@ static int symbolic(void) {
         sat_unit(step.guard);
         st[depth + 1] = step.next;
     }
-    if (bad < 0 && !(stuck && check_deadlock)) {
+    if (bad < 0 && prop < 0 && !(stuck && check_deadlock)) {
         handler = NULL;
         printf("Model checking completed. No error has been found");
         if (none) printf(". No state satisfies the initial predicate.\n");
@@ -16302,15 +16424,21 @@ static int symbolic(void) {
         printf("Error: Deadlock reached.\nError: No state satisfies the initial predicate.\n");
         return MANYAN_VIOLATION_SAFETY;
     }
-    if (bad < 0) sat_solve(NULL, 0);
-    else {
-        int violated = sym_violated(bad, st, depth);
-        sat_solve(&violated, 1);
-    }
+    int violated = bad >= 0 ? sym_violated(bad, st, depth) : prop >= 0 ? sym_lasso_violated(prop, st, depth) : L_TRUE;
+    sat_solve(&violated, 1);
     handler = NULL;
     Value ***states;
-    int *act_of;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, &states, &act_of)) return MANYAN_ERROR;
+    int *act_of, loop;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, prop, &loop, &states, &act_of)) return MANYAN_ERROR;
+    if (prop >= 0) {   /* as TLC prints a lasso */
+        print_violated(states, depth, loop);
+        printf("Error: The following behavior constitutes a counter-example:\n\n");
+        for (int i = 0; i < depth; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + 1]);
+        printf("Back to state %d: ", loop + 1);
+        action_label(act_of[depth]);
+        printf("\n\n");
+        return MANYAN_VIOLATION_LIVENESS;
+    }
     if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
     else printf("Error: Deadlock reached.\n");
     sym_print(states, act_of, depth + 1);
@@ -16423,7 +16551,7 @@ int manyan_check(const ManyanOptions *o) {
             warning("Declaring symmetry during liveness checking is dangerous. It might cause TLC to miss "
                     "violations of the stated liveness properties. Please check liveness without symmetry defined.");
     }
-    int status = check_temporal_forms(o->simulate);   /* TLC's tableau, built as its checker starts */
+    int status = symbolic_mode ? 0 : check_temporal_forms(o->simulate);   /* TLC's tableau, built as its checker starts */
     for (int i = 0; i < nmodules && !status; i++) {
         Module *m = modules[i];
         int used = m == root;

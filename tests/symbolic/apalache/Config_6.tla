@@ -1,5 +1,5 @@
 \* options: -length 10
-\* apalache-mc check --config=Config5.cfg Config.tla: OK
+\* apalache-mc check --config=Config2.cfg Config.tla: OK
 ------------------------------ MODULE Config_6 -------------------------------------------
 (* a specification to check whether the configuration files are parsed *)
 EXTENDS Integers
@@ -60,5 +60,5 @@ AwesomeLiveness ==
     <>(x > 10)
 
 ========================================================================================
-SPECIFICATION Spec5
+SPECIFICATION Spec2
 INVARIANT Inv2

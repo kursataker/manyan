@@ -1,0 +1,29 @@
+\* options: -length 10
+\* apalache-mc check --temporal=FalseLiveness NestedTemporalInBool.tla: ERROR (12)
+---- MODULE NestedTemporalInBool_2 ----
+
+\* Tests behaviour when boolean and temporal operators are mixed
+
+EXTENDS Integers
+
+VARIABLES
+    \* @type: Int;
+    x,
+    \* @type: Int;
+    y
+
+Init ==
+    /\ x = 0
+    /\ y = 1
+
+Next ==
+    /\ x' = y
+    /\ y' = x
+
+Liveness == []<>(x = 1) /\ [](y < 1 \/ <>(y = 1)) /\ ~<>[](x > 5)
+FalseLiveness == []<>(x = 1) /\ [](y < 1 \/ <>(y = 1)) /\ <>[](x > 5)
+
+====
+INIT Init
+NEXT Next
+PROPERTY FalseLiveness

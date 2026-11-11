@@ -5,7 +5,7 @@ usage: apalache_port.py APALACHE_SOURCE COMMUNITY_MODULES
 APALACHE_SOURCE is a checkout of apalache-mc/apalache, COMMUNITY_MODULES
 an unpacked release of tlaplus/CommunityModules. Each `apalache-mc
 check` of test/tla/cli-integration-tests.md that checks a .tla file for
-invariants and deadlock, with the options -symbolic has, and whose
+invariants, temporal properties and deadlock, with the options -symbolic has, and whose
 outcome is no error or a violation, becomes a test: the module, the model
 configuration its options make, Apalache's defaults Init and Next, and
 an options line; the modules it uses in NAME.files, from beside it, from
@@ -25,7 +25,7 @@ OUT = ROOT / "tests/symbolic/apalache"
 # Options that do not change the outcome, and those -symbolic has.
 IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--discard-disabled", "--smt-solver",
            "--profiling", "--smtprof", "--output-traces"}
-KNOWN = {"--inv", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
+KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
 # The modules manyan builds in, Apalache's among them.
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache"}
 # The tests ported by name that -symbolic does not take, and why.
@@ -96,8 +96,6 @@ def main():
             continue
         done.add(key)
         parts = sections((path.parent / options["--config"]).read_text()) if "--config" in options else []
-        if any(k in ("PROPERTY", "PROPERTIES") for k, _ in parts):
-            continue
         module = path.stem
         names[module] = names.get(module, 0) + 1
         name = module if names[module] == 1 else f"{module}_{names[module]}"
@@ -112,6 +110,7 @@ def main():
         if "--next" in options or not given & {"NEXT", "SPECIFICATION"}:
             parts = [p for p in parts if p[0] not in ("NEXT", "SPECIFICATION")] + [("NEXT", " " + options.get("--next", "Next"))]
         parts += [("INVARIANT", " " + inv) for inv in options.get("--inv", "").split(",") if inv]
+        parts += [("PROPERTY", " " + p) for p in options.get("--temporal", "").split(",") if p]
         config = "".join(f"{k} {v.strip()}\n" for k, v in parts)
         line = f"-length {options.get('--length', '10')}"
         line += " -deadlock" if "--no-deadlock" in options else ""

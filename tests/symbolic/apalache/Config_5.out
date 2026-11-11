@@ -1,2 +1,2 @@
-NoError
-exit 0
+Error Inv1 8
+exit 12

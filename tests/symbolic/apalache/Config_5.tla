@@ -1,5 +1,5 @@
 \* options: -length 10
-\* apalache-mc check --config=Config4.cfg Config.tla: OK
+\* apalache-mc check --config=Config1.cfg --init=Init2 --next=Next2 Config.tla: ERROR (12)
 ------------------------------ MODULE Config_5 -------------------------------------------
 (* a specification to check whether the configuration files are parsed *)
 EXTENDS Integers
@@ -60,5 +60,7 @@ AwesomeLiveness ==
     <>(x > 10)
 
 ========================================================================================
-SPECIFICATION Spec4
-INVARIANT Inv2
+INVARIANT Inv1
+PROPERTY AwesomeLiveness
+INIT Init2
+NEXT Next2

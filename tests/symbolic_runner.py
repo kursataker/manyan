@@ -6,8 +6,11 @@ A test is NAME.tla, a module and then its model configuration, as in
 tests/spec; a line `\\* options: -length N -deadlock -cinit C` gives the
 length (10 by default), turns deadlock checking off and names the
 operator that chooses the constants. NAME.out is the outcome
-Apalache gives: NoError, Error with the violated invariant, or Deadlock,
-then the number of states in the counterexample, then the exit status.
+Apalache gives: NoError, Error with the violated invariant or property,
+or Deadlock, then the number of states in the counterexample, then the
+exit status. For a property the counterexample is a lasso, whose length
+is not compared: Apalache closes a loop only where its tableau's own
+variables repeat too, so it may find only a longer one than Manyan.
 The traces themselves are the solver's choice and are not compared;
 Manyan replays each of its own through its evaluator.
 
@@ -37,10 +40,10 @@ def options(path):
     return length, "-deadlock" in words, cinit
 
 
-def invariants(config):
-    """The configuration's invariants, in order, as Apalache numbers them."""
+def named(config, keyword):
+    """The names the configuration's statements of keyword (INVARIANT, PROPERT) give, in order."""
     names = []
-    for m in re.finditer(r"^\s*INVARIANTS?\b(.*?)(?=^\s*[A-Z_]+\b|\Z)", config, flags=re.M | re.S):
+    for m in re.finditer(rf"^\s*{keyword}\w*\b(.*?)(?=^\s*[A-Z_]+\b|\Z)", config, flags=re.M | re.S):
         names += m.group(1).split()
     return names
 
@@ -50,6 +53,9 @@ def manyan_outcome(output, code):
     violated = re.search(r"^Error: Invariant (\S+) is violated\.$", output, flags=re.M)
     if violated:
         return f"Error {violated.group(1)} {states}\nexit {code}\n"
+    violated = re.search(r"^Error: Temporal property (\S+) was violated\.$", output, flags=re.M)
+    if violated:
+        return f"Error {violated.group(1)}\nexit {code}\n"
     if re.search(r"^Error: Deadlock reached\.$", output, flags=re.M):
         return f"Deadlock {states}\nexit {code}\n"
     if "No error has been found in behaviors" in output:
@@ -74,7 +80,9 @@ def apalache_outcome(output, code, directory, config):
         return f"Deadlock {states}\nexit {code}\n"
     # Apalache numbers the invariants it checks, a labelled conjunction's conjuncts apart.
     which = re.search(r"State \d+: (?:state|action) invariant (\d+) violated", output)
-    names = invariants(config)
+    names, properties = named(config, "INVARIANT"), named(config, "PROPERT")
+    if properties and not names:   # its tableau's invariant; Apalache exits 12 for it, TLC (and Manyan) 13
+        return f"{outcome} {properties[0] if len(properties) == 1 else '?'}\nexit 13\n"
     if len(names) == 1:
         name = names[0]
     else:
