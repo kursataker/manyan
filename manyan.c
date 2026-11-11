@@ -14837,12 +14837,18 @@ static ExprInfo *expr_info(Expr *e);
 /* Whether e reads no state (0), the state (1), or the next state too (2),
    3 for a temporal formula: from what it is made of, a native operator
    from its arguments only, as its definition is TLC's stub. */
+/* A native whose value is not a function of its arguments: TLC's
+   registers and the random choices. */
+static int sym_impure(Native f) {
+    return f == n_tlcget || f == n_tlcset || f == n_randomelement || f == n_randomsubset || f == n_randomsetofsubsets || f == n_javatime;
+}
+
 static int max_sym_level(Expr **es, int n);
 static int def_sym_level(Def *d) {
     static Def *busy[256];
     static int nbusy;
     if (d->replacement) d = d->replacement;
-    if (d->kind == D_VAR) return 1;
+    if (d->kind == D_VAR || (d->native && sym_impure(d->native))) return 1;
     if (d->native || !d->body || d->kind == D_CONST || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
     for (int i = 0; i < nbusy; i++) if (busy[i] == d) return 0;
     if (nbusy == 256) return expr_level(d->body);
@@ -14967,24 +14973,25 @@ static SCtx sym_bind_args(Def *d, Expr **args, int n, SCtx caller, SCtx inner) {
 static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call);
 static SVal *sym_fcndef(Def *d, SCtx sc);
 
-/* The operator argument d stands for, applied to args. */
-static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol);
-static SVal *sym_param_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol) {
-    SEnv *b = senv_find(sc.s, d);
+/* The operator argument d, bound in at, applied to args written in sc. */
+static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, int pol);
+static SVal *sym_param_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, int pol) {
+    SEnv *b = senv_find(at.s, d);
     if (b) {
         Expr *op = b->e;
         if (op && (op->kind == X_LAMBDA || ((op->kind == K_CALL || op->kind == K_PARAMCALL) && op->n == 0)))
-            return sym_call(op->def, args, n, b->ctx, call, pol);
+            return sym_call(op->def, args, n, sc, b->ctx, call, pol);
         fail_at(call, "Symbolic checking cannot apply this operator argument.");
     }
-    Env *cb = env_find(sc.c.env, d);
+    Env *cb = env_find(at.c.env, d);
     if (!cb) fail_at(call, "Unbound operator parameter %s.", S(d->name));
     Value *v = force(cb);
     if (v->kind != V_OPER || v->u.op.table) fail_at(call, "Symbolic checking cannot apply %s.", S(d->name));
+    if (v->u.op.inst) fail_at(call, "Symbolic checking does not support instances yet.");
     Def *od = v->u.op.def->replacement ? v->u.op.def->replacement : v->u.op.def;
     SCtx oc = {{v->u.op.env, v->u.op.inst}, NULL};
     if (od->local == 2 && !od->native) { Env *lb = env_find(oc.c.env, od); if (lb) oc.c.env = lb->ctx_env; }
-    return sym_call(od, args, n, oc, call, pol);
+    return sym_call(od, args, n, sc, oc, call, pol);
 }
 
 /* The context a definition's body is evaluated in, before its parameters:
@@ -15001,13 +15008,13 @@ static SCtx def_ctx(Def *d, SCtx sc, Expr *call, SVal **forced, int pol) {
     return inner;
 }
 
-/* d applied to args in sc. */
-static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol) {
+/* d, named in at, applied to args written in sc. */
+static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, int pol) {
     if (d->replacement) d = d->replacement;
     if (d->native) return sym_native(d, args, n, sc, call);
-    if (d->kind == D_PARAM) return sym_param_call(d, args, n, sc, call, pol);
+    if (d->kind == D_PARAM) return sym_param_call(d, args, n, sc, at, call, pol);
     SVal *forced;
-    SCtx inner = def_ctx(d, sc, call, &forced, pol);
+    SCtx inner = def_ctx(d, at, call, &forced, pol);
     if (forced) return forced;
     if (d->kind == D_FCN) return sym_fcndef(d, inner);
     if (d->kind != D_OP && d->kind != D_RECURSIVE) fail_at(call, "Symbolic checking cannot evaluate %s.", S(d->name));
@@ -15244,7 +15251,7 @@ static SVal *sym(Expr *e, SCtx sc, int pol) {
         return sym_plain_eval(e, sc.c);
     case K_CALL: case K_PARAMCALL:
         if (e->def->kind == D_VAR) return sym_var(e->def, e);
-        return sym_call(e->def, e->args, e->n, sc, e, pol);
+        return sym_call(e->def, e->args, e->n, sc, sc, e, pol);
     case K_INSTCALL: fail_at(e, "Symbolic checking does not support instances yet.");
     case K_AND: case K_OR: {
         int and = e->kind == K_AND;
@@ -15420,7 +15427,7 @@ static SVal *seq_make(SVal **v, int *g, int n) {
 }
 
 static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
-    if (d->lazy || n > 3) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
+    if (d->lazy || n > 3 || sym_impure(d->native)) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
     SVal *a[3];
     Value *vals[3];
     int known = 1;
@@ -15609,11 +15616,31 @@ static void sym_act_fn(SCtx inner, int g, SVal *key, void *data) {
     act(a->body, inner, branch_and(a->in, g), a->out);
 }
 
+/* The argument a parameter e stands for, in its context, as far as
+   parameters go. */
+static Expr *sym_arg(Expr *e, SCtx *sc) {
+    SEnv *b;
+    while (e->kind == K_BOUND && (b = senv_find(sc->s, e->def)) && b->e) { e = b->e; *sc = b->ctx; }
+    return e;
+}
+
+/* The level of e where its parameters stand for their arguments. */
+static int act_level(Expr *e, SCtx sc) {
+    ExprInfo *in = expr_info(e);
+    int l = in->level;
+    for (int i = 0; i < in->n && l < 2; i++) {
+        SEnv *b = in->defs[i] == &at_mark ? NULL : senv_find(sc.s, in->defs[i]);
+        if (b && b->e) { int a = act_level(b->e, b->ctx); if (a > l) l = a; }
+    }
+    return l;
+}
+
 /* The variable that `lhs = e` or `lhs \in S` assigns, -1 if none. */
-static int assign_target(Expr *lhs) {
+static int assign_target(Expr *lhs, SCtx sc) {
+    lhs = sym_arg(lhs, &sc);
     if (!sym_init) {
         if (lhs->kind != K_PRIME) return -1;
-        lhs = lhs->args[0];
+        lhs = sym_arg(lhs->args[0], &sc);
     }
     if (lhs->kind != K_DECL || lhs->def->kind != D_VAR) return -1;
     if (lhs->def->var_index < 0) fail_at(lhs, "Symbolic checking cannot assign the variable %s of an instance.", S(lhs->def->name));
@@ -15621,6 +15648,7 @@ static int assign_target(Expr *lhs) {
 }
 
 static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
+    e = sym_arg(e, &sc);
     if (e->kind == X_TUPLE) {
         for (int i = 0; i < e->n; i++) b = act_unchanged(e->args[i], sc, b);
         return b;
@@ -15642,7 +15670,7 @@ static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
 static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
     if (in.guard == L_FALSE) return;
     sym_next = in.next;
-    if (expr_info(e)->level < (sym_init ? 1 : 2)) { branches_add(out, branch_and(in, sym_bool(e, sc, P_POS))); return; }
+    if (act_level(e, sc) < (sym_init ? 1 : 2)) { branches_add(out, branch_and(in, sym_bool(e, sc, P_POS))); return; }
     Branches tmp = {0};
     switch (e->kind) {
     case K_AND: {
@@ -15694,7 +15722,7 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
         return;
     }
     case X_LET: act(e->args[0], let_ctx(e, sc), in, out); return;
-    case K_CALL: {
+    case K_CALL: case K_PARAMCALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native) break;
         SCtx inner = {{NULL, sc.c.inst}, NULL};
@@ -15710,14 +15738,15 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
         eval_depth--;
         return;
     }
-    case K_EQ: case K_IN: {
-        int v = assign_target(e->args[0]);
+    case K_EQ: case K_IN: case K_SUBSETEQ: {
+        int v = assign_target(e->args[0], sc);
         if (v < 0 || in.next[v]) break;
         int saved = sym_primed;
         sym_primed = sym_init;
         SVal *x = sym(e->args[1], sc, P_BOTH);
         sym_primed = saved;
         if (e->kind == K_EQ) { branches_add(out, branch_set(in, v, x)); return; }
+        if (e->kind == K_SUBSETEQ) { SVal *all = sv_inf(INF_SUBSET, 1); all->u.inf.parts[0] = x; x = all; }
         int g;
         SVal *pick = sv_pick(x, &g);
         if (g == L_FALSE) return;
@@ -15731,6 +15760,21 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
     case X_SQACT: {
         act(e->args[0], sc, in, &tmp);
         if (!sym_init) branches_add(&tmp, act_unchanged(e->args[1], sc, in));
+        merge_into(&tmp, out, 0);
+        return;
+    }
+    case X_ANGLEACT: {
+        if (sym_init) break;
+        Branches done = {0};
+        act(e->args[0], sc, in, &done);
+        for (int k = 0; k < done.n; k++) {
+            sym_next = done.v[k].next;
+            SVal *now = sym(e->args[1], sc, P_BOTH);
+            sym_primed = 1;
+            SVal *then = sym(e->args[1], sc, P_BOTH);
+            sym_primed = 0;
+            branches_add(&tmp, branch_and(done.v[k], sv_eq(now, then) ^ 1));
+        }
         merge_into(&tmp, out, 0);
         return;
     }
