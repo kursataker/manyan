@@ -28,7 +28,18 @@ IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--disca
 KNOWN = {"--inv", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
 # The modules manyan builds in, Apalache's among them.
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache"}
-SKIP = {"TestFunctions.tla": "Apalache runs out of 4 GB of heap"}
+# The tests ported by name that -symbolic does not take, and why.
+SKIP = {
+    "TestFunctions": "Apalache runs out of 4 GB of heap",
+    "Bug2973": "Gen needs Apalache's types", "Bug2973_2": "Gen needs Apalache's types",
+    "Bug3158": "Gen needs Apalache's types",
+    "InfDomFun": "a function over an infinite domain", "FunInInfiniteSubset": "a function over an infinite domain",
+    "Invariants_5": "a trace invariant", "Invariants_6": "a trace invariant",
+    "SafeMath": "integers of more than 64 bits", "SafeMath_2": "integers of more than 64 bits",
+    "Slicer5": "primes in the initial predicate", "UnchangedExpr471": "primes in the initial predicate",
+    "HandshakeWithTypes_2": "the evaluator replays \\E over Int", "HandshakeWithTypes_5": "the evaluator replays \\E over Int",
+    "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",
+}
 
 
 KEYWORDS = r"CONSTANTS?|INIT|NEXT|SPECIFICATION|INVARIANTS?|PROPERTY|PROPERTIES|CONSTRAINTS?|ACTION_CONSTRAINTS?|SYMMETRY|VIEW|CHECK_DEADLOCK|POSTCONDITION|ALIAS"
@@ -84,7 +95,7 @@ def main():
                 options[flag[0]] = flag[1] if len(flag) > 1 else ""
         path = source / files[0]
         key = (files[0], tuple(sorted(options.items())))
-        if not path.exists() or key in done or files[0] in SKIP:
+        if not path.exists() or key in done:
             continue
         done.add(key)
         parts = sections((path.parent / options["--config"]).read_text()) if "--config" in options else []
@@ -94,6 +105,8 @@ def main():
         names[module] = names.get(module, 0) + 1
         name = module if names[module] == 1 else f"{module}_{names[module]}"
         text = path.read_text()
+        if name in SKIP:
+            continue
         if name != module:
             text = re.sub(rf"(MODULE\s+){module}\b", rf"\g<1>{name}", text, count=1)
         given = {k for k, _ in parts}
@@ -118,7 +131,7 @@ def main():
     for out in OUT.glob("*.out"):
         if not out.with_suffix(".tla").exists():
             out.unlink()
-    print(sum(names.values()), "tests")
+    print(len(list(OUT.glob("*.tla"))), "tests")
 
 
 if __name__ == "__main__":
