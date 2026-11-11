@@ -60,7 +60,10 @@ so Manyan may check a specification Apalache rejects.
   a longer lasso than Manyan; the length is not compared.
 - Fairness (`WF`, `SF`) in the specification is refused with temporal
   properties: it needs `ENABLED`, which neither checks symbolically.
-- Constraints and action constraints are not supported.
+- Constraints and action constraints are refused. Apalache 0.63.0 reads
+  `CONSTRAINT` and `ACTION_CONSTRAINT` and then ignores them: with
+  `CONSTRAINT x < 2` it reports `x < 3` violated, a state TLC never
+  reaches. Its verdict is not one to give, and TLC's is not yet encoded.
 
 ## Other commands
 
