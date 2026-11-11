@@ -47,6 +47,9 @@ for it; [std.md](std.md) lists them.
 | `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., each after a comment naming its action, as TLC does |
 | `-depth D` | the length of each random behavior, in steps (100) |
 | `-seed S`, `-aril A` | choose the random behaviors, as TLC's options do |
+| `-symbolic` | experimental: check behaviors of up to `-length` steps with a SAT solver instead of enumerating states, as Apalache does (see [Symbolic checking](#symbolic-checking-experimental)) |
+| `-length N` | symbolic checking: the steps in a behavior (10) |
+| `-cinit C` | symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's `--cinit` |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
@@ -124,6 +127,33 @@ of `x' \in S` or `x' \subseteq S` in TLC's random order, until a
 successor is kept in the constraints. `TLCGet("config").mode` is
 `"generate"`. As in TLC, a `CASE` in an action is an error.
 
+## Symbolic checking (experimental)
+
+`-symbolic` checks a specification the way Apalache's `apalache-mc check`
+does: it unrolls `Init` and `-length` steps of `Next` into one formula,
+encodes TLA⁺ values as bits, and asks a built-in SAT solver whether some
+behavior that long violates an invariant or deadlocks. No state is
+enumerated, so `x \in Int` or `x' \in x..(x + 100000)` costs a few
+comparisons, not a state each. A counterexample is replayed through the
+evaluator before it is printed, in TLC's format; one that does not replay
+is reported as a bug.
+
+It reads the configuration as Apalache does: `INIT`, `NEXT`,
+`INVARIANT` (an invariant with primes is an action invariant, checked on
+each step) and `CONSTANT`. `-cinit C` lets the operator `C` choose the
+constants the configuration leaves, as `Init` chooses the variables, and
+the assumptions then constrain that choice. A constant `Init` or
+invariant is checked like any other, and an expression the evaluator
+fails on, such as `Head(<<>>)`, is some unknown value there, as in
+Apalache. Apalache's own module is built in. Checked against Apalache
+0.63.0: `make test-symbolic` runs 145 of Apalache's integration tests and
+34 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+with Apalache ([symbolic-bench](symbolic-bench.md)).
+
+Not supported yet: temporal properties and constraints; functions over
+an infinite domain; `Gen`, which needs Apalache's types; trace
+invariants; integers beyond 64 bits; primes in `Init`.
+
 ## Exit statuses
 
 | status | meaning |
@@ -180,7 +210,20 @@ make fuzz              # mutated tests/spec models under the sanitizer build
 make fuzz-oracle       # random expressions, printed by Manyan and by TLC
 make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
 make bench             # times Manyan against TLC; writes docs/benchmark.md
+make test-symbolic     # tests/symbolic with -symbolic
+make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
+make bless-symbolic ONLY=name  # writes a test's expected outcome from Apalache
+make full-bench-symbolic  # tlaplus/Examples' Apalache models; writes docs/symbolic-bench.md
 ```
+
+A test in `tests/symbolic` is a module and its configuration, as in
+`tests/spec`, with an `options:` line for `-length`, `-deadlock` and
+`-cinit`; `NAME.out` is Apalache's outcome (no error, the invariant
+violated or a deadlock, with the length of the counterexample) and exit
+status. `tests/symbolic/apalache` is ported from Apalache's own
+integration tests by `tests/apalache_port.py`. Each run is killed past
+`--memory` MB resident (1000, 3000 with an oracle), and only as many run
+at once as keep to half the machine's memory.
 
 A test in `tests/spec` is `NAME.tla`: a module, then its configuration
 after the line that ends the module. `NAME.out` is TLC's normalized

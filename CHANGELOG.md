@@ -1,3 +1,20 @@
+2026-11-12 0.10.0:
+
+- experimental: `-symbolic` checks invariants and deadlock on behaviors of
+  up to `-length` steps with a built-in SAT solver, as Apalache's
+  `apalache-mc check` does, and replays each counterexample through the
+  evaluator; `-cinit` chooses the constants the configuration leaves, as
+  Apalache's `--cinit`, under the assumptions; an invariant with primes is
+  an action invariant; Apalache's module is built in. 145 of Apalache
+  0.63.0's own integration tests give its outcome (tests/symbolic/apalache,
+  ported by tests/apalache_port.py), and the 46 models tlaplus/Examples
+  checks with Apalache give its outcome, on average (geometric mean)
+  hundreds of times as fast (docs/symbolic-bench.md)
+- the test runners kill a run past a memory limit and run only as many at
+  once as keep to half the machine's memory
+- fix: a spec whose named instances grow the string table no longer
+  crashes before any output (since 0.9.0; Paxos/MCPaxos, ewd998/EWD998ChanID)
+
 2026-11-11 0.9.0:
 
 - simulation: an alias whose _format Java cannot apply prints the behavior

@@ -52,7 +52,7 @@ from TLC.
 - Compile Manyan to WebAssembly for a browser playground, where anyone can paste
   a spec and check it with nothing installed.
 
-## Next: 0.10.0
+## Next: 0.11.0
 
 In the order of the goals above. 0.7.0 brought the Examples to TLC's
 output: 167 of the 174 checked give it, and the other seven are explained
