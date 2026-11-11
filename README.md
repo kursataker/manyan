@@ -127,8 +127,8 @@ report as TLC with one worker.
 - Experimental: `-symbolic` checks invariants, temporal properties and
   deadlock on behaviors of up to `-length` steps with a SAT solver, as
   Apalache does, with its `--cinit` (`-cinit`), action and trace
-  invariants, `Gen` and its module; 182 of
-  Apalache's own tests give its outcome (see the
+  invariants, `Gen` and its module; 213 of
+  Apalache's own tests give its outcome, refusing what it refuses (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
 - Experimental: `-typecheck` checks types and `@type` annotations as
   Apalache's type checker does; all 75 of Apalache's type checking tests
@@ -161,7 +161,7 @@ Java (they download tla2tools 1.8.0 themselves):
   suite's models, to find differences. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
-- `tests/symbolic`: 218 models for `-symbolic`, 182 of them from Apalache's
+- `tests/symbolic`: 249 models for `-symbolic`, 213 of them from Apalache's
   own tests, each with Apalache 0.63.0's outcome; `make
   test-symbolic-oracle` runs Apalache on them too.
 - `tests/typecheck`: Apalache's 75 type checking tests for `-typecheck`,

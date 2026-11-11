@@ -8,7 +8,9 @@ length (10 by default), turns deadlock checking off and names the
 operator that chooses the constants. NAME.out is the outcome
 Apalache gives: NoError, Error with the violated invariant or property,
 or Deadlock, then the number of states in the counterexample, then the
-exit status. For a property the counterexample is a lasso, whose length
+exit status; or Refused, where Apalache stops without a verdict (exit
+status 255, 75 or 120) and Manyan stops with an error, its own (TLC's)
+exit status, not a bug or a crash. For a property the counterexample is a lasso, whose length
 is not compared: Apalache closes a loop only where its tableau's own
 variables repeat too, so it may find only a longer one than Manyan.
 The traces themselves are the solver's choice and are not compared;
@@ -63,11 +65,15 @@ def manyan_outcome(output, code):
     if "No error has been found. No " in output:
         return f"ExecutionsTooShort\nexit {code}\n"
     error = re.search(r"^Error: (.*)$", output, flags=re.M)
+    if code > 0 and "This is a bug" not in output:
+        return "Refused\n"
     return f"Failure {error.group(1) if error else output.strip()[-200:]}\nexit {code}\n"
 
 
 def apalache_outcome(output, code, directory, config):
     outcome = re.search(r"The outcome is: (\w+)", output)
+    if code in (75, 120, 255):
+        return "Refused\n"
     if not outcome:
         error = re.search(r"^.*(?:error|Error|ERROR).*$", output, flags=re.M)
         return f"Failure {error.group(0).strip() if error else 'no outcome'}\nexit {code}\n"

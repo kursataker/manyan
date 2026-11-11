@@ -150,7 +150,7 @@ the assumptions then constrain that choice. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
-0.63.0: `make test-symbolic` runs 182 of Apalache's integration tests and
+0.63.0: `make test-symbolic` runs 213 of Apalache's integration tests and
 36 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
@@ -160,6 +160,13 @@ which then repeats forever. A behavior that never repeats a state is no
 counterexample, and none stutters but as `Next` does. A violation is
 printed as TLC prints one, ending with `Back to state N`. Fairness in the
 specification is not supported with properties, as it needs `ENABLED`.
+
+As Apalache does, `-symbolic` refuses a specification that is not well
+typed, a recursive operator or function, a set or `<<>>` whose type is
+left open (`Cardinality({{}})`: annotate the empty set), a `Repeat`
+whose count is no literal, and a constant the configuration gives a
+value not of its type: a model value is a string, but `p_OF_PROC` a
+`PROC`.
 
 `Gen(n)` is any value of its type, with sets, functions and sequences of
 up to `n` elements, as in Apalache: the specification is type checked

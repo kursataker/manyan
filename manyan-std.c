@@ -861,6 +861,32 @@ static const char apalache[] =
     "    IF __N <= 0 THEN __x ELSE __F(Repeat(__F, __N - 1, __x), __N)\n"
     "====\n";
 
+/* Apalache's internal modules, which its rewirings of the community
+   modules use, with the meanings Apalache gives their operators. */
+static const char apalache_folds[] =
+    "---- MODULE __apalache_folds ----\n"
+    "LOCAL INSTANCE Integers\n"
+    "LOCAL INSTANCE Sequences\n"
+    "RECURSIVE __ApalacheFoldSet(_, _, _)\n"
+    "__ApalacheFoldSet(__Op(_,_), __v, __S) ==\n"
+    "    IF __S = {} THEN __v\n"
+    "    ELSE LET __w == CHOOSE __x \\in __S: TRUE IN\n"
+    "         __ApalacheFoldSet(__Op, __Op(__v, __w), __S \\ {__w})\n"
+    "RECURSIVE __ApalacheFoldSeq(_, _, _)\n"
+    "__ApalacheFoldSeq(__Op(_,_), __v, __seq) ==\n"
+    "    IF __seq = <<>> THEN __v\n"
+    "    ELSE __ApalacheFoldSeq(__Op, __Op(__v, Head(__seq)), Tail(__seq))\n"
+    "__ApalacheMkSeq(__N, __F(_)) == [ __i \\in (1..__N) |-> __F(__i) ]\n"
+    "====\n";
+
+static const char apalache_internal[] =
+    "---- MODULE __apalache_internal ----\n"
+    "LOCAL INSTANCE Sequences\n"
+    "LOCAL INSTANCE TLC\n"
+    "__ApalacheSeqCapacity(__seq) == Len(__seq)\n"
+    "__NotSupportedByModelChecker(__msg) == Assert(FALSE, __msg)\n"
+    "====\n";
+
 /* ---------------------------------------------------------------- the table */
 
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
@@ -896,5 +922,6 @@ int manyan_std_init(void) {
     };
     for (size_t i = 0; i < sizeof natives / sizeof *natives; i++)
         if (manyan_define(natives[i].module, natives[i].name, natives[i].arity, natives[i].fn, natives[i].java)) return -1;
+    if (manyan_module("__apalache_folds", apalache_folds) || manyan_module("__apalache_internal", apalache_internal)) return -1;
     return manyan_module("Apalache", apalache);
 }

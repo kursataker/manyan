@@ -13,10 +13,10 @@ in TLC's format, with TLC's exit statuses.
 
 | | checks | |
 |---|---:|---|
-| ported, giving Apalache's verdict | 182 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen` |
-| skipped | 6 | below |
-| not ported: options `-symbolic` lacks | about 20 | below |
-| Apalache refuses the specification | 37 | below |
+| ported, giving Apalache's verdict | 183 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen` |
+| ported, refused as Apalache refuses them | 30 | below |
+| skipped | 10 | below |
+| not ported: options `-symbolic` lacks, or files the test lacks | about 24 | below |
 
 ### Skipped
 
@@ -30,6 +30,13 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 - SafeMath, SafeMath_2: integers of more than 64 bits.
 - TestFunctions: Apalache itself runs out of 4 GB.
 - FoldSetInInit: `ApaFoldSet` over `SUBSET (1..10)` takes more than 1 GB.
+- Selections: Apalache refuses a disjunct that assigns other variables
+  than its siblings, by a syntactic analysis Manyan does not copy.
+- Bug593: Apalache refuses a `LET` name that clashes with a variable once
+  it flattens the instances.
+- Bug2772_2: Apalache refuses to expand a set of functions past its limit.
+- ConfigUnsorted: Apalache refuses the cycle the configuration's
+  substitutions make among the definitions.
 
 ### Options -symbolic lacks
 
@@ -40,10 +47,13 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 
 ### Specifications Apalache refuses
 
-37 checks expect Apalache to stop with an error: 34 with exit status 255
-(an unsupported or ill-formed specification, such as a quantifier over
-`Seq(S)`), 2 with 75 and 1 with 120 (a type error). None is ported, so
-Manyan may check a specification Apalache rejects.
+-symbolic refuses, as Apalache does: a type error; a missing `Init`,
+`Next` or invariant; a recursive operator or function; a set or `<<>>`
+whose type is left open; a `Repeat` whose count is no literal; a constant
+the configuration gives a value not of its type. These 30 checks expect
+Apalache's refusal, which `tests/symbolic_runner.py` compares as
+`Refused`, without the message. The four refusals skipped above remain,
+so Manyan may check a specification Apalache rejects.
 
 ### Differences in what is checked
 
@@ -68,8 +78,9 @@ tlaplus/Examples, `-typecheck` gives Apalache's outcome on 58. Of the
 others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
 (SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
 Apalache names the last in SANY's hash table, Manyan the last declared.
-`-symbolic` uses the types for `Gen` only, and only where a call has one
-type: not in an operator whose parameters leave it open.
+`-symbolic` uses the types for `Gen` and for refusing what Apalache
+refuses. It makes a `Gen` only where a call has one type: not in an
+operator whose parameters leave it open.
 
 ## Output
 

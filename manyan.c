@@ -6209,10 +6209,17 @@ typedef struct { Expr *e; int step, used; Value *v; } GenValue;
 static GenValue *gen_values;
 static int ngen_values, gen_step;
 
+/* Whether d is the operator name of Apalache's module. */
+static int apalache_op(Def *d, const char *name) {
+    static int apalache;
+    if (!apalache) apalache = intern("Apalache");
+    return d->mod && d->mod->name == apalache && d->kind == D_OP && !strcmp(S(d->name), name);
+}
+
 static int is_gen(Def *d) {
-    static int gen, apalache;
-    if (!gen) gen = intern("Gen"), apalache = intern("Apalache");
-    return d->name == gen && d->mod && d->mod->name == apalache && d->kind == D_OP;
+    static int gen;
+    if (!gen) gen = intern("Gen");
+    return d->name == gen && apalache_op(d, "Gen");
 }
 
 static Value *gen_value(Expr *call) {
@@ -16406,7 +16413,35 @@ static int sym_lasso_violated(int p, SVal ***st, int k) {
     return l;
 }
 
+static int sym_types(void);
+static int lib_module(Module *m);
+
+/* A recursive operator or function of the specification's modules, which
+   Apalache refuses; those of the modules it builds in or rewires are not. */
+static Def *recursive_in(Module *m) {
+    if (lib_module(m)) return NULL;
+    for (int k = 0; k < m->nunits; k++) {
+        Unit *u = &m->units[k];
+        if (u->kind == 0 && ((u->def->kind == D_OP && u->def->recursive) || (u->def->kind == D_FCN && u->def->self))) return u->def;
+    }
+    for (int i = 0; i < m->nnested; i++) { Def *d = recursive_in(m->nested[i]); if (d) return d; }
+    return NULL;
+}
+
+static Def *sym_recursive(void) {
+    for (int i = 0; i < nmodules; i++) { Def *d = recursive_in(modules[i]); if (d) return d; }
+    return NULL;
+}
+
 static int symbolic(void) {
+    int typed = sym_types();   /* Apalache checks the types first */
+    if (typed) return typed;
+    Def *rec = sym_recursive();
+    if (rec) {
+        printf("Error: Symbolic checking does not support recursive operators and functions, as Apalache does not: %s, %s.\n",
+               S(rec->name), loc_str(rec->where));
+        return MANYAN_ERROR;
+    }
     if (naction_props || nconstraints || naction_constraints || nimplied_inits) {
         printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has constraints.\n");
         return MANYAN_ERROR;
@@ -18107,12 +18142,17 @@ static Type *tc_except_tower(Expr *e, Path *p, int j, Expr *value) {
     return tc_app_why(e, 0, 0, sigs, n, ts, 2);
 }
 
-/* @ in an EXCEPT: the function, applied along the path so far. */
-typedef struct { Expr *fun; Path *path; } TAt;
+/* @ in an EXCEPT: the function, applied along the path so far; outer,
+   the @ where the EXCEPT is, which an @ in the function means. */
+typedef struct TAt TAt;
+struct TAt { Expr *fun; Path *path; TAt *outer; };
 static TAt tc_at;
 
 static Type *tc_old_value(Expr *at) {
-    Type *t = tc(tc_at.fun);
+    TAt here = tc_at;
+    tc_at = here.outer ? *here.outer : (TAt){0};
+    Type *t = tc(here.fun);
+    tc_at = here;
     for (int j = 0; j < tc_at.path->n; j++) {
         Expr *key = tc_at.path->fields && tc_at.path->fields[j] >= 0 ? NULL : tc_at.path->keys[j];
         Expr lit;
@@ -18192,6 +18232,10 @@ static Type *tc_variant(Expr *e, Def *d) {
 static Type *tc_opname(Def *d, Expr *at) {
     int oper;
     if (d->kind == D_PARAM) { TEntry *t = tc_lookup(d); return t ? t->t : ty_fresh(); }
+    if (d->nparams && d->params[0]->name == intern("#a")) {   /* a built-in operator, as operator_def wraps it: as a LAMBDA */
+        if (!tc_lookup(d)) tc_letdef(d);
+        return tc_instance(tc_lookup(d));
+    }
     return tc_name(d, at, &oper);
 }
 
@@ -18199,7 +18243,21 @@ static Type *tc_opname(Def *d, Expr *at) {
 static struct { Expr *e; Type *t; } *gen_types;
 static int ngen_types;
 
+/* For symbolic checking: the type of each expression typed, generic in
+   a polymorphic operator, which Apalache checks once inlined. */
+typedef struct { Expr *e; Type *t; int generic; } TSeen;
+static TSeen *tc_seen;
+static int ntc_seen;
+static int tc_quiet;   /* for symbolic checking: only the errors */
+
+static Type *tc_expr(Expr *e);
 static Type *tc(Expr *e) {
+    Type *t = tc_expr(e);
+    if (tc_quiet) { TSeen x = {e, t, 0}; PUSH(tc_seen, ntc_seen, x); }
+    return t;
+}
+
+static Type *tc_expr(Expr *e) {
     Type *a, *b, **ts;
     switch (e->kind) {
     case X_NUM: return e->num < 0 ? &ty_real : &ty_int;
@@ -18328,8 +18386,7 @@ static Type *tc(Expr *e) {
         parts[0] = tc(e->args[0]);
         for (int i = 0; i < e->n - 1; i++) {
             TAt saved = tc_at;
-            tc_at.fun = e->args[0];
-            tc_at.path = &e->paths[i];
+            tc_at = (TAt){e->args[0], &e->paths[i], &saved};
             parts[i + 1] = tc_except_tower(e, &e->paths[i], 0, e->args[i + 1]);
             tc_at = saved;
         }
@@ -18383,6 +18440,13 @@ static const char *const lib_types[][3] = {
     {"Naturals", "\\leq", "(Int, Int) => Bool"}, {"Naturals", "\\geq", "(Int, Int) => Bool"}, {"Naturals", "..", "(Int, Int) => Set(Int)"},
     {"Integers", "Int", "Set(Int)"}, {"Integers", "-.", "Int => Int"},
     {"Reals", "Real", "Set(Real)"}, {"Reals", "/", "(Real, Real) => Real"}, {"Reals", "Infinity", "Real"},
+    {"Bags", "IsABag", "(a -> Int) => Bool"}, {"Bags", "BagToSet", "(a -> Int) => Set(a)"},
+    {"Bags", "SetToBag", "Set(a) => (a -> Int)"}, {"Bags", "BagIn", "(a, a -> Int) => Bool"},
+    {"Bags", "EmptyBag", "() => (a -> Int)"}, {"Bags", "\\oplus", "(a -> Int, a -> Int) => (a -> Int)"},
+    {"Bags", "\\ominus", "(a -> Int, a -> Int) => (a -> Int)"}, {"Bags", "BagUnion", "Set(a -> Int) => (a -> Int)"},
+    {"Bags", "\\sqsubseteq", "(a -> Int, a -> Int) => Bool"}, {"Bags", "SubBag", "(a -> Int) => Set(a -> Int)"},
+    {"Bags", "BagOfAll", "((a) => b, a -> Int) => (b -> Int)"}, {"Bags", "BagCardinality", "(a -> Int) => Int"},
+    {"Bags", "CopiesIn", "(a, a -> Int) => Int"},
     {"Sequences", "Seq", "Set(a) => Set(Seq(a))"}, {"Sequences", "Len", "Seq(a) => Int"},
     {"Sequences", "\\o", "(Seq(a), Seq(a)) => Seq(a)"}, {"Sequences", "Append", "(Seq(a), a) => Seq(a)"},
     {"Sequences", "Head", "Seq(a) => a"}, {"Sequences", "Tail", "Seq(a) => Seq(a)"},
@@ -18453,7 +18517,10 @@ static Type *lib_parsed[sizeof lib_types / sizeof *lib_types];
 
 /* Whether module m's operators are all Apalache's library: none is typed from its body. */
 static int lib_module(Module *m) {
-    static const char *const names[] = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache", NULL};
+    /* and the community modules Apalache rewires, with the types of its rewirings */
+    static const char *const names[] = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache",
+                                        "__apalache_folds", "__apalache_internal",
+                                        "BagsExt", "Functions", "FiniteSetsExt", "SequencesExt", "Folds", NULL};
     for (int i = 0; names[i]; i++) if (!strcmp(S(m->name), names[i])) return 1;
     return m->standard;
 }
@@ -18549,6 +18616,11 @@ static void tc_walk(Module *m, TInst *frame, Module ***seen, int *nseen, Module 
         if (u->kind == 2) {
             /* An instance brings its definitions, not its assumptions. */
             if (!frame) { TDecl d = {frame, u->def, u->expr, NULL, 0}; PUSH(tc_decls, tc_ndecls, d); }
+            continue;
+        }
+        if (u->kind == 4 && u->def->body && u->def->kind != D_RECURSIVE) {   /* ASSUME Name == ...: Name, an operator */
+            Sym *s = module_lookup(m, u->def->name);
+            if (s && s->def != u->def) { TDecl d = {frame, s->def, NULL, NULL, 0}; PUSH(tc_decls, tc_ndecls, d); }
             continue;
         }
         if (u->kind != 0) continue;
@@ -18712,7 +18784,16 @@ static Type *tc_decl(Def *d, Expr *at) {
 
 /* Types definition d as Apalache types LET d IN ...: in a solver of its own,
    then quantified over the variables the names around leave free. */
+static Type *tc_letdef_in(Def *d);
 static Type *tc_letdef(Def *d) {
+    int from = ntc_seen;
+    Type *t = tc_letdef_in(d);
+    if (d->nparams || tc_find(tc_frame, d)->nq)
+        for (int i = from; i < ntc_seen; i++) tc_seen[i].generic = 1;
+    return t;
+}
+
+static Type *tc_letdef_in(Def *d) {
     if (!tc_solve_partially(tc_solver)) tc_stop();
     Type *annot = tc_annotation(d);
     if (annot && d->nparams == 0 && annot->kind != TY_OPER) annot = ty_oper(0, NULL, annot);
@@ -18802,7 +18883,6 @@ static Type *tc_letdef(Def *d) {
 }
 
 /* -typecheck: the root module's declarations, as Apalache's TypeCheckerTool checks them. */
-static int tc_quiet;   /* for symbolic checking: only the errors */
 
 static int typecheck(Module *m) {
     if (!tc_quiet) printf("Type checking %s.tla\n", S(m->name));
@@ -18911,16 +18991,146 @@ static SVal *gen_of(Type *t, int n, Expr *at) {
     fail_at(at, "Symbolic checking cannot make a Gen of type %s.", b.s);
 }
 
-static SVal *sym_gen(Expr *e, SCtx sc) {
-    static int typed;
-    if (!typed) {   /* the types, once, as Apalache checks them first */
-        Arena *saved = arena;
-        tc_quiet = typed = 1;
-        int status = typecheck(root);
-        tc_quiet = 0;
-        arena = saved;
-        if (status) fail_at(e, "Symbolic checking needs the types of Gen's values, and the specification's types do not check.");
+/* Apalache's check, once the operators are inlined, that each set and
+   empty sequence the specification writes has one type: an empty set,
+   say, needs one of its elements. The set a quantifier ranges over may be
+   open, as Apalache rewrites \A x \in {}: P to TRUE. */
+static int tc_seen_order(const void *a, const void *b) {
+    const Expr *x = ((const TSeen *)a)->e, *y = ((const TSeen *)b)->e;
+    return x < y ? -1 : x > y;
+}
+
+static Expr *mono_walk(Expr *e, Def ***seen, int *nseen);
+static Expr *mono_def(Def *d, Def ***seen, int *nseen) {
+    if (d->replacement) d = d->replacement;
+    for (int i = 0; i < *nseen; i++) if ((*seen)[i] == d) return NULL;
+    PUSH(*seen, *nseen, d);
+    Expr *bad = mono_walk(d->body, seen, nseen);
+    for (int i = 0; !bad && i < d->nb; i++) bad = mono_walk(d->bounds[i].set, seen, nseen);
+    for (int i = 0; !bad && d->kind == D_INST && i < d->nsubst; i++) bad = mono_walk(d->subst_expr[i], seen, nseen);
+    return bad;
+}
+
+static int mono_open(Expr *e) {
+    if (e->kind != X_SETENUM && !(e->kind == X_TUPLE && !e->n)) return 0;
+    TSeen key = {e, NULL, 0}, *x = bsearch(&key, tc_seen, (size_t)ntc_seen, sizeof *x, tc_seen_order);
+    if (!x) return 0;
+    while (x > tc_seen && x[-1].e == e) x--;
+    for (; x < tc_seen + ntc_seen && x->e == e; x++) {
+        if (x->generic) continue;
+        char *mark = xcalloc((size_t)ty_nvars + 1, 1);
+        int *q = NULL, nq = 0;
+        ty_vars(ty_zonk(x->t), mark, &q, &nq);
+        free(mark);
+        if (nq) return 1;
     }
+    return 0;
+}
+
+/* Repeat's count: a literal, once the constants and operators are
+   inlined; an operator's parameter is its argument's. */
+static int repeat_count(Expr *e) {
+    if (e->kind == X_NUM || (e->kind == K_DECL && e->def->kind == D_CONST) || (e->kind == K_BOUND && e->def->kind == D_PARAM)) return 1;
+    return e->kind == K_CALL && !e->n && e->def->body && repeat_count(e->def->body);
+}
+
+static int mono_repeat;   /* what mono_walk found: a Repeat of no literal count */
+static Expr *mono_walk(Expr *e, Def ***seen, int *nseen) {
+    if (!e) return NULL;
+    if (mono_open(e)) return e;
+    if (e->kind == K_CALL && e->n == 3 && apalache_op(e->def, "Repeat") && e->mod != e->def->mod && !repeat_count(e->args[1])) { mono_repeat = 1; return e; }
+    Expr *bad = e->def ? mono_def(e->def, seen, nseen) : NULL;
+    for (int i = 0; !bad && i < e->n; i++) bad = mono_walk(e->args[i], seen, nseen);
+    for (int i = 0; !bad && i < e->nb; i++) {
+        Expr *set = e->bounds[i].set;
+        if ((e->kind == X_FORALL || e->kind == X_EXISTS) && mono_open(set)) for (int k = 0; !bad && k < set->n; k++) bad = mono_walk(set->args[k], seen, nseen);
+        else bad = mono_walk(set, seen, nseen);
+    }
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; !bad && i < e->n - 1; i++)
+            for (int k = 0; !bad && k < e->paths[i].n; k++) if (e->paths[i].fields[k] < 0) bad = mono_walk(e->paths[i].keys[k], seen, nseen);
+    for (int i = 0; !bad && e->kind == X_LET && i < e->ndefs; i++) bad = mono_def(e->defs[i], seen, nseen);
+    for (int i = 0; !bad && i < e->nseg; i++)
+        for (int k = 0; !bad && k < e->segs[i].n; k++) bad = mono_walk(e->segs[i].args[k], seen, nseen);
+    return bad;
+}
+
+/* The expression Apalache refuses, of those the specification uses. */
+static Expr *sym_refused(void) {
+    qsort(tc_seen, (size_t)ntc_seen, sizeof *tc_seen, tc_seen_order);
+    Def **seen = NULL;
+    int nseen = 0;
+    Expr *bad = mono_walk(init_expr, &seen, &nseen);
+    if (!bad) bad = mono_walk(next_expr, &seen, &nseen);
+    for (int i = 0; !bad && i < ninvariants; i++) bad = mono_walk(invariants[i].expr, &seen, &nseen);
+    for (int i = 0; !bad && i < ntemporal_props; i++) bad = mono_walk(temporal_props[i].expr, &seen, &nseen);
+    for (int i = 0; !bad && i < nsym_assumes; i++) bad = mono_walk(sym_assumes[i]->expr, &seen, &nseen);
+    Sym *c = sym_cinit_name ? module_lookup(root, intern(sym_cinit_name)) : NULL;
+    if (!bad && c) bad = mono_def(c->def, &seen, &nseen);
+    return bad;
+}
+
+/* The type of a constant's configured value, as Apalache reads it: a
+   model value is a string, but NAME_OF_SORT of type SORT. */
+static Type *value_type(Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return &ty_bool;
+    case V_INT: return &ty_int;
+    case V_STR: case V_MODEL: return str_type((int)v->u.i);
+    case V_INTERVAL: return ty_of(TY_SET, &ty_int);
+    case V_SET: {
+        Type *elem = ty_fresh();
+        for (int i = 0; i < v->n; i++) {
+            Type *t = value_type(v->u.set.elems[i]);
+            if (!t || !(elem = ty_unify(elem, t))) return NULL;
+        }
+        return ty_of(TY_SET, elem);
+    }
+    default: return NULL;
+    }
+}
+
+/* A constant the configuration gives a value not of its type. */
+static Def *sym_misvalued(void) {
+    for (int i = 0; i < root->ndecls; i++) {
+        Def *d = root->decls[i];
+        TEntry *t = d->kind == D_CONST && d->value ? tc_find(NULL, d) : NULL;
+        if (!t || t->kind != TE_VALUE) continue;
+        int mark = ty_ntrail;
+        Type *v = value_type(d->value);
+        int ok = v && ty_unify(ty_freshen(t->t), v);
+        ty_undo(mark);
+        if (!ok) return d;
+    }
+    return NULL;
+}
+
+/* The types of the specification, for symbolic checking: as -typecheck
+   checks them, printing only what is wrong. */
+static int sym_types(void) {
+    Arena *saved = arena;
+    tc_quiet = 1;
+    int status = typecheck(root);
+    tc_quiet = 0;
+    Def *misvalued = status ? NULL : sym_misvalued();
+    if (misvalued) {
+        printf("Error: The configuration gives constant %s a value not of its type, %s.\n", S(misvalued->name), ty_text(tc_find(NULL, misvalued)->t));
+        status = MANYAN_ERROR;
+    }
+    Expr *open = status ? NULL : sym_refused();
+    if (open && mono_repeat) {
+        printf("Error: %s: Apalache!Repeat expects a constant positive integer as its second argument.\n", tc_where(open));
+        status = MANYAN_ERROR;
+    } else if (open) {
+        TSeen key = {open, NULL, 0}, *x = bsearch(&key, tc_seen, (size_t)ntc_seen, sizeof *x, tc_seen_order);
+        printf("Error: %s: Expected a non-polymorphic type, found: %s. You may need to annotate an empty collection.\n", tc_where(open), ty_text(ty_zonk(x->t)));
+        status = MANYAN_ERROR;
+    }
+    arena = saved;
+    return status;
+}
+
+static SVal *sym_gen(Expr *e, SCtx sc) {
     SVal *size = e->n == 1 ? sym(e->args[0], sc, P_BOTH) : NULL;
     if (!size || size->kind != SV_CONST || size->value->kind != V_INT || size->value->u.i < 0 || size->value->u.i > 64)
         fail_at(e, "Symbolic checking needs Gen's size as a constant from 0 to 64.");

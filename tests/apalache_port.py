@@ -33,7 +33,8 @@ IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--disca
            "--profiling", "--smtprof", "--output-traces"}
 KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
 # The modules manyan builds in, Apalache's among them.
-BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache"}
+BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache",
+            "__apalache_folds", "__apalache_internal"}
 # The modules Apalache reads in place of a module of that name, as its
 # StandardLibrary.wiredModules; manyan builds in TLC, Sequences and Bags.
 WIRED = {"BagsExt": "__rewire_bags_ext_in_apalache", "Functions": "__rewire_functions_in_apalache",
@@ -45,6 +46,10 @@ SKIP = {
     "InfDomFun": "Apalache reports f[0] = 42 violated, where f[0] is 42", "FunInInfiniteSubset": "a function over an infinite domain",
     "SafeMath": "integers of more than 64 bits", "SafeMath_2": "integers of more than 64 bits",
     "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",
+    "Selections": "Apalache's syntactic analysis of what each disjunct assigns",
+    "Bug593": "a LET name clashing with a variable, once Apalache flattens the instances",
+    "Bug2772_2": "Apalache's limit on expanding a set of functions",
+    "ConfigUnsorted": "a cycle the configuration's substitutions make among the definitions",
 }
 
 
@@ -61,7 +66,7 @@ def sections(config):
 def checks(md):
     for block in re.findall(r"```sh\n(.*?)```", md, flags=re.S):
         command = re.match(r"\$ apalache-mc check (.*?)(?:\s*\||\s*2>&1|\s*$)", block.split("\n")[0])
-        status = re.search(r"EXITCODE: (OK|ERROR \(12\))", block)
+        status = re.search(r"EXITCODE: (OK|ERROR \(\d+\))", block)
         if command and status:
             yield shlex.split(command.group(1)), status.group(1)
 
@@ -136,7 +141,8 @@ def main():
     prune(TYPECHECK)
     clear(OUT)
     names, done = {}, set()
-    for words, status in checks(md):
+    # those Apalache refuses last, so that the others keep their names
+    for words, status in sorted(checks(md), key=lambda c: c[1] not in ("OK", "ERROR (12)")):
         options, files = {}, [w for w in words if not w.startswith("--")]
         flags = [w.split("=", 1) for w in words if w.startswith("--")]
         if len(files) != 1 or not files[0].endswith(".tla") or any(f[0] not in KNOWN | IGNORED for f in flags):
@@ -149,6 +155,8 @@ def main():
         if not path.exists() or key in done:
             continue
         done.add(key)
+        if "--config" in options and not (path.parent / options["--config"]).exists():
+            continue
         parts = sections((path.parent / options["--config"]).read_text()) if "--config" in options else []
         module = path.stem
         names[module] = names.get(module, 0) + 1
@@ -176,8 +184,8 @@ def main():
         del seen[module]
         if seen:
             (OUT / f"{name}.files").mkdir(exist_ok=True)
-            for other in seen.values():
-                shutil.copy(other, OUT / f"{name}.files")
+            for other, origin in seen.items():
+                shutil.copy(origin, OUT / f"{name}.files" / f"{other}.tla")
     prune(OUT)
 
 

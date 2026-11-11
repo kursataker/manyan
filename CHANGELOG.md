@@ -9,6 +9,10 @@ unreleased:
 - `-symbolic` makes Apalache's `Gen(n)` from the types `-typecheck` infers:
   Bug2973 and Bug3158 of Apalache's tests now run, and 182 of them give its
   outcome
+- `-symbolic` refuses what Apalache refuses: a type error, a recursive
+  operator or function, a set or `<<>>` of an open type, a `Repeat` of no
+  literal count, a constant configured with a value not of its type; 30
+  more of Apalache's tests, those it refuses, give its outcome (213)
 
 2026-11-12 0.10.0:
 
