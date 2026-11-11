@@ -72,9 +72,13 @@ def apalache_outcome(output, code, directory, config):
     states = len(re.findall(r"^State\d+ ==", traces[0].read_text(), flags=re.M)) if traces else 0
     if outcome == "Deadlock":
         return f"Deadlock {states}\nexit {code}\n"
-    which = re.search(r"State \d+: state invariant (\d+) violated", output)
+    # Apalache numbers the invariants it checks, a labelled conjunction's conjuncts apart.
+    which = re.search(r"State \d+: (?:state|action) invariant (\d+) violated", output)
     names = invariants(config)
-    name = names[int(which.group(1))] if which and int(which.group(1)) < len(names) else "?"
+    if len(names) == 1:
+        name = names[0]
+    else:
+        name = names[int(which.group(1))] if which and int(which.group(1)) < len(names) else "?"
     return f"{outcome} {name} {states}\nexit {code}\n"
 
 

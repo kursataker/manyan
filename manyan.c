@@ -12181,7 +12181,7 @@ static int setup_model(void) {
         } else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
             e = config_call(it->name, "invariant", 'r');
-            if (expr_level(e) >= 2) {
+            if (expr_level(e) >= 2 + symbolic_mode) {   /* Apalache checks an action invariant on each step */
                 printf("Error: The invariant %s is not a state predicate (one with no primes or temporal operators).\n", S(it->name));
                 if (level_params(e))
                     printf("Note that a bug can cause TLC to incorrectly report this error.\n"
@@ -14175,7 +14175,7 @@ static void bv_divmod(const int *a, const int *b, int **q, int **r) {
    The value of an expression that went wrong is undefined: it carries the
    error, and which one it is matters only if it is the value of a state. */
 enum { SV_CONST, SV_BOOL, SV_INT, SV_ATOM, SV_SET, SV_FCN, SV_INF, SV_UNDEF };
-enum { INF_INT, INF_NAT, INF_STRING, INF_SUBSET, INF_FCNSET, INF_RCDSET, INF_TIMES, INF_SEQ, INF_RANGE };
+enum { INF_INT, INF_NAT, INF_STRING, INF_SUBSET, INF_FCNSET, INF_RCDSET, INF_TIMES, INF_SEQ, INF_RANGE, INF_MINUS };
 enum { C_BOOL, C_INT, C_ATOM, C_SET, C_FCN, C_NONE };
 
 typedef struct SVal SVal;
@@ -14328,6 +14328,12 @@ static SVal *sv_open(SVal *s) {
                 if (v->lazy == L_RCDSET) o->u.inf.names[i] = (int)v->u.l.names[i]->u.i;
                 o->u.inf.parts[i] = sv_const(v->u.l.names[v->n + i]);
             }
+            return o;
+        case L_DIFF:
+            if (enumerable(v->u.l.a)) return sv_open(sv_const(enumerate(v)));
+            o = sv_inf(INF_MINUS, 2);
+            o->u.inf.parts[0] = sv_const(v->u.l.a);
+            o->u.inf.parts[1] = sv_const(v->u.l.b);
             return o;
         default:
             return sv_open(sv_const(enumerate(v)));
@@ -14600,6 +14606,7 @@ static int sv_in(SVal *x, SVal *s) {
         return g_and(bv_le(sv_open(s->u.inf.parts[0])->u.bits, b), bv_le(b, sv_open(s->u.inf.parts[1])->u.bits));
     }
     case INF_SUBSET: return cx == C_SET ? sv_subseteq(x, s->u.inf.parts[0]) : L_FALSE;
+    case INF_MINUS: return g_and(sv_in(x, s->u.inf.parts[0]), sv_in(x, s->u.inf.parts[1]) ^ 1);
     case INF_FCNSET:
         if (cx != C_FCN) return L_FALSE;
         return g_and(sv_eq(sv_domain(x), s->u.inf.parts[0]), values_in(x, s->u.inf.parts[1]));
@@ -14785,6 +14792,10 @@ static SVal *sv_pick(SVal *s, int *g) {
             fcn_add(r, s->inf == INF_RCDSET ? sv_const(mk_str(s->u.inf.names[i])) : sv_int_const(i + 1), v, L_TRUE);
             *g = g_and(*g, h);
         }
+        return r;
+    case INF_MINUS:
+        r = sv_pick(s->u.inf.parts[0], g);
+        *g = g_and(*g, sv_in(r, s->u.inf.parts[1]) ^ 1);
         return r;
     default: break;
     }
@@ -15306,6 +15317,15 @@ static SVal *sym_set_op(Expr *e, SVal *a, SVal *b) {
     if (a->kind == SV_UNDEF) return a;
     if (b->kind == SV_UNDEF) return b;
     if (e->kind == K_SUBSETEQ) return sv_bool(sv_subseteq(a, b));
+    if (sv_open(a)->kind == SV_INF && e->kind != K_CUP) {   /* infinite, or too large to list */
+        if (e->kind == K_CAP && sv_open(b)->kind == SV_SET) return sym_set_op(e, b, a);
+        if (e->kind == K_SETMINUS) {
+            SVal *r = sv_inf(INF_MINUS, 2);
+            r->u.inf.parts[0] = a;
+            r->u.inf.parts[1] = b;
+            return r;
+        }
+    }
     a = sv_enum(a);
     SVal *r;
     if (e->kind == K_CUP) {
@@ -16044,8 +16064,9 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
             if (!eval_bool(a->e, a->c)) wrong = "a step is not one of its action";
         }
         if (!wrong && bad >= 0) {
-            cur_state = s[n - 1];
-            next_state = NULL;
+            int action = expr_level(invariants[bad].expr) == 2;
+            cur_state = s[n - 1 - action];
+            next_state = action ? s[n - 1] : NULL;
             if (eval_bool(invariants[bad].expr, invariants[bad].ctx)) wrong = "the last state satisfies the invariant";
         }
         eval_restore(es);
@@ -16077,6 +16098,16 @@ static Branch *sym_constants(void) {
     nvars = saved, vars = saved_vars, sym_cinit = 0;
     if (b) sym_const_vals = b->next;
     return b;
+}
+
+/* The literal that invariant i is violated at depth: of the state there,
+   or, for an action invariant, of the step to it. */
+static int sym_violated(int i, SVal ***st, int depth) {
+    int action = expr_level(invariants[i].expr) == 2;
+    if (action && !depth) return L_FALSE;
+    sym_cur = st[depth - action];
+    sym_next = action ? st[depth] : NULL;
+    return sym_bool(invariants[i].expr, (SCtx){invariants[i].ctx, NULL}, P_NEG) ^ 1;
 }
 
 static int symbolic(void) {
@@ -16117,10 +16148,8 @@ static int symbolic(void) {
     /* stuck: no behavior goes on, which is a deadlock if they are checked */
     int depth = 0, bad = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
     for (; !stuck; depth++) {
-        sym_cur = st[depth];
-        sym_next = NULL;
         for (int i = 0; i < ninvariants && bad < 0; i++) {
-            int violated = sym_bool(invariants[i].expr, (SCtx){invariants[i].ctx, NULL}, P_NEG) ^ 1;
+            int violated = sym_violated(i, st, depth);
             if (sat_solve(&violated, 1)) bad = i;
         }
         if (bad >= 0 || depth == sym_length || !nactions) break;
@@ -16152,7 +16181,7 @@ static int symbolic(void) {
     }
     if (bad < 0) sat_solve(NULL, 0);
     else {
-        int violated = sym_bool(invariants[bad].expr, (SCtx){invariants[bad].ctx, NULL}, P_NEG) ^ 1;
+        int violated = sym_violated(bad, st, depth);
         sat_solve(&violated, 1);
     }
     handler = NULL;
