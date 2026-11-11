@@ -11909,7 +11909,8 @@ static CtxNames context_names(Module *m) {
                     if (u->kind == 0) {
                         Buf name = {0};
                         buf_printf(&name, "%s!%s", S(d->name), e.name);
-                        e.name = S(intern(name.s));
+                        int id = intern(name.s);   /* before S reads strs, which interning moves */
+                        e.name = S(id);
                         free(name.s);
                     }
                     e.local = u->local;
