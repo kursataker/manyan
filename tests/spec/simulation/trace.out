@@ -1,0 +1,16 @@
+<<"Inv", <<0>>>>
+<<"Inv", <<10>>>>
+Finished computing initial states: 2 distinct state generated.
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1>>>>
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]], [x |-> 1, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1, 2>>>>
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]], [x |-> 1, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]], [x |-> 2, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1, 2, 3>>>>
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1>>>>
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]], [x |-> 1, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1, 2>>>>
+<<"Next", <<[x |-> 0, _action |-> [name |-> "Init", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 21, module |-> "trace"]]], [x |-> 1, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]], [x |-> 2, _action |-> [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 9, endColumn |-> 21, module |-> "trace"]]]>>>>
+<<"Inv", <<0, 1, 2, 3>>>>
+exit 0

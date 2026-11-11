@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 47 of module json_nd_serialize_record failed.
+The second argument of ndJsonSerialize should be a sequence, but instead it is:
+[a |-> 1]
+exit 10

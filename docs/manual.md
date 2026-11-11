@@ -32,7 +32,7 @@ manyan -generate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FIL
 `SPEC` is the root module, with or without `.tla`. Modules it extends or
 instantiates are read from the same directory; the standard modules
 (Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
-Randomization, RealTime, Toolbox, TLCExt) are built in. A module of
+Randomization, RealTime, Toolbox, TLCExt, Json) are built in. A module of
 CommunityModules beside the spec gets the operators TLC computes in Java
 for it; [std.md](std.md) lists them.
 
@@ -313,8 +313,11 @@ Not supported: the proof language (parsed and skipped); TLC's
 `-terse`, `-maxSetSize` (Manyan does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
 `-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
-`_POSSIBLE`, TLC's standard modules `TLCExt` and `Json`, checkpoints (`-checkpoint`, `-recover`) and
-distributed checking. In a simulation
+`_POSSIBLE`, TLCExt's `CounterExample`, `ToTrace`, `TLCDefer`,
+`PickSuccessor`, `TLCFP` and `TLCEvalDefinition`, checkpoints (`-checkpoint`, `-recover`) and
+distributed checking. `Trace` is the behavior to the state evaluated; to
+rebuild it TLC evaluates `Init` again, and with more than one initial
+state may give a shorter one. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on
 with the next one while the behavior is printed, so its `Print` output
 may come between the states; Manyan stops at the error. There a temporal

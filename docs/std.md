@@ -8,8 +8,11 @@ says how one is written.
 ## Built in
 
 Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
-Randomization, RealTime, Toolbox and TLCExt are built into `manyan.c`: a spec
-need not supply them, and one it supplies is read in their place.
+Randomization, RealTime, Toolbox, TLCExt and Json are built into `manyan.c`: a
+spec need not supply them, and one it supplies is read in their place. Of
+TLCExt, `CounterExample`, `ToTrace`, `TLCDefer`, `PickSuccessor`, `TLCFP` and
+`TLCEvalDefinition` stop the check: they need TLC's own trace file,
+fingerprints or interaction.
 
 ## CommunityModules
 
@@ -24,7 +27,7 @@ gives, error messages included.
 | CSV | `CSVWrite`, `CSVWriteRecord`, `CSVRead`, `CSVRecords` (a line too short for `CSVRead`'s columns fails in `CSVRead`, where TLC fails when the record is used) |
 | Graphs | `SimplePath`, `AreConnectedIn`, `IsStronglyConnected` |
 | IOUtils | `IOEnv`, `atoi`, `IOExec`, `IOEnvExec`, `Serialize` (format `TXT`; another format is the definition's) |
-| Json | `JsonDeserialize`, `ndJsonDeserialize` |
+| Json | `ToJson`, `ToJsonArray`, `ToJsonObject`, `JsonSerialize`, `ndJsonSerialize`, `JsonDeserialize`, `ndJsonDeserialize` (a record literal in an `ASSUME` is written in TLC's order, where TLC writes it as written) |
 | SequencesExt | `SetToSeq` |
 | Statistics | `ChiSquare` |
 | SVG | `SVGElemToString`, `NodeOfRingNetwork` |

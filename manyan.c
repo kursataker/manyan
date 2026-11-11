@@ -469,7 +469,8 @@ struct ManyanValue {
         unsigned char keep;  /* V_LAMBDA: TLC's KeepLazy when it was made, which it is computed in full with */
     };
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
-    unsigned char range;     /* a V_FCN whose domain TLC keeps as the interval of its keys */
+    unsigned char range;     /* a V_FCN whose domain TLC keeps as the interval of its keys; a record of
+                                Trace, whose fields TLC keeps in the order of the variables */
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
@@ -3639,6 +3640,65 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "\nCopiesIn(e, B) ==\n"
      "\n\n\n\n  IF BagIn(e, B) THEN B[e] ELSE 0\n"
      "====\n"},
+    {"Json",
+     "---- MODULE Json ----\n"
+     "\nLOCAL INSTANCE Sequences\n"
+     "LOCAL INSTANCE FiniteSets\n"
+     "LOCAL INSTANCE TLC\n"
+     "\n\n\n\n-----------------------------------------------------------------------------\n"
+     "\nLOCAL IsSequence(F, D) == TRUE \\/ FALSE\n"
+     "\nLOCAL ToJsonKeyValue(F, d) ==\n"
+     "  ToString(ToString(d)) \\o \":\" \\o ToString(F[d])\n"
+     "\nRECURSIVE ToJsonObjectString(_,_)\n"
+     "LOCAL ToJsonObjectString(F, D) ==\n"
+     "  LET d == CHOOSE d \\in D: TRUE\n"
+     "  IN IF D = DOMAIN F\n"
+     "     THEN \"{\" \\o ToJsonKeyValue(F, d) \\o IF D \\ {d} = {}\n"
+     "                                         THEN \"}\"\n"
+     "                                         ELSE ToJsonObjectString(F, D \\ {d})\n"
+     "     ELSE \", \" \\o ToJsonKeyValue(F, d) \\o IF D \\ {d} = {}\n"
+     "                                          THEN \"}\"\n"
+     "                                          ELSE ToJsonObjectString(F, D \\ {d})\n"
+     "\nRECURSIVE ToJsonArrayString(_,_)\n"
+     "LOCAL ToJsonArrayString(F, D) ==\n"
+     "  LET d == CHOOSE d \\in D: TRUE\n"
+     "  IN IF D = DOMAIN F\n"
+     "     THEN \"[\" \\o ToString(F[d]) \\o IF D \\ {d} = {}\n"
+     "                                   THEN \"]\"\n"
+     "                                   ELSE ToJsonArrayString(F, D \\ {d})\n"
+     "     ELSE \", \" \\o ToString(F[d]) \\o IF D \\ {d} = {}\n"
+     "                                    THEN \"]\"\n"
+     "                                    ELSE ToJsonArrayString(F, D \\ {d})\n"
+     "\nRECURSIVE ToJsonString(_,_)\n"
+     "LOCAL ToJsonString(F, D) ==\n"
+     "  IF IsFiniteSet(F) \\/ IsSequence(F, D) THEN\n"
+     "    ToJsonArrayString(F, D)\n"
+     "  ELSE\n"
+     "    ToJsonObjectString(F, D)\n"
+     "\nToJson(value) ==\n"
+     "\n\n\n\n\n  IF DOMAIN value = {} THEN\n"
+     "    \"{}\"\n"
+     "  ELSE\n"
+     "    ToJsonString(value, DOMAIN value)\n"
+     "\nToJsonArray(value) ==\n"
+     "\n\n\n  IF DOMAIN value = {} THEN\n"
+     "    \"[]\"\n"
+     "  ELSE\n"
+     "    ToJsonArrayString(value, DOMAIN value)\n"
+     "\nToJsonObject(value) ==\n"
+     "\n\n\n  IF DOMAIN value = {} THEN\n"
+     "    \"{}\"\n"
+     "  ELSE\n"
+     "    ToJsonObjectString(value, DOMAIN value)\n"
+     "\nJsonSerialize(absoluteFilename, value) ==\n"
+     "\n\n\n\n  TRUE\n"
+     "\nJsonDeserialize(absoluteFilename) ==\n"
+     "\n\n\n\n  CHOOSE val : TRUE\n"
+     "\nndJsonSerialize(absoluteFilename, value) ==\n"
+     "\n\n\n\n\n  TRUE\n"
+     "\nndJsonDeserialize(absoluteFilename) ==\n"
+     "\n\n\n\n\n  CHOOSE val : TRUE\n"
+     "\n====\n"},
     {"Randomization",
      "---- MODULE Randomization ----\n"
      "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nLOCAL INSTANCE Naturals\n"
@@ -4851,6 +4911,7 @@ static Def *level_probe;
    argument of a call counts, used or not. */
 static int every_argument;
 static Value *n_tlcget(Expr *call, Value **a, Ctx c);
+static Value *n_trace(Expr *call, Value **a, Ctx c);
 
 static int def_level(Def *d) {
     if (every_argument ? d->level_bound > 0 : d->level >= 0 && (d->local != 2 || d->level_probe == level_probe))
@@ -4858,7 +4919,7 @@ static int def_level(Def *d) {
     if (d->level_busy) return 0;
     d->level_busy = 1;
     int l = 0;
-    if (d->kind == D_VAR || (every_argument && d->native == n_tlcget)) l = 1;   /* TLCGet's minLevel */
+    if (d->kind == D_VAR || (every_argument && (d->native == n_tlcget || d->native == n_trace))) l = 1;   /* TLCGet's and Trace's minLevel */
     else if (d->kind == D_OP || d->kind == D_FCN) {
         if (d->body) l = expr_level(d->body);
         for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_level(d->bounds[i].set); if (b > l) l = b; }
@@ -6815,6 +6876,18 @@ const char *manyan_print(Value *v) { return pretty(v); }
 const char *manyan_to_string(Value *v) { return value_str(v); }
 const char *manyan_class(Value *v) { return java_class(v); }
 
+/* A record's field i as TLC keeps it before it normalizes the record, as
+   its Java sees it: as written; a state's of Trace in the order of its
+   variables. Stored in a state, it is normalized: in order. */
+size_t manyan_kept(Value *v, size_t i) {
+    if (v->kind != V_FCN || v->made != MADE_RECORD) return i;
+    Expr *e = v->u.fcn.source;
+    int name = v->range ? (i < (size_t)nvars ? vars[i]->name : intern("_action")) : e && e->kind == X_RECORD && e->n == v->n ? e->segs[i].name : -1;
+    if (name < 0) return i;
+    for (int k = 0; k < v->n; k++) if (v->u.fcn.keys[k]->u.i == name) return (size_t)k;
+    return i;
+}
+
 Value *manyan_format(ManyanCall *call, const char *fmt, size_t n, const char *const *args) {
     Buf b = {0};
     const char *cls, *why = java_format(&b, fmt, (int)n, args, &cls);
@@ -7750,6 +7823,9 @@ NATIVE(n_tlcgetordefault) {
     return decode(&p);
 }
 
+static Value *trace_value(void);
+NATIVE(n_trace) { UNUSED; return trace_value(); }
+
 /* TLCExt's operators that need TLC's own traces, fingerprints or successors. */
 static _Noreturn void unsupported(const char *op) {
     if (in_worker) worker_cannot();
@@ -7758,7 +7834,6 @@ static _Noreturn void unsupported(const char *op) {
     exit(MANYAN_ERROR);
 }
 #define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
-UNSUPPORTED(n_trace, "Trace")
 UNSUPPORTED(n_counterexample, "CounterExample")
 UNSUPPORTED(n_totrace, "ToTrace")
 UNSUPPORTED(n_tlcdefer, "TLCDefer")
@@ -9642,24 +9717,37 @@ static void print_error_text(void) {
     }
 }
 
+/* While TLC rebuilds a behavior, the states it rebuilt up to the one it
+   replays from, or prints: Trace's there. */
+static Value ***trace_path;
+static int ntrace_path;
+
 static void print_trace_states(int s1, Value **s2, int action, int print) {
     int n = 0;
     for (int i = s1; i >= 0; i = states[i].parent) n++;
     int *path = NEWN(int, n);
-    Value ***st = NEWN(Value **, n);
+    Value ***st = NEWN(Value **, n + 1);
     int k = n;
     for (int i = s1; i >= 0; i = states[i].parent) path[--k] = i;
     for (int i = 0; i < n; i++) st[i] = decode_state(path[i]);
+    trace_path = st;
     /* Each state as TLC rebuilds it, from the one before as rebuilt. */
-    for (int i = 0; i + 1 < n; i++) { replay(i ? st[i - 1] : NULL, st[i], i); st[i] = replay_match; }
+    for (int i = 0; i + 1 < n; i++) { ntrace_path = i; replay(i ? st[i - 1] : NULL, st[i], i); st[i] = replay_match; }
     /* The last state is printed whole, as TLC prints it. TLC prints an
        initial one as it has it, but rebuilds it to rebuild the behavior. */
     if (print) printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i + 1 < n && print; i++) print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL, st[i + 1]);
+    for (int i = 0; i + 1 < n && print; i++) {
+        ntrace_path = i + 1;
+        print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL, st[i + 1]);
+    }
+    ntrace_path = n - 1;
     if (n > 1 || !print) { replay(n > 1 ? st[n - 2] : NULL, st[n - 1], n - 1); st[n - 1] = replay_match; }
+    ntrace_path = n;
     if (print) print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL, s2 ? s2 : st[n - 1]);
     if (s2) {
         replay(st[n - 1], s2, n);
+        st[n] = s2;
+        ntrace_path = n + 1;
         if (print) print_numbered(n + 1, action, s2, NULL, s2);
     }
 }
@@ -9674,6 +9762,8 @@ static int trace_states(int s1, Value **s2, int action, int print) {
     int failed = 0;
     sigjmp_buf here;
     handler = &here;
+    Value ***saved_path = trace_path;
+    int saved_n = ntrace_path;
     if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action, print);
     else {
         failed = eval_failure_status();
@@ -9682,6 +9772,7 @@ static int trace_states(int s1, Value **s2, int action, int print) {
             print_error_text();
         }
     }
+    trace_path = saved_path, ntrace_path = saved_n;
     eval_restore(s);
     error_restore(&e);
     return failed;
@@ -9781,6 +9872,7 @@ static void print_error_message(void) {
 /* ---------------------------------------------------------------- search */
 
 static int expanding = -1;    /* the state whose successors are generated */
+static Value **expanding_state;
 static Value **succ;          /* the assignment the generator fills */
 static int succ_count;
 static int violation;         /* the exit status of the first violation, 0 if none */
@@ -10153,7 +10245,7 @@ static int expand_state(int idx) {
     expanding = idx;
     expanded = idx + 1;
     cur_level = states[idx].depth;
-    cur_state = decode_state(idx);
+    cur_state = expanding_state = decode_state(idx);
     draw_restart(cur_state);
     succ_count = 0;
     for (int a = 0; a < nactions; a++) {
@@ -10833,6 +10925,45 @@ static Value *action_record(Value **st) {
     vals[2]->made = MADE_RECORD;
     vals[3] = params;
     return mk_record(4, names, vals);
+}
+
+/* A state as Trace gives it: a record of its variables, and in a
+   simulation of the action into it, _action, as TLCGet("action"). */
+static Value *state_record(Value **st) {
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < nvars; i++) list_add(&keys, mk_str(vars[i]->name)), list_add(&vals, st[i]);
+    if (simulating) list_add(&keys, mk_str(intern("_action"))), list_add(&vals, action_record(st));
+    Value *r = mk_fcn_from(&keys, &vals);
+    r->made = MADE_RECORD;
+    r->range = 1;
+    return r;
+}
+
+/* TLCExt's Trace: the behavior from an initial state to the one being
+   evaluated, the state whose successors are generated or the one being
+   checked; a simulation's, as it goes. As TLC, the states between the
+   first and the last are rebuilt from the ones before, which evaluates
+   Next again; there Trace is the behavior rebuilt so far. */
+static Value *trace_value(void) {
+    if (in_worker) worker_cannot();
+    List l = {0};
+    if (trace_path) {
+        for (int i = 0; i < ntrace_path; i++) list_add(&l, (Value *)trace_path[i]);
+    } else if (simulating) {
+        for (int i = 0; i < sim_trace.n; i++) list_add(&l, (Value *)sim_trace.a[i]);
+        if (cur_state && (!l.n || l.v[l.n - 1] != (Value *)cur_state)) list_add(&l, (Value *)cur_state);
+    } else {
+        for (int i = expanding; i >= 0; i = states[i].parent) list_add(&l, (Value *)decode_state(i));
+        for (int i = 0, j = l.n - 1; i < j; i++, j--) { Value *t = l.v[i]; l.v[i] = l.v[j]; l.v[j] = t; }
+        if (cur_state && (expanding < 0 || cur_state != expanding_state)) list_add(&l, (Value *)cur_state);
+        Value ***st = (Value ***)l.v;
+        trace_path = st;
+        for (int i = 1; i + 1 < l.n; i++) { ntrace_path = i; replay(st[i - 1], st[i], i); st[i] = replay_match; }
+        trace_path = NULL;
+    }
+    Value *t = mk_tuple(l.n);
+    for (int i = 0; i < l.n; i++) t->u.fcn.vals[i] = state_record((Value **)l.v[i]);
+    return t;
 }
 
 /* TLCGet("stats") of a simulation; the behavior's actions are those into

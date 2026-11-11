@@ -16,6 +16,11 @@ unreleased:
 - `-symbolic -max-error N` finds up to N violations told apart by the
   configuration's `VIEW`, as Apalache's `--max-error` with `--view`; its
   View, View2 and Test1305 tests give its count of errors
+- CommunityModules' `Json` is built in, with its serializers as TLC's
+  override writes them: `ToJson`, `ToJsonArray`, `ToJsonObject`,
+  `JsonSerialize`, `ndJsonSerialize`
+- TLCExt's `Trace`: the behavior to the state evaluated, in a search, a
+  simulation, and an `ALIAS` while the error trace is printed
 
 2026-11-12 0.10.0:
 

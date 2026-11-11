@@ -107,6 +107,7 @@ int manyan_compare(ManyanValue *, ManyanValue *);   /* TLC's order of values: <0
 const char *manyan_print(ManyanValue *);         /* as TLC prints it */
 const char *manyan_to_string(ManyanValue *);     /* as TLC's toString gives it: on one line */
 const char *manyan_class(ManyanValue *);         /* the Java class TLC keeps it in, as "IntValue" */
+size_t manyan_kept(ManyanValue *record, size_t i);   /* the index of field i as TLC's Java sees a record it has not normalized: as written */
 void *manyan_alloc(size_t);   /* zeroed memory that lives as values do: never freed, so a failing native loses none */
 /* Java's String.format(fmt, args...), each arg a string; its exception
    the native's, as manyan_throw. */

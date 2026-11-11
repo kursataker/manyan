@@ -16,10 +16,8 @@ from TLC.
   against TLC (`make full-bench`), and publish how many give identical
   output ([full benchmark](fullbench.md)). Each spec that differs becomes a test in
   `tests/spec` and then a fix. The goal is all of them.
-- Add TLC 1.8.0's standard modules `TLCExt` (`Trace`, `CounterExample`,
-  `AssertError`, `TLCDefer`, ...) and `Json` (`JsonSerialize`,
-  `ndJsonDeserialize`, ...), with their Java overrides, which
-  tlaplus/Examples' trace-validation specs use.
+- Finish TLC 1.8.0's `TLCExt`: `CounterExample` and `ToTrace` in a
+  `POSTCONDITION`, `TLCDefer`, `TLCFP` and `TLCEvalDefinition`.
 - Close the gaps the [manual](manual.md#limitations) lists:
   - `-coverage`, `-generateSpecTE`, `-dfid`, `-terse` and `-maxSetSize`;
   - checkpoints;

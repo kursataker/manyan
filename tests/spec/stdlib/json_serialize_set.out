@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 37 of module json_serialize_set failed.
+The second argument of JsonSerialize should be a sequence or record, but instead it is:
+{1}
+exit 10

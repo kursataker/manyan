@@ -111,8 +111,8 @@ report as TLC with one worker.
   `LET`, recursion, `EXTENDS`, parameterized `INSTANCE`, nested modules,
   labels and subexpression names (`Op(a)!lab!:!2`), SANY's level checks.
 - Standard modules: Naturals, Integers, Reals, Sequences, FiniteSets, TLC,
-  Bags, Randomization, RealTime, Toolbox, and TLCExt but its operators of
-  traces and fingerprints.
+  Bags, Randomization, RealTime, Toolbox, Json, and TLCExt with `Trace` but
+  its operators of counterexamples, fingerprints and interaction.
 - Model configuration: `CONSTANT` values, model values and `<-`
   substitutions, `INIT`/`NEXT` or `SPECIFICATION`, `INVARIANT`,
   `PROPERTY`, `CONSTRAINT`, `ACTION_CONSTRAINT`, `SYMMETRY`, `VIEW`,

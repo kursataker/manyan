@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -445,6 +446,168 @@ static ManyanValue *nd_json_deserialize(ManyanCall *call, ManyanValue **a) {
     ManyanValue *v = manyan_tuple(lines.n, lines.v);
     free(lines.v), free(text);
     return v;
+}
+
+/* A value as Json's getNode writes it, with Gson: a record an object, a
+   tuple, a set or a function on 1..n an array, another function an object
+   keyed by its keys, strings themselves and the others as TLC prints
+   them; a model value its name. */
+static void json_node(ManyanCall *call, Text *t, ManyanValue *v);
+
+static _Noreturn void json_unsupported(ManyanCall *call, ManyanValue *v) {
+    manyan_throw(call, "Cannot convert value: unsupported value type tlc2.value.impl.%s", manyan_class(v));
+}
+
+static void json_quote(Text *t, const char *s, size_t n) {
+    put(t, "\"", 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        const char *e = c == '"' ? "\\\"" : c == '\\' ? "\\\\" : c == '\t' ? "\\t" : c == '\b' ? "\\b"
+                      : c == '\n' ? "\\n" : c == '\r' ? "\\r" : c == '\f' ? "\\f" : NULL;
+        char u[8];
+        if (!e && c < 0x20) snprintf(u, sizeof u, "\\u%04x", c), e = u;
+        if (!e && c == 0xe2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 && ((unsigned char)s[i + 2] | 1) == 0xa9)   /* U+2028, U+2029 */
+            snprintf(u, sizeof u, "\\u%04x", 0x2000 + ((unsigned char)s[i + 2] & 0x3f)), e = u, i += 2;
+        if (e) puts_(t, e);
+        else put(t, (const char *)&c, 1);
+    }
+    put(t, "\"", 1);
+}
+
+static int json_sequence(ManyanValue *f) {   /* isValidSequence: its domain 1..n */
+    for (size_t i = 0; i < manyan_size(f); i++)
+        if (manyan_kind(manyan_key(f, i)) != MANYAN_INT || manyan_int_value(manyan_key(f, i)) != (int64_t)i + 1) return 0;
+    return 1;
+}
+
+static int is_class(ManyanValue *v, const char *c) { return !strcmp(manyan_class(v), c); }
+static int is_fcn(ManyanValue *v) { return is_class(v, "FcnRcdValue") || is_class(v, "FcnLambdaValue"); }
+
+static void json_values(ManyanCall *call, Text *t, ManyanValue *v, int set) {
+    ManyanValue *elems = set ? manyan_elements(v) : v;
+    size_t n = manyan_size(elems);
+    put(t, "[", 1);
+    for (size_t i = 0; i < n; i++) {
+        if (i) put(t, ",", 1);
+        json_node(call, t, set ? manyan_element(elems, i) : manyan_value(v, i));
+    }
+    put(t, "]", 1);
+}
+
+/* An object of v's keys, the key i of a tuple's element i (Gson keeps a
+   key's place and its last value). */
+static void json_fields(ManyanCall *call, Text *t, ManyanValue *v) {
+    size_t n = manyan_size(v), m = 0;
+    Text *keys = xcalloc(n + 1, sizeof *keys), *values = xcalloc(n + 1, sizeof *values);
+    for (size_t i = 0; i < n; i++) {
+        Text key = {0}, value = {0};
+        size_t at = manyan_kept(v, i);
+        ManyanValue *k = manyan_kind(v) == MANYAN_TUPLE ? NULL : manyan_key(v, at);
+        size_t len;
+        char index[24];
+        snprintf(index, sizeof index, "%zu", i);
+        const char *name = !k ? index : manyan_kind(k) == MANYAN_STRING ? manyan_string_value(k, &len) : manyan_to_string(k);
+        json_quote(&key, name, k && manyan_kind(k) == MANYAN_STRING ? len : strlen(name));
+        json_node(call, &value, manyan_value(v, at));
+        size_t j = 0;
+        while (j < m && strcmp(keys[j].s, key.s)) j++;
+        if (j < m) free(key.s), free(values[j].s), values[j] = value;
+        else keys[m] = key, values[m++] = value;
+    }
+    put(t, "{", 1);
+    for (size_t j = 0; j < m; j++) {
+        if (j) put(t, ",", 1);
+        put(t, keys[j].s, keys[j].n), put(t, ":", 1), put(t, values[j].s, values[j].n);
+        free(keys[j].s), free(values[j].s);
+    }
+    put(t, "}", 1);
+    free(keys), free(values);
+}
+
+static void json_fcn(ManyanCall *call, Text *t, ManyanValue *v) {   /* getObjectNode(FcnRcdValue) */
+    if (json_sequence(v)) json_values(call, t, v, 0);
+    else json_fields(call, t, v);
+}
+
+static void json_node(ManyanCall *call, Text *t, ManyanValue *v) {
+    size_t len;
+    const char *s;
+    char number[24];
+    if (is_class(v, "RecordValue")) json_fields(call, t, v);
+    else if (is_class(v, "TupleValue")) json_values(call, t, v, 0);
+    else if (manyan_kind(v) == MANYAN_STRING) s = manyan_string_value(v, &len), json_quote(t, s, len);
+    else if (manyan_kind(v) == MANYAN_MODEL) json_quote(t, manyan_print(v), strlen(manyan_print(v)));
+    else if (manyan_kind(v) == MANYAN_INT) snprintf(number, sizeof number, "%lld", (long long)manyan_int_value(v)), puts_(t, number);
+    else if (manyan_kind(v) == MANYAN_BOOL) puts_(t, manyan_is_true(v) ? "true" : "false");
+    else if (is_fcn(v)) json_fcn(call, t, v);
+    else if (manyan_elements(v)) json_values(call, t, v, 1);
+    else json_unsupported(call, v);
+}
+
+static ManyanValue *json_result(Text *t) {
+    ManyanValue *v = manyan_string(t->s ? t->s : "", t->n);
+    free(t->s);
+    return v;
+}
+
+static ManyanValue *to_json(ManyanCall *call, ManyanValue **a) {
+    Text t = {0};
+    json_node(call, &t, a[0]);
+    return json_result(&t);
+}
+
+static ManyanValue *to_json_array(ManyanCall *call, ManyanValue **a) {   /* getArrayNode */
+    Text t = {0};
+    ManyanValue *v = a[0];
+    if (is_class(v, "TupleValue")) json_values(call, &t, v, 0);
+    else if (is_fcn(v)) json_sequence(v) ? json_values(call, &t, v, 0) : json_fields(call, &t, v);
+    else if (manyan_kind(v) == MANYAN_SET && manyan_elements(v)) json_values(call, &t, v, 1);
+    else json_unsupported(call, v);
+    return json_result(&t);
+}
+
+static ManyanValue *to_json_object(ManyanCall *call, ManyanValue **a) {   /* getObjectNode */
+    Text t = {0};
+    ManyanValue *v = a[0];
+    if (is_class(v, "RecordValue") || is_class(v, "TupleValue")) json_fields(call, &t, v);
+    else if (is_fcn(v)) json_fcn(call, &t, v);
+    else json_unsupported(call, v);
+    return json_result(&t);
+}
+
+/* Writes text to the file at path, its directories made. */
+static void json_write(ManyanCall *call, ManyanValue *path, Text *t) {
+    const char *name = manyan_string_value(path, NULL);
+    char *dir = strdup(name);
+    for (char *p = strchr(dir + 1, '/'), *last = strrchr(dir, '/'); p && p <= last; p = strchr(p + 1, '/')) {
+        *p = 0;
+        mkdir(dir, 0777);
+        *p = '/';
+    }
+    free(dir);
+    FILE *f = fopen(name, "w");
+    if (!f) manyan_throw(call, "%s (%s)", name, strerror(errno));
+    fwrite(t->s ? t->s : "", 1, t->n, f);
+    fclose(f);
+    free(t->s);
+}
+
+static ManyanValue *json_serialize(ManyanCall *call, ManyanValue **a) {
+    if (!to_tuple(a[1]) && !is_record(a[1]))
+        manyan_fail(call, "The second argument of JsonSerialize should be a sequence or record, but instead it is:\n%s", manyan_print(a[1]));
+    Text t = {0};
+    json_node(call, &t, a[1]);
+    json_write(call, a[0], &t);
+    return manyan_bool(1);
+}
+
+static ManyanValue *nd_json_serialize(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *v = to_tuple(a[1]);
+    if (!v) manyan_fail(call, "The second argument of ndJsonSerialize should be a sequence, but instead it is:\n%s", manyan_print(a[1]));
+    Text t = {0};
+    for (size_t i = 0; i < manyan_size(v); i++) json_node(call, &t, manyan_value(v, i)), put(&t, "\n", 1);
+    json_write(call, a[0], &t);
+    return manyan_bool(1);
 }
 
 /* ---------------------------------------------------------------- Graphs, UndirectedGraphs */
@@ -906,6 +1069,13 @@ int manyan_std_init(void) {
          "public static tlc2.value.IValue tlc2.overrides.Json.deserialize(tlc2.value.impl.StringValue) throws java.io.IOException"},
         {"Json", "ndJsonDeserialize", 1, nd_json_deserialize,
          "public static tlc2.value.IValue tlc2.overrides.Json.ndDeserialize(tlc2.value.impl.StringValue) throws java.io.IOException"},
+        {"Json", "ToJson", 1, to_json, "public static " J_S " tlc2.overrides.Json.toJson(tlc2.value.IValue) throws java.io.IOException"},
+        {"Json", "ToJsonArray", 1, to_json_array, "public static " J_S " tlc2.overrides.Json.toJsonArray(tlc2.value.IValue) throws java.io.IOException"},
+        {"Json", "ToJsonObject", 1, to_json_object, "public static " J_S " tlc2.overrides.Json.toJsonObject(tlc2.value.IValue) throws java.io.IOException"},
+        {"Json", "JsonSerialize", 2, json_serialize,
+         "public static synchronized tlc2.value.impl.BoolValue tlc2.overrides.Json.serialize(tlc2.value.impl.StringValue," J_V ") throws java.io.IOException"},
+        {"Json", "ndJsonSerialize", 2, nd_json_serialize,
+         "public static synchronized tlc2.value.impl.BoolValue tlc2.overrides.Json.ndSerialize(tlc2.value.impl.StringValue," J_V ") throws java.io.IOException"},
         {"Graphs", "SimplePath", 1, simple_path, OVERRIDE("Graphs", "simplePath(" J_V ")")},
         {"Graphs", "AreConnectedIn", 3, are_connected_in, OVERRIDE("Graphs", "areConnectedIn(" J_V "," J_V "," J_V ")")},
         {"Graphs", "IsStronglyConnected", 1, is_strongly_connected, OVERRIDE("Graphs", "isStronglyConnected(" J_V ")")},

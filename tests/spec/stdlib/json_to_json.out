@@ -1,0 +1,33 @@
+"{\"a\":1,\"b\":\"x\\\"y\",\"c\":[1,true]}"
+"[]"
+"[]"
+"[1,2,3]"
+"[[],[1]]"
+"[[1],[2]]"
+"{\"p\":[\"p\"],\"q\":[\"q\"]}"
+"{\"a\":0,\"b\":0,\"c\":0}"
+"[2,4,6]"
+"{\"2\":2,\"3\":3}"
+"{\"0\":0,\"1\":1}"
+"[]"
+"{\"<<1, 2>>\":[1,2]}"
+"{\"m\":1}"
+"[{\"x\":-1},\"s\\n\\t\",[1,2]]"
+"[\"\\r\",\"a\\\\b\",\"é/\"]"
+"42"
+"\"str\""
+"\"m\""
+"[[],[1],[2],[1,2]]"
+"[[true,true]]"
+"[1,2]"
+"[1,2]"
+"{\"a\":1}"
+"{\"a\":1}"
+"{\"0\":1,\"1\":2}"
+"[1,2]"
+"{\"3\":3,\"4\":4}"
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0

@@ -1,0 +1,39 @@
+<<"Inv", 1>>
+Finished computing initial states: 1 distinct state generated.
+<<"Next", 1, 0>>
+<<"Inv", 2>>
+<<"Next", 2, 1>>
+<<"Next", 1, 0>>
+<<"Inv", 3>>
+<<"Next", 1, 0>>
+<< [zz |-> 0, b |-> [q |-> 1, p |-> 2], a |-> "s"],
+   [zz |-> 1, b |-> [q |-> 1, p |-> 2], a |-> "s"],
+   [zz |-> 2, b |-> [q |-> 1, p |-> 2], a |-> "s"] >>
+<<"Next", 1, 0>>
+"[{\"zz\":0,\"a\":\"s\",\"b\":{\"q\":1,\"p\":2}},{\"zz\":1,\"a\":\"s\",\"b\":{\"q\":1,\"p\":2}},{\"zz\":2,\"a\":\"s\",\"b\":{\"q\":1,\"p\":2}}]"
+<<"Next", 1, 0>>
+"{\"zz\":0,\"a\":\"s\",\"b\":{\"q\":1,\"p\":2}}"
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ zz = 0
+/\ a = "s"
+/\ b = [q |-> 1, p |-> 2]
+
+<<"Next", 1, 0>>
+State 2: <Next line 8, col 9 to line 10, col 43 of module trace>
+/\ zz = 1
+/\ a = "s"
+/\ b = [q |-> 1, p |-> 2]
+
+<<"Next", 2, 1>>
+State 3: <Next line 8, col 9 to line 10, col 43 of module trace>
+/\ zz = 2
+/\ a = "s"
+/\ b = [q |-> 1, p |-> 2]
+
+<<"Next", 1, 0>>
+<<"Next", 2, 1>>
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

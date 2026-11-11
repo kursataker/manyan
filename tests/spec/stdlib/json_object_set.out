@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 35 of module json_object_set failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.StringValue tlc2.overrides.Json.toJsonObject(tlc2.value.IValue) throws java.io.IOException,
+but it produced the following error:
+Cannot convert value: unsupported value type tlc2.value.impl.SetEnumValue
+exit 10
