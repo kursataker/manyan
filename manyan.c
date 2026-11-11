@@ -8952,6 +8952,7 @@ static size_t fp_region_used, fp_region_size;
 
 static void fp_insert(int idx) {
     if ((nstates + 1) * 2 >= fp_size) {
+        if (fp_size >= 1 << 30) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         int size = fp_size ? fp_size * 2 : 1 << 16;
         size_t bytes = sizeof(FpSlot) * (size_t)size;
         FpSlot *table;
