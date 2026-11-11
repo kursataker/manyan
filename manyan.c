@@ -14924,7 +14924,8 @@ static int def_sym_level(Def *d) {
         for (int i = 0; i < d->nsubst; i++) if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_info(d->subst_expr[i])->level; if (b > l) l = b; }
         return l;
     }
-    if (d->native || !d->body || d->kind == D_CONST || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
+    if (d->kind == D_CONST) return sym_const_index(d) >= 0;   /* -cinit chooses it, as Init a variable */
+    if (d->native || !d->body || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
     for (int i = 0; i < nbusy; i++) if (busy[i] == d) return 0;
     if (nbusy == 256) return expr_level(d->body);
     busy[nbusy++] = d;
@@ -14949,7 +14950,7 @@ static int sym_level(Expr *e) {
     for (int i = 0; i < e->nseg; i++) { int b = max_sym_level(e->segs[i].args, e->segs[i].n); if (b > l) l = b; }
     int own = 0;
     switch (e->kind) {
-    case K_DECL: own = e->def->kind == D_VAR; break;
+    case K_DECL: own = e->def->kind == D_VAR || (e->def->kind == D_CONST && sym_const_index(e->def) >= 0); break;
     case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_CDOT: own = 2; break;
     case K_ENABLED: return 1;
     case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case X_WF: case X_SF: case K_WHILE: case X_TFORALL: case X_TEXISTS: own = 3; break;
@@ -15001,8 +15002,7 @@ static int sym_plain(Expr *e, SCtx sc) {
     for (int i = 0; i < in->n; i++) {
         Def *d = in->defs[i];
         if (d == &at_mark) { if (!sym_at || !sv_known(sym_at)) return 0; }
-        else if (d->kind == D_CONST) {   /* chosen by -cinit, or an instance's, substituted */
-            if (sym_const_index(d) >= 0) return 0;
+        else if (d->kind == D_CONST) {   /* an instance's, substituted */
             Ctx c = sc.c;
             Expr *x = sc.c.inst ? substitute(d, &c) : NULL;
             if (x && x->kind != X_OPREF && !sym_plain(x, (SCtx){c, NULL})) return 0;
@@ -15792,7 +15792,6 @@ static int act_level(Expr *e, SCtx sc) {
     ExprInfo *in = expr_info(e);
     int l = in->level;
     for (int i = 0; i < in->n && l < 2; i++) {
-        if (in->defs[i]->kind == D_CONST && sym_const_index(in->defs[i]) >= 0 && l < 1) l = 1;
         SEnv *b = in->defs[i] == &at_mark ? NULL : senv_find(sc.s, in->defs[i]);
         if (b && b->e) { int a = act_level(b->e, b->ctx); if (a > l) l = a; }
     }
