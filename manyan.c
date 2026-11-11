@@ -63,6 +63,12 @@ static void *xrealloc(void *p, size_t n) {
     return p;
 }
 
+static void *xcalloc(size_t n, size_t size) {
+    void *p = calloc(n ? n : 1, size);
+    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    return p;
+}
+
 /* Memory the caller fills; alloc's is zeroed. */
 static void *alloc_raw(size_t n) {
     n = (n + 15) & ~(size_t)15;
@@ -237,7 +243,7 @@ static _Noreturn void worker_cannot(void);
 static int intern_n(const char *s, int len) {
     if (nstrs * 2 >= str_table_size && !in_worker) {
         int size = str_table_size ? str_table_size * 2 : 1024;
-        int *table = calloc((size_t)size, sizeof(int));
+        int *table = xcalloc((size_t)size, sizeof(int));
         for (int i = 0; i < nstrs; i++) {
             uint64_t h = hash_bytes(strs[i].s, (size_t)strs[i].len, 0xcbf29ce484222325ULL);
             int j = (int)(h & (uint64_t)(size - 1));
@@ -1245,7 +1251,7 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
     Value *out = mk_set((int)total);
     Value **keys = alloc_raw(sizeof(Value *) * (size_t)nd);   /* the functions share them */
     if (nd) memcpy(keys, dom, sizeof(Value *) * (size_t)nd);
-    int *idx = calloc((size_t)nd + 1, sizeof(int));
+    int *idx = xcalloc((size_t)nd + 1, sizeof(int));
     for (int64_t k = 0; k < total; k++) {
         Value *f = out->u.set.elems[k] = NEW(Value);
         f->kind = V_FCN;
@@ -1357,7 +1363,7 @@ static Value *enumerate_lazy(Value *s) {
         /* Made in the standard order, the last part varying fastest: the
            parts, and a record's fields, are sorted. */
         Value *out = mk_set((int)total);
-        int *idx = calloc((size_t)n + 1, sizeof(int));
+        int *idx = xcalloc((size_t)n + 1, sizeof(int));
         for (int64_t k = 0; k < total; k++) {
             Value *t;
             if (s->lazy == L_TIMES) {
@@ -5337,7 +5343,7 @@ static __attribute__((noinline)) Value *substitution_value(Inst *in, int i) {
     Expr *x = id->subst_expr[i];
     Ctx outer = {in->env, in->parent};
     if (primed || gen_init || !cur_state || arena != &scratch_arena) return eval(x, outer);
-    if (!id->subst_kept) id->subst_kept = calloc((size_t)id->nsubst, 1);
+    if (!id->subst_kept) id->subst_kept = xcalloc((size_t)id->nsubst, 1);
     if (!id->subst_kept[i]) id->subst_kept[i] = x->kind != K_DECL && expr_level(x) == 1 ? 1 : 2;
     if (id->subst_kept[i] == 2) return eval(x, outer);
     if (!in->state || in->resets != scratch_resets || memcmp(in->state, cur_state, sizeof(Value *) * (size_t)nvars)) {
@@ -8969,7 +8975,7 @@ static void fp_insert(int idx) {
             table = (FpSlot *)(fp_region + fp_region_used);
             fp_region_used += bytes;
         } else {
-            table = calloc((size_t)size, sizeof(FpSlot));
+            table = xcalloc((size_t)size, sizeof(FpSlot));
         }
         for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, fp_table[i].fp, fp_table[i].state - 1);
         if (!fp_region) free(fp_table);
@@ -9075,7 +9081,7 @@ static Value *perm_compose(Value *p, Value *q) {
 static Value *permutation_group(Value *generators) {
     List g = {0};
     size_t size = 64;
-    int *table = calloc(size, sizeof(int));   /* indices into g, plus one, by hash */
+    int *table = xcalloc(size, sizeof(int));   /* indices into g, plus one, by hash */
     Value *identity = mk_fcn_from(&(List){0}, &(List){0});
     for (int i = -1; i < g.n; i++) {
         for (int j = 0; j < generators->n; j++) {
@@ -9088,7 +9094,7 @@ static Value *permutation_group(Value *generators) {
             if ((size_t)g.n * 2 > size) {   /* grow, rehashing */
                 free(table);
                 size *= 2;
-                table = calloc(size, sizeof(int));
+                table = xcalloc(size, sizeof(int));
                 for (int k = 0; k < g.n; k++) {
                     size_t t = (size_t)value_hash(g.v[k]) & (size - 1);
                     while (table[t]) t = (t + 1) & (size - 1);
@@ -9227,8 +9233,8 @@ static uint64_t fingerprint(Value **st) {
     if (!fps) {
         fps = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry);
         vh = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry * (size_t)nvars);
-        last = calloc((size_t)nvars, sizeof(Value *));
-        last_resets = calloc((size_t)nvars, sizeof(unsigned));
+        last = xcalloc((size_t)nvars, sizeof(Value *));
+        last_resets = xcalloc((size_t)nvars, sizeof(unsigned));
     }
     memset(fps, 0, sizeof(uint64_t) * (size_t)nsymmetry);
     for (int i = 0; i < nvars; i++) {
@@ -11601,7 +11607,7 @@ static void use_specification(Expr *spec) {
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
             spec_subscript = in_instance(call, sq->args[1]);
-            char *in = calloc((size_t)nvars + 1, 1);
+            char *in = xcalloc((size_t)nvars + 1, 1);
             subscript_vars(spec_subscript, NULL, NULL, NULL, 0, in, 0);
             if (!nowarning) {
                 for (int v = 0; v < nvars; v++)
@@ -13501,11 +13507,11 @@ static TF *live_setup(int p) {
     ntnodes = 0;
     npnodes = 0;
     free(pnodes_of);
-    pnodes_of = calloc((size_t)nstates, sizeof(PRefs));
+    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
     free(state_atom_cache);
-    state_atom_cache = calloc((size_t)nstates * (size_t)(natoms + 1), 1);
+    state_atom_cache = xcalloc((size_t)nstates * (size_t)(natoms + 1), 1);
     return live_negated = neg;
 }
 
@@ -13514,9 +13520,9 @@ static TF *live_setup(int p) {
    first at the earliest finite counterexample (live_cut_violated). */
 static int live_cut_violated(void) {
     free(decoded);
-    decoded = calloc((size_t)nstates, sizeof(Value **));
+    decoded = xcalloc((size_t)nstates, sizeof(Value **));
     free(real_succ);
-    real_succ = calloc((size_t)nstates, sizeof(Successors));
+    real_succ = xcalloc((size_t)nstates, sizeof(Successors));
     int first = -1, at = -1;   /* the last set up is the first property, whose product the check takes on */
     for (int p = ntemporal_props - 1; p >= 0; p--) {
         int node, s = live_cut_at(live_setup(p), &node);
@@ -16615,7 +16621,7 @@ int main(int argc, char **argv) {
     if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }
     ManyanOptions o = {0};
     o.check_deadlock = 1;
-    const char **properties = calloc((size_t)argc, sizeof(char *));
+    const char **properties = xcalloc((size_t)argc, sizeof(char *));
     int nproperties = 0;
     o.properties = properties;
     for (int i = 1; i < argc; i++) {
