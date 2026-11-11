@@ -13588,6 +13588,13 @@ static Expr *odd_literal(Module *m) {
     return m->odd[1] ? m->odd[1] : m->odd[2];
 }
 
+/* The training run of a profile-guided build checks no behaviors
+   symbolically: what follows takes no profile, and is optimized as if
+   built without one, as -fprofile-partial-training has GCC do. */
+#ifdef __clang__
+#pragma clang attribute push (__attribute__((no_profile_instrument_function)), apply_to = function)
+#endif
+
 /* ---------------------------------------------------------------- solver */
 
 /* -symbolic checks behaviors of up to -length steps without enumerating
@@ -16220,6 +16227,10 @@ static int symbolic(void) {
     sym_print(states, act_of, depth + 1);
     return MANYAN_VIOLATION_SAFETY;
 }
+
+#ifdef __clang__
+#pragma clang attribute pop
+#endif
 
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
