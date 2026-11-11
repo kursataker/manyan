@@ -55,6 +55,7 @@ for it; [std.md](std.md) lists them.
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
 | `-view` | print each state an error reports as the value of the configuration's `VIEW`, as TLC does |
 | `-Dk=v` | set Java's system property `k`, which `TLCGet("-Dk")` reads, as `java -Dk=v` does; `-Dtlc2.tool.impl.Tool.cdot=true` turns on TLC's incomplete action composition `A \cdot B` |
+| `-stack N` | let expressions nest and definitions call at most N deep, and report TLC's `StackOverflowError` past that (exit 255 while parsing, 75 while evaluating); TLC's own depth depends on its Java stack. Without it calls go 5000 deep and parsing as deep as the C stack goes, so a spec nested far deeper crashes |
 | `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
 | `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: Manyan writes no metadata and has its own fingerprints |
@@ -161,7 +162,8 @@ specification is not supported with properties, as it needs `ENABLED`.
 
 Not supported yet: fairness and `ENABLED`; constraints; functions over an
 infinite domain; `Gen`, which needs Apalache's types; integers beyond 64
-bits.
+bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
+`-symbolic` does not.
 
 ## Exit statuses
 
