@@ -50,12 +50,14 @@ def checks(md):
 
 
 def used(module, directories, seen):
-    """The modules of the first of directories that has them that module
-    extends or instantiates, by name, itself too."""
-    path = next((d / f"{module}.tla" for d in directories if (d / f"{module}.tla").exists()), None)
-    if module in seen or module in BUILT_IN or not path:
+    """The modules that module extends or instantiates, itself too, by name:
+    each from the first of directories that has it, and what a library's
+    module uses from that library on."""
+    at = next((i for i, d in enumerate(directories) if (d / f"{module}.tla").exists()), None)
+    if module in seen or module in BUILT_IN or at is None:
         return
-    seen[module] = path
+    path = seen[module] = directories[at] / f"{module}.tla"
+    directories = directories[at:] if at else directories
     text = re.sub(r"\(\*.*?\*\)|\\\*[^\n]*", "", path.read_text(), flags=re.S)
     for names in re.findall(r"\bEXTENDS\b([\w\s,]+)", text):
         for name in re.findall(r"\w+", names):
