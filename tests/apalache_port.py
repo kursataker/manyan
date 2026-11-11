@@ -31,7 +31,7 @@ TYPECHECK = ROOT / "tests/typecheck/apalache"
 # Options that do not change the outcome, and those -symbolic has.
 IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--discard-disabled", "--smt-solver",
            "--profiling", "--smtprof", "--output-traces"}
-KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
+KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock", "--view", "--max-error"}
 # The modules manyan builds in, Apalache's among them.
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache",
             "__apalache_folds", "__apalache_internal"}
@@ -173,10 +173,13 @@ def main():
             parts = [p for p in parts if p[0] not in ("NEXT", "SPECIFICATION")] + [("NEXT", " " + options.get("--next", "Next"))]
         parts += [("INVARIANT", " " + inv) for inv in options.get("--inv", "").split(",") if inv]
         parts += [("PROPERTY", " " + p) for p in options.get("--temporal", "").split(",") if p]
+        if "--view" in options:
+            parts = [p for p in parts if p[0] != "VIEW"] + [("VIEW", " " + options["--view"])]
         config = "".join(f"{k} {v.strip()}\n" for k, v in parts)
         line = f"-length {options.get('--length', '10')}"
         line += " -deadlock" if "--no-deadlock" in options else ""
         line += f" -cinit {options['--cinit']}" if "--cinit" in options else ""
+        line += f" -max-error {options['--max-error']}" if "--max-error" in options else ""
         (OUT / f"{name}.tla").write_text(f"\\* options: {line}\n\\* apalache-mc check {' '.join(words)}: {status}\n"
                                         + text.rstrip("\n") + "\n" + config)
         seen = {}

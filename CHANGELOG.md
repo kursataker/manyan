@@ -13,6 +13,9 @@ unreleased:
   operator or function, a set or `<<>>` of an open type, a `Repeat` of no
   literal count, a constant configured with a value not of its type; 30
   more of Apalache's tests, those it refuses, give its outcome (213)
+- `-symbolic -max-error N` finds up to N violations told apart by the
+  configuration's `VIEW`, as Apalache's `--max-error` with `--view`; its
+  View, View2 and Test1305 tests give its count of errors
 
 2026-11-12 0.10.0:
 

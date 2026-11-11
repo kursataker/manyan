@@ -4,11 +4,12 @@ usage: symbolic_runner.py MANYAN [--oracle APALACHE] [--bless] [--only SUBSTRING
 
 A test is NAME.tla, a module and then its model configuration, as in
 tests/spec; a line `\\* options: -length N -deadlock -cinit C` gives the
-length (10 by default), turns deadlock checking off and names the
-operator that chooses the constants. NAME.out is the outcome
+length (10 by default), turns deadlock checking off, names the
+operator that chooses the constants and how many errors to find (the
+configuration's VIEW tells them apart). NAME.out is the outcome
 Apalache gives: NoError, Error with the violated invariant or property,
-or Deadlock, then the number of states in the counterexample, then the
-exit status; or Refused, where Apalache stops without a verdict (exit
+or Deadlock, then the number of states in the (first) counterexample
+and, if more than one is found, how many; then the exit status; or Refused, where Apalache stops without a verdict (exit
 status 255, 75 or 120) and Manyan stops with an error, its own (TLC's)
 exit status, not a bug or a crash. For a property the counterexample is a lasso, whose length
 is not compared: Apalache closes a loop only where its tableau's own
@@ -39,7 +40,8 @@ def options(path):
     words = shlex.split(found.group(1)) if found else []
     length = words[words.index("-length") + 1] if "-length" in words else "10"
     cinit = words[words.index("-cinit") + 1] if "-cinit" in words else None
-    return length, "-deadlock" in words, cinit
+    errors = words[words.index("-max-error") + 1] if "-max-error" in words else None
+    return length, "-deadlock" in words, cinit, errors
 
 
 def named(config, keyword):
@@ -50,11 +52,16 @@ def named(config, keyword):
     return names
 
 
+def errors(n):
+    return f" errors {n}" if n > 1 else ""
+
+
 def manyan_outcome(output, code):
-    states = len(re.findall(r"^State \d+: ", output, flags=re.M))
+    first = re.split(r"^Error: Invariant \S+ is violated\.$", output, flags=re.M)
+    states = len(re.findall(r"^State \d+: ", first[1] if len(first) > 2 else output, flags=re.M))
     violated = re.search(r"^Error: Invariant (\S+) is violated\.$", output, flags=re.M)
     if violated:
-        return f"Error {violated.group(1)} {states}\nexit {code}\n"
+        return f"Error {violated.group(1)} {states}{errors(len(first) - 1)}\nexit {code}\n"
     violated = re.search(r"^Error: Temporal property (\S+) was violated\.$", output, flags=re.M)
     if violated:
         return f"Error {violated.group(1)}\nexit {code}\n"
@@ -80,8 +87,9 @@ def apalache_outcome(output, code, directory, config):
     outcome = outcome.group(1)
     if outcome in ("NoError", "ExecutionsTooShort"):
         return f"{outcome}\nexit {code}\n"
-    traces = sorted(directory.rglob("violation*.tla"))
+    traces = sorted(directory.rglob("violation1.tla")) or sorted(directory.rglob("violation*.tla"))
     states = len(re.findall(r"^State\d+ ==", traces[0].read_text(), flags=re.M)) if traces else 0
+    found = re.search(r"^Found (\d+) error\(s\)", output, flags=re.M)
     if outcome == "Deadlock":
         return f"Deadlock {states}\nexit {code}\n"
     # Apalache numbers the invariants it checks, a labelled conjunction's conjuncts apart.
@@ -93,11 +101,11 @@ def apalache_outcome(output, code, directory, config):
         name = names[0]
     else:
         name = names[int(which.group(1))] if which and int(which.group(1)) < len(names) else "?"
-    return f"{outcome} {name} {states}\nexit {code}\n"
+    return f"{outcome} {name} {states}{errors(int(found.group(1)) if found else 1)}\nexit {code}\n"
 
 
 def run(command, path, oracle, memory):
-    length, no_deadlock, cinit = options(path)
+    length, no_deadlock, cinit, max_error = options(path)
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
@@ -106,10 +114,13 @@ def run(command, path, oracle, memory):
             args = command + ["check", f"--config={cfg}", f"--length={length}", f"--out-dir={directory}/out"]
             args += ["--no-deadlock"] if no_deadlock else []
             args += [f"--cinit={cinit}"] if cinit else []
+            args += [f"--max-error={max_error}"] if max_error else []
+            args += [f"--view={v}" for v in named((directory / cfg).read_text(), "VIEW")]
             args += [path.name]
         else:
             args = command + ["-symbolic", "-length", length] + (["-deadlock"] if no_deadlock else [])
             args += ["-cinit", cinit] if cinit else []
+            args += ["-max-error", max_error] if max_error else []
             args += ["-config", cfg, path.stem]
         _, output, code, killed = guarded(args, directory, 600, memory)
         if killed:

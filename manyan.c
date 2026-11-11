@@ -5272,10 +5272,19 @@ static Value *mk_oper(Def *d, Ctx c) {
     return v;
 }
 
+/* An integer TLC computes: of 32 bits; of 64 for symbolic checking, as
+   its solver's. */
 static int64_t check_int(int64_t v, int64_t a, int64_t b, const char *op) {
-    if (v > 2147483647LL || v < -2147483648LL)
+    if (!symbolic_mode && (v > 2147483647LL || v < -2147483648LL))
         fail_module("Overflow when computing %lld%s%lld", (long long)a, op, (long long)b);
     return v;
+}
+
+static int64_t int_op(int64_t x, int64_t y, char op) {
+    int64_t v;
+    int over = op == '+' ? __builtin_add_overflow(x, y, &v) : op == '-' ? __builtin_sub_overflow(x, y, &v) : __builtin_mul_overflow(x, y, &v);
+    if (over) fail_module("Overflow when computing %lld%c%lld", (long long)x, op, (long long)y);
+    return check_int(v, x, y, (char[]){op, 0});
 }
 
 static int64_t int_arg(Value *v, int which, const char *op) {
@@ -6197,8 +6206,9 @@ static __attribute__((noinline)) Value *ev_map(Expr *e, Ctx c) {
 }
 
 /* The values symbolic checking chose for an \E, as it replays a behavior:
-   one for each name of its bounds, a tuple for a tuple's. */
-typedef struct { Expr *e; Value **vals; } Witness;
+   one for each name of its bounds, a tuple for a tuple's, in step 0
+   (Init) or N, as for Gen; -1 for one out of the steps. */
+typedef struct { Expr *e; int step; Value **vals; } Witness;
 static Witness *witnesses;
 static int nwitnesses;
 
@@ -6238,7 +6248,7 @@ static Value *gen_value(Expr *call) {
    bounds, which may be infinite, are enumerated. */
 static int witnessed(Expr *e, Ctx c) {
     for (int i = 0; i < nwitnesses; i++) {
-        if (witnesses[i].e != e) continue;
+        if (witnesses[i].e != e || (witnesses[i].step >= 0 && witnesses[i].step != gen_step)) continue;
         Value **v = witnesses[i].vals;
         Env *env = c.env;
         int in = 1;
@@ -6833,14 +6843,14 @@ void manyan_throw(ManyanCall *call, const char *fmt, ...) {
 
 NATIVE(n_nat) { UNUSED; return mk_lazy(L_NAT); }
 NATIVE(n_int) { UNUSED; return mk_lazy(L_INT); }
-NATIVE(n_plus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x + y, x, y, "+")); }
-NATIVE(n_minus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x - y, x, y, "-")); }
-NATIVE(n_times) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(check_int(x * y, x, y, "*")); }
+NATIVE(n_plus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(int_op(x, y, '+')); }
+NATIVE(n_minus) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(int_op(x, y, '-')); }
+NATIVE(n_times) { UNUSED; int64_t x = int_cast(a[0]), y = int_cast(a[1]); return mk_int(int_op(x, y, '*')); }
 NATIVE(n_lt) { UNUSED; int64_t x = int_arg(a[0], 1, "<"), y = int_arg(a[1], 2, "<"); return BOOLV(x < y); }
 NATIVE(n_gt) { UNUSED; int64_t x = int_arg(a[0], 1, ">"), y = int_arg(a[1], 2, ">"); return BOOLV(x > y); }
 NATIVE(n_leq) { UNUSED; int64_t x = int_arg(a[0], 1, "<="), y = int_arg(a[1], 2, "<="); return BOOLV(x <= y); }
 NATIVE(n_geq) { UNUSED; int64_t x = int_arg(a[0], 1, ">="), y = int_arg(a[1], 2, ">="); return BOOLV(x >= y); }
-NATIVE(n_neg) { UNUSED; int64_t x = int_cast(a[0]); return mk_int(check_int(-x, 0, x, "-")); }
+NATIVE(n_neg) { UNUSED; int64_t x = int_cast(a[0]); return mk_int(int_op(0, x, '-')); }
 
 NATIVE(n_pow) {
     UNUSED;
@@ -7270,7 +7280,7 @@ static void bag_add(List *keys, List *vals, Value *e, Value *n) {
     for (int j = 0; j < keys->n; j++)
         if (veq(e, keys->v[j])) {
             int64_t x = bag_count(vals->v[j]), y = bag_count(n);
-            vals->v[j] = mk_int(check_int(x + y, x, y, "+"));
+            vals->v[j] = mk_int(int_op(x, y, '+'));
             return;
         }
     list_add(keys, e);
@@ -7304,7 +7314,7 @@ NATIVE(n_bagcardinality) {
     for (int i = 0; i < f->n; i++) {
         Value *k = f->u.fcn.vals[i];
         if (k->kind != V_INT || k->u.i <= 0) bag_wrong("BagCardinality", "a bag", a[0]);
-        n = check_int(n + k->u.i, n, k->u.i, "+");
+        n = int_op(n, k->u.i, '+');
     }
     return mk_int(n);
 }
@@ -15432,7 +15442,7 @@ static int64_t bindings_count(Bound *bs, int nb, SCtx sc, SVal **sets) {
 }
 
 /* The elements chosen for each \E, for the evaluator to replay it with. */
-static struct { Expr *e; SVal **vals; } *sym_witnesses;
+static struct { Expr *e; int step; SVal **vals; } *sym_witnesses;
 static int nsym_witnesses;
 
 /* Binds each name of q's bounds to a fresh element of its set: *g whether
@@ -15445,6 +15455,7 @@ static SCtx sym_skolem(Expr *q, SCtx sc, SVal **sets, int *g) {
     if (q->kind == X_EXISTS) {
         sym_witnesses = xrealloc(sym_witnesses, sizeof *sym_witnesses * (size_t)(nsym_witnesses + 1));
         sym_witnesses[nsym_witnesses].e = q;
+        sym_witnesses[nsym_witnesses].step = sym_gen_step;
         sym_witnesses[nsym_witnesses++].vals = w = NEWN(SVal *, bounds_total(bs, nb));
     }
     for (int i = 0; i < nb; i++)
@@ -16221,6 +16232,7 @@ static Branch *act_step(Expr *e, Ctx c, const char *what) {
 /* ---------------------------------------------------------------- symbolic checking */
 
 static long sym_length = 10;
+static long sym_max_error = 1;   /* -max-error */
 
 static void sym_print(Value ***s, int *act_of, int n) {
     printf("Error: The behavior up to this point is:\n");
@@ -16269,6 +16281,7 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
         if (k < n) continue;
         Witness *w = &witnesses[nwitnesses++];
         w->e = e;
+        w->step = sym_witnesses[i].step;
         w->vals = NEWN(Value *, n);
         while (k--) w->vals[k] = sv_model(sym_witnesses[i].vals[k]);
     }
@@ -16433,6 +16446,29 @@ static Def *sym_recursive(void) {
     return NULL;
 }
 
+/* Prints the behavior the solver finds to st[depth] that violates
+   invariant bad, or deadlocks (bad < 0); 0 if it does not replay. */
+static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int depth, int bad) {
+    int violated = bad >= 0 ? sym_violated(bad, st, depth) : L_TRUE;
+    sat_solve(&violated, 1);
+    Value ***states;
+    int *act_of, loop;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, &loop, &states, &act_of)) return 0;
+    if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+    else printf("Error: Deadlock reached.\n");
+    sym_print(states, act_of, depth + 1);
+    return 1;
+}
+
+/* That a behavior to st[depth] differs in its views from the one the
+   solver found, as Apalache goes on past a violation: the views of each
+   state, views[k], made before it was found. */
+static int sym_other_views(SVal **views, int depth) {
+    int same = L_TRUE;
+    for (int k = 0; k <= depth; k++) same = g_and(same, sv_eq(views[k], sv_const(sv_model(views[k]))));
+    return same ^ 1;
+}
+
 static int symbolic(void) {
     int typed = sym_types();   /* Apalache checks the types first */
     if (typed) return typed;
@@ -16444,6 +16480,10 @@ static int symbolic(void) {
     }
     if (naction_props || nconstraints || naction_constraints || nimplied_inits) {
         printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has constraints.\n");
+        return MANYAN_ERROR;
+    }
+    if (sym_max_error > 1 && (!view_expr || sym_cinit_name)) {
+        printf("Error: Symbolic checking finds more than one violation only of a configuration with a VIEW, which tells them apart, and without -cinit.\n");
         return MANYAN_ERROR;
     }
     if (ntemporal_props && nfairness) {   /* which needs ENABLED, as Apalache's checking does */
@@ -16485,10 +16525,23 @@ static int symbolic(void) {
     sym_negated = NEWN(TF *, ntemporal_props + 1);
     for (int p = 0; p < ntemporal_props; p++) sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     int depth = 0, bad = -1, prop = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
+    int found = 0;   /* the violations reported, before the last one */
+    SVal **views = NEWN(SVal *, sym_length + 1);
     for (; !stuck; depth++) {
+        if (sym_max_error > 1) {
+            sym_cur = st[depth], sym_next = NULL;
+            views[depth] = sym(view_expr, (SCtx){root_ctx, NULL}, P_BOTH);
+        }
         for (int i = 0; i < ninvariants && bad < 0; i++) {
             int violated = sym_violated(i, st, depth);
-            if (sat_solve(&violated, 1)) bad = i;
+            while (bad < 0 && sat_solve(&violated, 1)) {
+                if (found + 1 == sym_max_error) { bad = i; break; }
+                int ok = sym_report(st, picks, nenabled, enabled, depth, i);
+                handler = &here;
+                if (!ok) return MANYAN_ERROR;
+                found++;
+                sat_unit(sym_other_views(views, depth));
+            }
         }
         for (int p = 0; p < ntemporal_props && bad < 0 && prop < 0; p++) {
             int violated = sym_lasso_violated(p, st, depth);
@@ -16510,6 +16563,10 @@ static int symbolic(void) {
         sat_unit(step.guard);
         st[depth + 1] = step.next;
     }
+    if (bad < 0 && prop < 0 && found) {   /* the views of the violations left no more */
+        handler = NULL;
+        return MANYAN_VIOLATION_SAFETY;
+    }
     if (bad < 0 && prop < 0 && !(stuck && check_deadlock)) {
         handler = NULL;
         printf("Model checking completed. No error has been found");
@@ -16523,25 +16580,24 @@ static int symbolic(void) {
         printf("Error: Deadlock reached.\nError: No state satisfies the initial predicate.\n");
         return MANYAN_VIOLATION_SAFETY;
     }
-    int violated = bad >= 0 ? sym_violated(bad, st, depth) : prop >= 0 ? sym_lasso_violated(prop, st, depth) : L_TRUE;
+    if (prop < 0) {
+        int ok = sym_report(st, picks, nenabled, enabled, depth, bad);
+        handler = NULL;
+        return ok ? MANYAN_VIOLATION_SAFETY : MANYAN_ERROR;
+    }
+    int violated = sym_lasso_violated(prop, st, depth);
     sat_solve(&violated, 1);
     handler = NULL;
     Value ***states;
     int *act_of, loop;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, prop, &loop, &states, &act_of)) return MANYAN_ERROR;
-    if (prop >= 0) {   /* as TLC prints a lasso */
-        print_violated(states, depth, loop);
-        printf("Error: The following behavior constitutes a counter-example:\n\n");
-        for (int i = 0; i < depth; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + 1]);
-        printf("Back to state %d: ", loop + 1);
-        action_label(act_of[depth]);
-        printf("\n\n");
-        return MANYAN_VIOLATION_LIVENESS;
-    }
-    if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-    else printf("Error: Deadlock reached.\n");
-    sym_print(states, act_of, depth + 1);
-    return MANYAN_VIOLATION_SAFETY;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, &loop, &states, &act_of)) return MANYAN_ERROR;
+    print_violated(states, depth, loop);   /* as TLC prints a lasso */
+    printf("Error: The following behavior constitutes a counter-example:\n\n");
+    for (int i = 0; i < depth; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + 1]);
+    printf("Back to state %d: ", loop + 1);
+    action_label(act_of[depth]);
+    printf("\n\n");
+    return MANYAN_VIOLATION_LIVENESS;
 }
 
 #ifdef __clang__
@@ -19294,6 +19350,7 @@ int manyan_check(const ManyanOptions *o) {
     /* A simulation is TLC's with one worker; -continue reports in the search's order. */
     nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
     sym_length = o->length ? o->length : 10;
+    sym_max_error = o->max_error > 0 ? o->max_error : 1;
     status = o->symbolic ? symbolic() : o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();
@@ -19332,6 +19389,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-typecheck") == 0) o.typecheck = 1;
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
+        else if (strcmp(argv[i], "-max-error") == 0 && i + 1 < argc) o.max_error = atol(argv[++i]);
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
         else if (strcmp(argv[i], "-stack") == 0 && i + 1 < argc) o.stack = atoi(argv[++i]);
         else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);

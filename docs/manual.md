@@ -50,6 +50,7 @@ for it; [std.md](std.md) lists them.
 | `-symbolic` | experimental: check behaviors of up to `-length` steps with a SAT solver instead of enumerating states, as Apalache does (see [Symbolic checking](#symbolic-checking-experimental)) |
 | `-length N` | symbolic checking: the steps in a behavior (10) |
 | `-cinit C` | symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's `--cinit` |
+| `-max-error N` | symbolic checking: the invariant violations to find (1), as Apalache's `--max-error`: those the configuration's `VIEW` tells apart |
 | `-typecheck` | experimental: check the module's types as Apalache's `apalache-mc typecheck` does, without a configuration (see [Type checking](#type-checking-experimental)) |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
@@ -150,7 +151,7 @@ the assumptions then constrain that choice. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
-0.63.0: `make test-symbolic` runs 213 of Apalache's integration tests and
+0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
 36 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
@@ -160,6 +161,11 @@ which then repeats forever. A behavior that never repeats a state is no
 counterexample, and none stutters but as `Next` does. A violation is
 printed as TLC prints one, ending with `Back to state N`. Fairness in the
 specification is not supported with properties, as it needs `ENABLED`.
+
+`-max-error N` goes on past a violation, as Apalache's `--max-error`
+does, until N are found: each behavior after one must differ from it in
+the configuration's `VIEW` of some state, so that the violations found
+are as many as the views tell apart. Each is printed as TLC prints one.
 
 As Apalache does, `-symbolic` refuses a specification that is not well
 typed, a recursive operator or function, a set or `<<>>` whose type is

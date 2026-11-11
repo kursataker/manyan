@@ -13,10 +13,10 @@ in TLC's format, with TLC's exit statuses.
 
 | | checks | |
 |---|---:|---|
-| ported, giving Apalache's verdict | 183 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen` |
-| ported, refused as Apalache refuses them | 30 | below |
+| ported, giving Apalache's verdict | 186 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
+| ported, refused as Apalache refuses them | 31 | below |
 | skipped | 10 | below |
-| not ported: options `-symbolic` lacks, or files the test lacks | about 24 | below |
+| not ported: options `-symbolic` lacks, or files the test lacks | about 20 | below |
 
 ### Skipped
 
@@ -40,19 +40,17 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 
 ### Options -symbolic lacks
 
-- `--view` (3 checks).
-- `--max-error` (3 checks): more than one counterexample.
 - `--tuning-options`, `--tuning-options-file` (9 checks): Apalache's
   solver settings; most do not change the verdict.
 
 ### Specifications Apalache refuses
 
--symbolic refuses, as Apalache does: a type error; a missing `Init`,
+`-symbolic` refuses, as Apalache does: a type error; a missing `Init`,
 `Next` or invariant; a recursive operator or function; a set or `<<>>`
 whose type is left open; a `Repeat` whose count is no literal; a constant
-the configuration gives a value not of its type. These 30 checks expect
-Apalache's refusal, which `tests/symbolic_runner.py` compares as
-`Refused`, without the message. The four refusals skipped above remain,
+the configuration gives a value not of its type; `-max-error` without a
+`VIEW`. These 31 checks expect Apalache's refusal, which
+`tests/symbolic_runner.py` compares as `Refused`, without the message. The four refusals skipped above remain,
 so Manyan may check a specification Apalache rejects.
 
 ### Differences in what is checked
