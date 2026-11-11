@@ -11832,8 +11832,16 @@ static int check_assumption(Unit *u) {
     return 0;
 }
 
+static Unit **sym_assumes;   /* -cinit's: left to symbolic checking, which chooses the constants they assume of */
+static int nsym_assumes;
+
 static void check_assumptions(Module *m, int *done_status) {
     for (int i = 0; i < m->nunits; i++) {
+        if (m->units[i].kind == 2 && sym_cinit_name) {
+            sym_assumes = xrealloc(sym_assumes, sizeof(Unit *) * (size_t)(nsym_assumes + 1));
+            sym_assumes[nsym_assumes++] = &m->units[i];
+            continue;
+        }
         int status = m->units[i].kind == 2 ? check_assumption(&m->units[i]) : 0;
         if (status) { *done_status = status; return; }
     }
@@ -16090,6 +16098,16 @@ static int symbolic(void) {
     sym_init = sym_primed = 1;
     Branch *init = sym_cinit_name ? sym_constants() : &(Branch){L_TRUE, NULL};
     if (init) sat_unit(init->guard);
+    sym_init = sym_primed = 0;
+    for (int i = 0; init && i < nsym_assumes; i++) {   /* of the constants chosen, as Apalache assumes them */
+        Unit *u = sym_assumes[i];
+        SVal *v = sym(u->expr, (SCtx){root_ctx, NULL}, P_POS);
+        if (v->kind == SV_UNDEF) { printf("Error: Evaluating assumption %s failed.\n%s\n", loc_str(u->expr), v->u.err); return MANYAN_VIOLATION_ASSUMPTION; }
+        int l = sv_lit(v, u->expr);
+        if (l == L_FALSE) { printf("Error: Assumption %s is false.\n", loc_str(u->expr)); return MANYAN_VIOLATION_ASSUMPTION; }
+        sat_unit(l);
+    }
+    sym_init = sym_primed = 1;
     if (init) init = act_step(init_expr, root_ctx, "The initial predicate");
     sym_init = sym_primed = 0;
     if (init) {
