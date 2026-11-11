@@ -2287,6 +2287,12 @@ typedef struct {
 
 static Parser *P;
 
+static const char stack_overflow[] =
+    "This was a Java StackOverflowError. It was probably the result\n"
+    "of an incorrect recursive function definition that caused TLC to enter\n"
+    "an infinite loop when trying to compute the function or its application\n"
+    "to an element in its putative domain.";
+
 static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...) {
     char msg[1024];
     va_list ap;
@@ -3085,6 +3091,11 @@ static Expr *parse_unary(const OpInfo **prefix) {
 
 /* An expression whose operators all bind tighter than `bound` (§6.1). */
 static Expr *parse_binary(int bound) {
+    static int nesting;   /* every nesting of expressions passes here; TLC's parser overflows its stack */
+    if (++nesting > 1000) {
+        printf("Error: %s\n", stack_overflow);
+        exit(MANYAN_ERROR);
+    }
     const OpInfo *last;   /* the operator before the next one, as on SANY's stack */
     Expr *left = parse_unary(&last);
     for (;;) {
@@ -3133,6 +3144,7 @@ static Expr *parse_binary(int bound) {
         left = e;
         last = info;
     }
+    nesting--;
     return left;
 }
 
@@ -4942,12 +4954,6 @@ static Value *at_value;         /* @ in an EXCEPT */
 static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to apply it (§6.6) */
 static int64_t cur_level;       /* TLCGet("level") */
 static int eval_depth;
-
-static const char stack_overflow[] =
-    "This was a Java StackOverflowError. It was probably the result\n"
-    "of an incorrect recursive function definition that caused TLC to enter\n"
-    "an infinite loop when trying to compute the function or its application\n"
-    "to an element in its putative domain.";
 
 /* A definition's body is entered: only calls nest without bound. Past
    the bound, TLC's Java stack has overflowed. */
