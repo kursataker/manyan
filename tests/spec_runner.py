@@ -7,7 +7,9 @@ configuration (SANY ignores text after a module). NAME.out is the
 normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
-NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it.
+NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it (which may give
+its own -config, which the oracle does not run; the configuration is also the
+engine's standard input).
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
 behaviors it writes (`-simulate file=FILE`).
@@ -54,14 +56,14 @@ LOW_MEMORY = re.compile(
 OUTPUT_LIMIT = 64 << 20
 
 
-def guarded(command, directory, timeout, memory):
+def guarded(command, directory, timeout, memory, input=None):
     """The seconds command takes, its output and exit status, or why it was
     killed: past timeout seconds, memory MB resident (with what it starts),
-    or OUTPUT_LIMIT bytes of output."""
+    or OUTPUT_LIMIT bytes of output. input, if given, is its standard input."""
     start = time.perf_counter()
     try:
         process = subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
+                                   stdin=None if input is None else subprocess.PIPE, start_new_session=True)
     except OSError as error:
         return 0, f"{error}\n", "error", None
     chunks, size = [], [0]
@@ -73,6 +75,12 @@ def guarded(command, directory, timeout, memory):
                 chunks.append(chunk)
     reader = threading.Thread(target=pump)
     reader.start()
+    if input is not None:
+        try:
+            process.stdin.write(input)
+            process.stdin.close()
+        except BrokenPipeError:   # it ended without reading
+            pass
     killed, wait = None, 0.01
     while not finished(process, wait):
         wait = min(2 * wait, 0.25)
@@ -185,8 +193,12 @@ def run(command, path, memory):
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp).resolve()
         stage(path, directory)
-        _, output, code, killed = guarded(place(command, options(path)) + ["-config", path.stem + ".cfg", path.stem],
-                                          directory, 300, memory)
+        named = options(path)
+        config = [] if "-config" in named else ["-config", path.stem + ".cfg"]
+        # The configuration is also the engine's standard input, a pipe for
+        # `-config /dev/stdin`.
+        _, output, code, killed = guarded(place(command, named) + config + [path.stem], directory, 300, memory,
+                                          (directory / (path.stem + ".cfg")).read_bytes())
         if killed:
             output, code = f"{killed}\n", "killed"
         return normalize(output, directory) + f"exit {code}\n" + dumped(directory)
@@ -216,7 +228,7 @@ def main():
     def check(path):
         expected_path = path.with_suffix(".out")
         notes = []
-        if args.oracle:
+        if args.oracle and "-config" not in options(path):   # TLC reads a file whose name ends in .cfg
             reference = run(oracle_command(args.oracle), path, memory)
             if args.bless:
                 expected_path.write_text(reference)
