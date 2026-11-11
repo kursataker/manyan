@@ -126,7 +126,7 @@ report as TLC with one worker.
   errors and configuration errors.
 - Experimental: `-symbolic` checks invariants and deadlock on behaviors of
   up to `-length` steps with a SAT solver, as Apalache does, with its
-  `--cinit` (`-cinit`), action invariants and its module; 145 of
+  `--cinit` (`-cinit`), action and trace invariants and its module; 151 of
   Apalache's own tests give its outcome (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
 
@@ -156,7 +156,7 @@ Java (they download tla2tools 1.8.0 themselves):
   suite's models, to find differences. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
-- `tests/symbolic`: 179 models for `-symbolic`, 145 of them from Apalache's
+- `tests/symbolic`: 185 models for `-symbolic`, 151 of them from Apalache's
   own tests, each with Apalache 0.63.0's outcome; `make
   test-symbolic-oracle` runs Apalache on them too.
 

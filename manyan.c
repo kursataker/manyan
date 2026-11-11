@@ -6171,12 +6171,41 @@ static __attribute__((noinline)) Value *ev_map(Expr *e, Ctx c) {
     return list_set(&d.out);
 }
 
+/* The values symbolic checking chose for an \E, as it replays a behavior:
+   one for each name of its bounds, a tuple for a tuple's. */
+typedef struct { Expr *e; Value **vals; } Witness;
+static Witness *witnesses;
+static int nwitnesses;
+
+/* Whether a value chosen for \E e satisfies it in c: tried before its
+   bounds, which may be infinite, are enumerated. */
+static int witnessed(Expr *e, Ctx c) {
+    for (int i = 0; i < nwitnesses; i++) {
+        if (witnesses[i].e != e) continue;
+        Value **v = witnesses[i].vals;
+        Env *env = c.env;
+        int in = 1;
+        for (int k = 0; k < e->nb && in; k++) {
+            Bound *b = &e->bounds[k];
+            Value *s = eval(b->set, c);
+            for (int j = 0; j < (b->tuple ? 1 : b->n) && in; j++, v++) {
+                in = set_member(*v, s) && (!b->tuple || (is_fcn(*v) && fcn_is_tuple(*v) && (*v)->n == b->n));
+                if (in && !b->tuple) env = mk_binding(b->defs[j], *v, env);
+                for (int m = 0; in && b->tuple && m < b->n; m++) env = mk_binding(b->defs[m], (*v)->u.fcn.vals[m], env);
+            }
+        }
+        if (in && expected_bool(eval(e->args[0], (Ctx){env, c.inst}), e)) return 1;
+    }
+    return 0;
+}
+
 static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
     QuantData q = {e->args[0], e->kind == X_FORALL, e};
     const char *op = e->kind == X_FORALL ? "\\A" : "\\E";
     for (int i = 0; i < e->nb; i++)
         if (!e->bounds[i].set)
             fail_at(e, "TLC attempted to evaluate an unbounded %s.\nMake sure that the expression is of form %s x \\in S: P(x).", op, op);
+    if (nwitnesses && e->kind == X_EXISTS && witnessed(e, c)) return BOOLV(1);
     for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
     return BOOLV(q.value);
 }
@@ -12201,6 +12230,11 @@ static int setup_model(void) {
             *(k[0] == 'I' ? &init : &next) = e;
         } else if (strcmp(k, "SPECIFICATION") == 0) spec = config_call(it->name, "name", 's');
         else if (strncmp(k, "INVARIANT", 9) == 0) {
+            Sym *t = symbolic_mode ? root_sym(it->name) : NULL;
+            if (t && t->def->kind == D_OP && t->def->nparams == 1) {   /* Apalache's trace invariant, of the behavior so far */
+                add_check(&invariants, &ninvariants, t->def, t->def->body, root_ctx, it->name);
+                continue;
+            }
             e = config_call(it->name, "invariant", 'r');
             if (expr_level(e) >= 2 + symbolic_mode) {   /* Apalache checks an action invariant on each step */
                 printf("Error: The invariant %s is not a state predicate (one with no primes or temporal operators).\n", S(it->name));
@@ -15294,13 +15328,27 @@ static int64_t bindings_count(Bound *bs, int nb, SCtx sc, SVal **sets) {
     return total;
 }
 
-/* Binds each name of bounds to a fresh element of its set: *g whether they are. */
-static SCtx sym_skolem(Bound *bs, int nb, SCtx sc, SVal **sets, int *g) {
+/* The elements chosen for each \E, for the evaluator to replay it with. */
+static struct { Expr *e; SVal **vals; } *sym_witnesses;
+static int nsym_witnesses;
+
+/* Binds each name of q's bounds to a fresh element of its set: *g whether
+   they are. */
+static SCtx sym_skolem(Expr *q, SCtx sc, SVal **sets, int *g) {
+    Bound *bs = q->bounds;
+    int nb = q->nb;
+    SVal **w = NULL;
     *g = L_TRUE;
+    if (q->kind == X_EXISTS) {
+        sym_witnesses = xrealloc(sym_witnesses, sizeof *sym_witnesses * (size_t)(nsym_witnesses + 1));
+        sym_witnesses[nsym_witnesses].e = q;
+        sym_witnesses[nsym_witnesses++].vals = w = NEWN(SVal *, bounds_total(bs, nb));
+    }
     for (int i = 0; i < nb; i++)
         for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) {
             int h;
             SVal *e = sv_pick(sets[i], &h);
+            if (w) *w++ = e;
             *g = g_and(*g, h);
             if (!bs[i].tuple) { sc = sym_bind(sc, bs[i].defs[j], e); continue; }
             for (int m = 0; m < bs[i].n; m++) sc = sym_bind(sc, bs[i].defs[m], sv_apply(e, sv_int_const(m + 1)));
@@ -15315,7 +15363,7 @@ static SVal *sym_quant(Expr *e, SCtx sc, int pol) {
     if ((n < 0 || n > 64) && pol == (exists ? P_POS : P_NEG)) {   /* \E as a witness, as Apalache skolemizes */
         int g;
         for (int i = 0; i < e->nb; i++) if (!e->bounds[i].set) fail_at(e, "Symbolic checking cannot handle an unbounded quantifier.");
-        SCtx inner = sym_skolem(e->bounds, e->nb, sc, sets, &g);
+        SCtx inner = sym_skolem(e, sc, sets, &g);
         int b = sym_bool(e->args[0], inner, pol);
         return sv_bool(exists ? g_and(g, b) : g_implies(g, b));
     }
@@ -15491,8 +15539,7 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     case K_UNION: return sym_union(sym(e->args[0], sc, P_BOTH));
     case K_DOMAIN: return sv_domain(sym(e->args[0], sc, P_BOTH));
     case K_PRIME: {
-        if (sym_init) fail_at(e, "Symbolic checking found a primed variable in the initial predicate.");
-        int saved = sym_primed;
+        int saved = sym_primed;   /* in the initial predicate, as Apalache, x' is x */
         sym_primed = 1;
         r = sym(e->args[0], sc, pol);
         sym_primed = saved;
@@ -15890,10 +15937,8 @@ static int act_level(Expr *e, SCtx sc) {
 /* The variable that `lhs = e` or `lhs \in S` assigns, -1 if none. */
 static int assign_target(Expr *lhs, SCtx sc) {
     lhs = sym_arg(lhs, &sc);
-    if (!sym_init) {
-        if (lhs->kind != K_PRIME) return -1;
-        lhs = sym_arg(lhs->args[0], &sc);
-    }
+    if (lhs->kind == K_PRIME) lhs = sym_arg(lhs->args[0], &sc);   /* in the initial predicate, x' is x */
+    else if (!sym_init) return -1;
     if (lhs->kind != K_DECL) return -1;
     if (sym_cinit) return lhs->def->kind == D_CONST ? sym_const_index(lhs->def) : -1;
     if (lhs->def->kind != D_VAR || lhs->def->var_index < 0) return -1;
@@ -15945,7 +15990,7 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
         int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
         if (n < 0 || n > 64) {
             int g;
-            SCtx inner = sym_skolem(e->bounds, e->nb, sc, sets, &g);
+            SCtx inner = sym_skolem(e, sc, sets, &g);
             act(e->args[0], inner, branch_and(in, g), out);
             return;
         }
@@ -16069,6 +16114,22 @@ static void sym_print(Value ***s, int *act_of, int n) {
     for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], s[i], i ? s[i - 1] : NULL, s[i + (i + 1 < n)]);
 }
 
+/* The parameter of a trace invariant, which Apalache checks of the
+   behavior so far; NULL for another invariant. */
+static Def *trace_param(Check *c) { return c->def && c->def->nparams == 1 && c->expr == c->def->body ? c->def->params[0] : NULL; }
+
+/* The behavior up to depth as a trace invariant takes it: a sequence of
+   records, a field for each variable. */
+static SVal *sym_history(SVal ***st, int depth) {
+    SVal *h = sv_fcn(depth + 1, 0);
+    for (int i = 0; i <= depth; i++) {
+        SVal *r = sv_fcn(nvars, 1);
+        for (int v = 0; v < nvars; v++) fcn_add(r, sv_const(mk_str(vars[v]->name)), st[i][v], L_TRUE);
+        fcn_add(h, sv_int_const(i + 1), r, L_TRUE);
+    }
+    return h;
+}
+
 /* Each state of the behavior the model gives, checked by the evaluator:
    it satisfies Init, each step its action and, for a violation, the last
    state does not satisfy the invariant. A behavior that does not replay
@@ -16083,14 +16144,24 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
         act_of[i] = -1;
         if (i) for (int k = 0; k < nenabled[i - 1]; k++) if (lit_true(picks[i - 1][k])) act_of[i] = enabled[i - 1][k];
     }
+    witnesses = NEWN(Witness, nsym_witnesses);
+    for (int i = 0; i < nsym_witnesses; i++) {   /* but those of an empty set, undefined */
+        Expr *e = sym_witnesses[i].e;
+        int n = bounds_total(e->bounds, e->nb), k = 0;
+        while (k < n && sym_witnesses[i].vals[k]->kind != SV_UNDEF) k++;
+        if (k < n) continue;
+        Witness *w = &witnesses[nwitnesses++];
+        w->e = e;
+        w->vals = NEWN(Value *, n);
+        while (k--) w->vals[k] = sv_model(sym_witnesses[i].vals[k]);
+    }
     EvalState es = eval_save();
     sigjmp_buf here;
     handler = &here;
     const char *wrong = NULL;
     if (sigsetjmp(here, 0)) { eval_restore(es); wrong = error_message.s ? error_message.s : "an error"; }
     else {
-        cur_state = s[0];
-        next_state = NULL;
+        cur_state = next_state = s[0];   /* x' is x in the initial predicate */
         if (!eval_bool(init_expr, root_ctx)) wrong = "the initial state does not satisfy the initial predicate";
         for (int i = 1; i < n && !wrong; i++) {
             cur_state = s[i - 1];
@@ -16099,13 +16170,18 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
             if (!eval_bool(a->e, a->c)) wrong = "a step is not one of its action";
         }
         if (!wrong && bad >= 0) {
-            int action = expr_level(invariants[bad].expr) == 2;
+            Check *c = &invariants[bad];
+            Def *p = trace_param(c);
+            int action = expr_level(c->expr) == 2;
+            Ctx at = c->ctx;
+            if (p) at.env = mk_binding(p, sv_model(sym_history(st, n - 1)), at.env);
             cur_state = s[n - 1 - action];
             next_state = action ? s[n - 1] : NULL;
-            if (eval_bool(invariants[bad].expr, invariants[bad].ctx)) wrong = "the last state satisfies the invariant";
+            if (eval_bool(c->expr, at)) wrong = "the last state satisfies the invariant";
         }
         eval_restore(es);
     }
+    nwitnesses = 0;
     if (wrong) {
         printf("Error: The behavior symbolic checking found does not replay: %s.\nThis is a bug in manyan.\n", wrong);
         sym_print(s, act_of, n);
@@ -16136,13 +16212,18 @@ static Branch *sym_constants(void) {
 }
 
 /* The literal that invariant i is violated at depth: of the state there,
-   or, for an action invariant, of the step to it. */
+   of the step to it for an action invariant, or of the behavior to it for
+   a trace invariant. */
 static int sym_violated(int i, SVal ***st, int depth) {
-    int action = expr_level(invariants[i].expr) == 2;
+    Check *c = &invariants[i];
+    Def *p = trace_param(c);
+    int action = expr_level(c->expr) == 2;
     if (action && !depth) return L_FALSE;
     sym_cur = st[depth - action];
     sym_next = action ? st[depth] : NULL;
-    return sym_bool(invariants[i].expr, (SCtx){invariants[i].ctx, NULL}, P_NEG) ^ 1;
+    SCtx sc = {c->ctx, NULL};
+    if (p) sc = sym_bind(sc, p, sym_history(st, depth));
+    return sym_bool(c->expr, sc, P_NEG) ^ 1;
 }
 
 static int symbolic(void) {

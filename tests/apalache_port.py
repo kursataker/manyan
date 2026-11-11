@@ -33,11 +33,8 @@ SKIP = {
     "TestFunctions": "Apalache runs out of 4 GB of heap",
     "Bug2973": "Gen needs Apalache's types", "Bug2973_2": "Gen needs Apalache's types",
     "Bug3158": "Gen needs Apalache's types",
-    "InfDomFun": "a function over an infinite domain", "FunInInfiniteSubset": "a function over an infinite domain",
-    "Invariants_5": "a trace invariant", "Invariants_6": "a trace invariant",
+    "InfDomFun": "Apalache reports f[0] = 42 violated, where f[0] is 42", "FunInInfiniteSubset": "a function over an infinite domain",
     "SafeMath": "integers of more than 64 bits", "SafeMath_2": "integers of more than 64 bits",
-    "Slicer5": "primes in the initial predicate", "UnchangedExpr471": "primes in the initial predicate",
-    "HandshakeWithTypes_2": "the evaluator replays \\E over Int", "HandshakeWithTypes_5": "the evaluator replays \\E over Int",
     "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",
 }
 

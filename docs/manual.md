@@ -140,19 +140,21 @@ is reported as a bug.
 
 It reads the configuration as Apalache does: `INIT`, `NEXT`,
 `INVARIANT` (an invariant with primes is an action invariant, checked on
-each step) and `CONSTANT`. `-cinit C` lets the operator `C` choose the
+each step; an operator of one parameter is a trace invariant, checked of
+each behavior so far, given as a sequence of records of the variables)
+and `CONSTANT`. In `Init`, `x'` is `x`. `-cinit C` lets the operator `C` choose the
 constants the configuration leaves, as `Init` chooses the variables, and
 the assumptions then constrain that choice. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
-0.63.0: `make test-symbolic` runs 145 of Apalache's integration tests and
+0.63.0: `make test-symbolic` runs 151 of Apalache's integration tests and
 34 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 Not supported yet: temporal properties and constraints; functions over
-an infinite domain; `Gen`, which needs Apalache's types; trace
-invariants; integers beyond 64 bits; primes in `Init`.
+an infinite domain; `Gen`, which needs Apalache's types; integers beyond
+64 bits.
 
 ## Exit statuses
 
