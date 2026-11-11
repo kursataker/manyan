@@ -13539,6 +13539,2354 @@ static Expr *odd_literal(Module *m) {
     return m->odd[1] ? m->odd[1] : m->odd[2];
 }
 
+/* ---------------------------------------------------------------- solver */
+
+/* -symbolic checks behaviors of up to -length steps without enumerating
+   states, as Apalache does: it unrolls Init and Next into a formula, one
+   step after another, and asks a solver whether a behavior that far
+   violates an invariant or cannot go on. The solver is a CDCL SAT solver:
+   two watched literals, VSIDS, first-UIP learning, Luby restarts, and
+   assumptions, so each question about the unrolled formula keeps what the
+   last one learned. A literal is 2v + negated; variable 0 is true. */
+typedef struct { int n, learnt; float act; int lits[]; } Clause;
+typedef struct { Clause **c; int n, cap; } Clauses;
+
+#define L_TRUE 0
+#define L_FALSE 1
+
+static struct {
+    int nvars, cap;
+    signed char *val;        /* per literal: 1 true, 0 false, -1 unassigned */
+    int *level;
+    Clause **reason;
+    double *act, var_inc, cla_inc, max_learnts;
+    unsigned char *phase, *seen, *model;
+    int *trail, ntrail, qhead, *lim, nlim;
+    Clauses *watch;          /* per literal: the clauses watching it, visited when it becomes false */
+    Clauses clauses, learnts;
+    int *heap, nheap, *at;   /* unassigned variables by activity; at: a variable's index, -1 if out */
+    int *buf, *buf2, capbuf;
+    int ok;
+} sat;
+
+static void clauses_push(Clauses *v, Clause *c) {
+    if (v->n == v->cap) v->c = xrealloc(v->c, sizeof(Clause *) * (size_t)(v->cap = v->cap ? 2 * v->cap : 4));
+    v->c[v->n++] = c;
+}
+
+static int heap_before(int a, int b) { return sat.act[a] > sat.act[b]; }
+static void heap_put(int i, int v) { sat.heap[i] = v; sat.at[v] = i; }
+
+static void heap_up(int i) {
+    int v = sat.heap[i];
+    for (; i > 0 && heap_before(v, sat.heap[(i - 1) / 2]); i = (i - 1) / 2) heap_put(i, sat.heap[(i - 1) / 2]);
+    heap_put(i, v);
+}
+
+static void heap_down(int i) {
+    int v = sat.heap[i];
+    for (int c; (c = 2 * i + 1) < sat.nheap; i = c) {
+        if (c + 1 < sat.nheap && heap_before(sat.heap[c + 1], sat.heap[c])) c++;
+        if (!heap_before(sat.heap[c], v)) break;
+        heap_put(i, sat.heap[c]);
+    }
+    heap_put(i, v);
+}
+
+static void heap_add(int v) {
+    if (sat.at[v] >= 0) return;
+    heap_put(sat.nheap++, v);
+    heap_up(sat.nheap - 1);
+}
+
+static int heap_pop(void) {
+    int v = sat.heap[0];
+    sat.at[v] = -1;
+    if (--sat.nheap) { heap_put(0, sat.heap[sat.nheap]); heap_down(0); }
+    return v;
+}
+
+static int sat_var(void) {
+    int v = sat.nvars++;
+    if (v == sat.cap) {
+        size_t cap = (size_t)(sat.cap = sat.cap ? 2 * sat.cap : 1 << 12);
+        sat.val = xrealloc(sat.val, 2 * cap);
+        sat.level = xrealloc(sat.level, sizeof(int) * cap);
+        sat.reason = xrealloc(sat.reason, sizeof(Clause *) * cap);
+        sat.act = xrealloc(sat.act, sizeof(double) * cap);
+        sat.phase = xrealloc(sat.phase, cap);
+        sat.seen = xrealloc(sat.seen, cap);
+        sat.model = xrealloc(sat.model, cap);
+        sat.trail = xrealloc(sat.trail, sizeof(int) * cap);
+        sat.lim = xrealloc(sat.lim, sizeof(int) * 2 * cap);   /* a level per variable and per assumption */
+        sat.heap = xrealloc(sat.heap, sizeof(int) * cap);
+        sat.at = xrealloc(sat.at, sizeof(int) * cap);
+        sat.watch = xrealloc(sat.watch, sizeof(Clauses) * 2 * cap);
+        memset(sat.watch + 2 * v, 0, sizeof(Clauses) * (2 * cap - 2 * (size_t)v));
+    }
+    sat.val[2 * v] = sat.val[2 * v + 1] = -1;
+    sat.level[v] = 0;
+    sat.reason[v] = NULL;
+    sat.act[v] = 0;
+    sat.phase[v] = 1;
+    sat.seen[v] = sat.model[v] = 0;
+    sat.at[v] = -1;
+    heap_add(v);
+    return v;
+}
+
+static void sat_assign(int l, Clause *why) {
+    sat.val[l] = 1;
+    sat.val[l ^ 1] = 0;
+    sat.level[l >> 1] = sat.nlim;
+    sat.reason[l >> 1] = why;
+    sat.trail[sat.ntrail++] = l;
+}
+
+static void sat_init(void) {
+    sat.ok = 1;
+    sat.var_inc = sat.cla_inc = 1;
+    sat_assign(2 * sat_var(), NULL);
+}
+
+static void sat_watch(Clause *c) {
+    clauses_push(&sat.watch[c->lits[0]], c);
+    clauses_push(&sat.watch[c->lits[1]], c);
+}
+
+/* The implied literal of a reason is its first. */
+static Clause *sat_propagate(void) {
+    while (sat.qhead < sat.ntrail) {
+        int f = sat.trail[sat.qhead++] ^ 1;
+        Clauses *ws = &sat.watch[f];
+        int i = 0, j = 0;
+        while (i < ws->n) {
+            Clause *c = ws->c[i++];
+            int *l = c->lits;
+            if (l[0] == f) { l[0] = l[1]; l[1] = f; }
+            if (sat.val[l[0]] == 1) { ws->c[j++] = c; continue; }
+            int k = 2;
+            while (k < c->n && sat.val[l[k]] == 0) k++;
+            if (k < c->n) { l[1] = l[k]; l[k] = f; clauses_push(&sat.watch[l[1]], c); continue; }
+            ws->c[j++] = c;
+            if (sat.val[l[0]] == 0) {
+                while (i < ws->n) ws->c[j++] = ws->c[i++];
+                ws->n = j;
+                sat.qhead = sat.ntrail;
+                return c;
+            }
+            sat_assign(l[0], c);
+        }
+        ws->n = j;
+    }
+    return NULL;
+}
+
+static void sat_cancel(int level) {
+    if (sat.nlim <= level) return;
+    for (int i = sat.ntrail - 1; i >= sat.lim[level]; i--) {
+        int l = sat.trail[i];
+        sat.val[l] = sat.val[l ^ 1] = -1;
+        sat.reason[l >> 1] = NULL;
+        sat.phase[l >> 1] = (unsigned char)(l & 1);
+        heap_add(l >> 1);
+    }
+    sat.ntrail = sat.qhead = sat.lim[level];
+    sat.nlim = level;
+}
+
+static void sat_bump(int v) {
+    if ((sat.act[v] += sat.var_inc) > 1e100) {
+        for (int i = 0; i < sat.nvars; i++) sat.act[i] *= 1e-100;
+        sat.var_inc *= 1e-100;
+    }
+    if (sat.at[v] >= 0) heap_up(sat.at[v]);
+}
+
+static void sat_bump_clause(Clause *c) {
+    if ((c->act += (float)sat.cla_inc) > 1e20f) {
+        for (int i = 0; i < sat.learnts.n; i++) sat.learnts.c[i]->act *= 1e-20f;
+        sat.cla_inc *= 1e-20;
+    }
+}
+
+static void sat_room(int n) {
+    if (sat.capbuf >= n) return;
+    sat.capbuf = 2 * n;
+    sat.buf = xrealloc(sat.buf, sizeof(int) * (size_t)sat.capbuf);
+    sat.buf2 = xrealloc(sat.buf2, sizeof(int) * (size_t)sat.capbuf);
+}
+
+/* The first-UIP clause of a conflict in sat.buf, its asserting literal
+   first and one of the next level second: returns the level to go back to. */
+static int sat_analyze(Clause *c, int *nout) {
+    sat_room(sat.nvars + 1);
+    int *out = sat.buf, path = 0, p = -1, idx = sat.ntrail - 1, n = 1;
+    do {
+        if (c->learnt) sat_bump_clause(c);
+        for (int k = p < 0 ? 0 : 1; k < c->n; k++) {
+            int q = c->lits[k], v = q >> 1;
+            if (sat.seen[v] || !sat.level[v]) continue;
+            sat_bump(v);
+            sat.seen[v] = 1;
+            if (sat.level[v] >= sat.nlim) path++;
+            else out[n++] = q;
+        }
+        while (!sat.seen[sat.trail[idx] >> 1]) idx--;
+        p = sat.trail[idx--];
+        c = sat.reason[p >> 1];
+        sat.seen[p >> 1] = 0;
+        path--;
+    } while (path > 0);
+    out[0] = p ^ 1;
+    /* Leave out the literals the others imply. */
+    memcpy(sat.buf2, out, sizeof(int) * (size_t)n);
+    int m = 1;
+    for (int i = 1; i < n; i++) {
+        Clause *r = sat.reason[out[i] >> 1];
+        int keep = !r;
+        for (int k = 1; r && k < r->n && !keep; k++) { int u = r->lits[k] >> 1; keep = !sat.seen[u] && sat.level[u] > 0; }
+        if (keep) out[m++] = out[i];
+    }
+    for (int i = 1; i < n; i++) sat.seen[sat.buf2[i] >> 1] = 0;
+    int back = 0;
+    if (m > 1) {
+        int best = 1;
+        for (int i = 2; i < m; i++) if (sat.level[out[i] >> 1] > sat.level[out[best] >> 1]) best = i;
+        int t = out[1]; out[1] = out[best]; out[best] = t;
+        back = sat.level[out[1] >> 1];
+    }
+    *nout = m;
+    return back;
+}
+
+static Clause *sat_clause(const int *lits, int n, int learnt) {
+    Clause *c = xmalloc(sizeof(Clause) + sizeof(int) * (size_t)n);
+    c->n = n;
+    c->learnt = learnt;
+    c->act = 0;
+    memcpy(c->lits, lits, sizeof(int) * (size_t)n);
+    return c;
+}
+
+static int clause_act_cmp(const void *x, const void *y) {
+    float a = (*(Clause *const *)x)->act, b = (*(Clause *const *)y)->act;
+    return (a > b) - (a < b);
+}
+
+/* Forgets the less active half of the learned clauses not in use. */
+static void sat_reduce(void) {
+    Clauses *l = &sat.learnts;
+    qsort(l->c, (size_t)l->n, sizeof(Clause *), clause_act_cmp);
+    Clause **dead = xmalloc(sizeof(Clause *) * (size_t)(l->n + 1));
+    int j = 0, nd = 0;
+    for (int i = 0; i < l->n; i++) {
+        Clause *c = l->c[i];
+        int locked = sat.reason[c->lits[0] >> 1] == c && sat.val[c->lits[0]] == 1;
+        if (i < l->n / 2 && c->n > 2 && !locked) dead[nd++] = c;
+        else l->c[j++] = c;
+    }
+    l->n = j;
+    for (int i = 0; i < 2 * sat.nvars; i++) sat.watch[i].n = 0;
+    for (int i = 0; i < sat.clauses.n; i++) sat_watch(sat.clauses.c[i]);
+    for (int i = 0; i < l->n; i++) sat_watch(l->c[i]);
+    for (int i = 0; i < nd; i++) free(dead[i]);
+    free(dead);
+}
+
+static int sat_luby(int x) {
+    int size = 1, seq = 0;
+    while (size < x + 1) { seq++; size = 2 * size + 1; }
+    while (size - 1 != x) { size = (size - 1) >> 1; seq--; x %= size; }
+    return 1 << seq;
+}
+
+/* 1 satisfiable, 0 not under the assumptions, -1 out of conflicts. */
+static int sat_search(long budget, const int *assume, int nassume) {
+    for (long conflicts = 0;;) {
+        Clause *c = sat_propagate();
+        if (c) {
+            conflicts++;
+            if (!sat.nlim) return sat.ok = 0;
+            int n, back = sat_analyze(c, &n);
+            sat_cancel(back);
+            if (n == 1) sat_assign(sat.buf[0], NULL);
+            else {
+                Clause *l = sat_clause(sat.buf, n, 1);
+                clauses_push(&sat.learnts, l);
+                sat_watch(l);
+                sat_bump_clause(l);
+                sat_assign(l->lits[0], l);
+            }
+            sat.var_inc /= 0.95;
+            sat.cla_inc /= 0.999;
+            continue;
+        }
+        if (conflicts >= budget) { sat_cancel(0); return -1; }
+        if (sat.learnts.n - sat.ntrail >= sat.max_learnts) sat_reduce();
+        int next = -1;
+        while (sat.nlim < nassume && next < 0) {
+            int p = assume[sat.nlim];
+            if (sat.val[p] == 0) return 0;
+            if (sat.val[p] == 1) sat.lim[sat.nlim++] = sat.ntrail;
+            else next = p;
+        }
+        if (next < 0) {
+            int v;
+            do {
+                if (!sat.nheap) {
+                    for (int i = 0; i < sat.nvars; i++) sat.model[i] = sat.val[2 * i] == 1;
+                    return 1;
+                }
+                v = heap_pop();
+            } while (sat.val[2 * v] >= 0);
+            next = 2 * v + sat.phase[v];
+        }
+        sat.lim[sat.nlim++] = sat.ntrail;
+        sat_assign(next, NULL);
+    }
+}
+
+/* Whether the clauses and the assumptions hold together; if they do, sat.model is a witness. */
+static int sat_solve(const int *assume, int nassume) {
+    if (!sat.ok) return 0;
+    sat.max_learnts = sat.clauses.n / 3.0 + 10000;
+    int r = 0, status;
+    while ((status = sat_search(100L * sat_luby(r++), assume, nassume)) < 0) sat.max_learnts *= 1.1;
+    sat_cancel(0);
+    return status;
+}
+
+/* Adds a clause, between solves. */
+static void sat_add(const int *lits, int n) {
+    if (!sat.ok) return;
+    sat_room(n + 1);
+    int m = 0, satisfied = 0;
+    for (int i = 0; i < n && !satisfied; i++) {
+        int l = lits[i], v = l >> 1;
+        if (sat.val[l] == 1) satisfied = 1;
+        else if (sat.val[l] == 0) continue;
+        else if (sat.seen[v]) satisfied = sat.seen[v] != 1 + (l & 1);
+        else { sat.seen[v] = (unsigned char)(1 + (l & 1)); sat.buf[m++] = l; }
+    }
+    for (int i = 0; i < m; i++) sat.seen[sat.buf[i] >> 1] = 0;
+    if (satisfied) return;
+    if (!m) sat.ok = 0;
+    else if (m == 1) { sat_assign(sat.buf[0], NULL); if (sat_propagate()) sat.ok = 0; }
+    else { Clause *c = sat_clause(sat.buf, m, 0); clauses_push(&sat.clauses, c); sat_watch(c); }
+}
+
+static void sat_unit(int a) { sat_add(&a, 1); }
+static void sat_add2(int a, int b) { int l[2] = {a, b}; sat_add(l, 2); }
+static void sat_add3(int a, int b, int c) { int l[3] = {a, b, c}; sat_add(l, 3); }
+
+static int lit_true(int l) { return l == L_TRUE || (l != L_FALSE && sat.model[l >> 1] ^ (l & 1)); }
+
+/* ---------------------------------------------------------------- gates */
+
+/* The connectives make literals for their results, each defined by its
+   clauses once: equal gates are one (structural hashing), and constants
+   fold away, so that what a constant decides costs nothing. */
+typedef struct { int op, a, b, c, out; } Gate;
+static Gate *gates;
+static int ngates, capgates;
+
+static uint64_t gate_hash(int op, int a, int b, int c) {
+    return fmix(((uint64_t)(unsigned)op << 60) ^ ((uint64_t)(unsigned)a << 40) ^ ((uint64_t)(unsigned)b << 20) ^ (uint64_t)(unsigned)c);
+}
+
+static int gate_slot(Gate *t, int cap, int op, int a, int b, int c) {
+    int i = (int)(gate_hash(op, a, b, c) & (uint64_t)(cap - 1));
+    while (t[i].op && !(t[i].op == op && t[i].a == a && t[i].b == b && t[i].c == c)) i = (i + 1) & (cap - 1);
+    return i;
+}
+
+/* The output of gate (op a b c); *fresh if it is new and needs its clauses. */
+static int gate(int op, int a, int b, int c, int *fresh) {
+    if (2 * (ngates + 1) > capgates) {
+        int cap = capgates ? 2 * capgates : 1 << 16;
+        Gate *t = calloc((size_t)cap, sizeof(Gate));
+        if (!t) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+        for (int i = 0; i < capgates; i++)
+            if (gates[i].op) t[gate_slot(t, cap, gates[i].op, gates[i].a, gates[i].b, gates[i].c)] = gates[i];
+        free(gates);
+        gates = t;
+        capgates = cap;
+    }
+    int i = gate_slot(gates, capgates, op, a, b, c);
+    *fresh = !gates[i].op;
+    if (*fresh) { gates[i] = (Gate){op, a, b, c, 2 * sat_var()}; ngates++; }
+    return gates[i].out;
+}
+
+static int g_and(int a, int b) {
+    if (a > b) { int t = a; a = b; b = t; }
+    if (a == L_FALSE || a == (b ^ 1)) return L_FALSE;
+    if (a == L_TRUE || a == b) return b;
+    int fresh, r = gate(1, a, b, 0, &fresh);
+    if (fresh) { sat_add2(r ^ 1, a); sat_add2(r ^ 1, b); sat_add3(r, a ^ 1, b ^ 1); }
+    return r;
+}
+
+static int g_or(int a, int b) { return g_and(a ^ 1, b ^ 1) ^ 1; }
+static int g_implies(int a, int b) { return g_or(a ^ 1, b); }
+
+static int g_xor(int a, int b) {
+    int neg = (a ^ b) & 1;
+    a &= ~1;
+    b &= ~1;
+    if (a > b) { int t = a; a = b; b = t; }
+    if (a == b) return L_FALSE ^ neg;
+    if (a == L_TRUE) return b ^ 1 ^ neg;
+    int fresh, r = gate(2, a, b, 0, &fresh);
+    if (fresh) { sat_add3(r ^ 1, a, b); sat_add3(r ^ 1, a ^ 1, b ^ 1); sat_add3(r, a ^ 1, b); sat_add3(r, a, b ^ 1); }
+    return r ^ neg;
+}
+
+static int g_iff(int a, int b) { return g_xor(a, b) ^ 1; }
+
+static int g_ite(int c, int t, int e) {
+    if (c == L_TRUE || t == e) return t;
+    if (c == L_FALSE) return e;
+    if (c & 1) { int x = t; t = e; e = x; c ^= 1; }
+    if (t == L_TRUE || t == c) return g_or(c, e);
+    if (t == L_FALSE || t == (c ^ 1)) return g_and(c ^ 1, e);
+    if (e == L_TRUE || e == (c ^ 1)) return g_or(c ^ 1, t);
+    if (e == L_FALSE || e == c) return g_and(c, t);
+    if (t == (e ^ 1)) return g_xor(c, e);
+    int fresh, r = gate(3, c, t, e, &fresh);
+    if (fresh) {
+        sat_add3(c ^ 1, t ^ 1, r); sat_add3(c ^ 1, t, r ^ 1); sat_add3(c, e ^ 1, r); sat_add3(c, e, r ^ 1);
+        sat_add3(t ^ 1, e ^ 1, r); sat_add3(t, e, r ^ 1);
+    }
+    return r;
+}
+
+/* n literals of which exactly one is true, as chosen by fresh ones. */
+static int *one_hot(int n) {
+    int *pick = NEWN(int, n > 0 ? n : 1), seen = L_FALSE;
+    for (int i = 0; i + 1 < n; i++) {
+        int s = 2 * sat_var();
+        pick[i] = g_and(s, seen ^ 1);
+        seen = g_or(seen, s);
+    }
+    if (n) pick[n - 1] = seen ^ 1;
+    return pick;
+}
+
+/* ---------------------------------------------------------------- words */
+
+/* An integer is a 64-bit two's complement word of literals, least
+   significant first. Arithmetic asserts that it does not overflow: the
+   behaviors whose integers leave 64 bits are not explored. */
+#define BW 64
+
+static int *bv_const(int64_t k) {
+    int *b = NEWN(int, BW);
+    for (int i = 0; i < BW; i++) b[i] = ((uint64_t)k >> i) & 1 ? L_TRUE : L_FALSE;
+    return b;
+}
+
+static int bv_value(const int *b, int64_t *k) {
+    uint64_t u = 0;
+    for (int i = 0; i < BW; i++) {
+        if (b[i] > L_FALSE) return 0;
+        if (b[i] == L_TRUE) u |= (uint64_t)1 << i;
+    }
+    *k = (int64_t)u;
+    return 1;
+}
+
+static int *bv_fresh(void) {
+    int *b = NEWN(int, BW);
+    for (int i = 0; i < BW; i++) b[i] = 2 * sat_var();
+    return b;
+}
+
+static int *bv_ite(int c, const int *a, const int *b) {
+    if (c == L_TRUE) return (int *)a;
+    if (c == L_FALSE) return (int *)b;
+    int *r = NEWN(int, BW);
+    for (int i = 0; i < BW; i++) r[i] = g_ite(c, a[i], b[i]);
+    return r;
+}
+
+static int bv_eq(const int *a, const int *b) {
+    int r = L_TRUE;
+    for (int i = 0; i < BW && r != L_FALSE; i++) r = g_and(r, g_iff(a[i], b[i]));
+    return r;
+}
+
+/* a < b, signed: the highest bit that differs decides, the sign bit the other way. */
+static int bv_lt(const int *a, const int *b) {
+    int lt = L_FALSE;
+    for (int i = 0; i < BW - 1; i++) lt = g_ite(g_xor(a[i], b[i]), b[i], lt);
+    return g_ite(g_xor(a[BW - 1], b[BW - 1]), a[BW - 1], lt);
+}
+
+static int bv_le(const int *a, const int *b) { return bv_lt(b, a) ^ 1; }
+
+static void no_overflow(int ovf) { if (ovf != L_FALSE) sat_unit(ovf ^ 1); }
+
+static int *bv_add_carry(const int *a, const int *b, int carry, int *ovf) {
+    int *s = NEWN(int, BW);
+    for (int i = 0; i < BW; i++) {
+        int x = g_xor(a[i], b[i]), out = g_or(g_and(a[i], b[i]), g_and(carry, x));
+        s[i] = g_xor(x, carry);
+        if (i == BW - 1) *ovf = g_xor(carry, out);
+        carry = out;
+    }
+    return s;
+}
+
+static int *bv_not(const int *a) {
+    int *r = NEWN(int, BW);
+    for (int i = 0; i < BW; i++) r[i] = a[i] ^ 1;
+    return r;
+}
+
+static int *bv_add(const int *a, const int *b) { int o, *s = bv_add_carry(a, b, L_FALSE, &o); no_overflow(o); return s; }
+static int *bv_sub(const int *a, const int *b) { int o, *s = bv_add_carry(a, bv_not(b), L_TRUE, &o); no_overflow(o); return s; }
+static int *bv_neg(const int *a) { return bv_sub(bv_const(0), a); }
+
+/* The product, in twice the width: it overflows unless the high half
+   repeats the sign. Shift and add, over the bits of b that may be set. */
+static int *bv_mul(const int *a, const int *b) {
+    int64_t k;
+    if (bv_value(a, &k)) { const int *t = a; a = b; b = t; }
+    if (bv_value(b, &k) && k < 0 && k != INT64_MIN) return bv_neg(bv_mul(a, bv_const(-k)));
+    int w = 2 * BW, *acc = NEWN(int, w);
+    for (int i = 0; i < w; i++) acc[i] = L_FALSE;
+    for (int i = 0; i < w; i++) {
+        int bi = b[i < BW ? i : BW - 1];
+        if (bi == L_FALSE) continue;
+        int carry = L_FALSE;
+        for (int j = i; j < w; j++) {
+            int p = g_and(a[j - i < BW ? j - i : BW - 1], bi), x = g_xor(acc[j], p);
+            int out = g_or(g_and(acc[j], p), g_and(carry, x));
+            acc[j] = g_xor(x, carry);
+            carry = out;
+        }
+    }
+    for (int i = BW; i < w; i++) no_overflow(g_xor(acc[i], acc[BW - 1]));
+    return acc;
+}
+
+/* a \div b and a % b for b > 0: a = q * b + r and 0 <= r < b. For other
+   b, as Apalache's solver leaves them, any. */
+static void bv_divmod(const int *a, const int *b, int **q, int **r) {
+    int64_t k;
+    if (bv_value(b, &k) && k > 0 && !(k & (k - 1))) {   /* a shift: floor, as an arithmetic one */
+        int s = 0;
+        while ((int64_t)1 << s < k) s++;
+        *q = NEWN(int, BW);
+        *r = NEWN(int, BW);
+        for (int i = 0; i < BW; i++) { (*q)[i] = i + s < BW ? a[i + s] : a[BW - 1]; (*r)[i] = i < s ? a[i] : L_FALSE; }
+        return;
+    }
+    *q = bv_fresh();
+    *r = bv_fresh();
+    int *zero = bv_const(0), o1, o2;
+    int w = 2 * BW, *m = NEWN(int, w);
+    /* q * b without asserting it fits: only for b > 0 must it */
+    for (int i = 0; i < w; i++) m[i] = L_FALSE;
+    for (int i = 0; i < w; i++) {
+        int bi = b[i < BW ? i : BW - 1], carry = L_FALSE;
+        if (bi == L_FALSE) continue;
+        for (int j = i; j < w; j++) {
+            int p = g_and((*q)[j - i < BW ? j - i : BW - 1], bi), x = g_xor(m[j], p);
+            int out = g_or(g_and(m[j], p), g_and(carry, x));
+            m[j] = g_xor(x, carry);
+            carry = out;
+        }
+    }
+    o1 = L_FALSE;
+    for (int i = BW; i < w; i++) o1 = g_or(o1, g_xor(m[i], m[BW - 1]));
+    int *sum = bv_add_carry(m, *r, L_FALSE, &o2);
+    int ok = g_and(g_and(bv_eq(sum, a), g_and(o1 ^ 1, o2 ^ 1)), g_and(bv_lt(*r, b), bv_lt(*r, zero) ^ 1));
+    sat_add2(bv_lt(zero, b) ^ 1, ok);
+}
+
+/* ---------------------------------------------------------------- symbolic values */
+
+/* A symbolic value is a concrete value, or a structure of literals: a
+   boolean, an integer or atom (a string or model value, as a code), a
+   finite set of guarded elements (an element is in the set when its guard
+   is true), a function of guarded pairs (its domain the keys whose guard
+   is true), or a set kept by its definition, such as Nat or [S -> T].
+   The value of an expression that went wrong is undefined: it carries the
+   error, and which one it is matters only if it is the value of a state. */
+enum { SV_CONST, SV_BOOL, SV_INT, SV_ATOM, SV_SET, SV_FCN, SV_INF, SV_UNDEF };
+enum { INF_INT, INF_NAT, INF_STRING, INF_SUBSET, INF_FCNSET, INF_RCDSET, INF_TIMES, INF_SEQ, INF_RANGE };
+enum { C_BOOL, C_INT, C_ATOM, C_SET, C_FCN, C_NONE };
+
+typedef struct SVal SVal;
+struct SVal {
+    unsigned char kind, inf, rec, known;   /* rec: a record; known: whether value was looked for */
+    int n;
+    Value *value;    /* SV_CONST's, and another's once known to be concrete */
+    union {
+        int lit;
+        int *bits;
+        struct { SVal **elems; int *guards; } set;
+        struct { SVal **keys, **vals; int *guards; } fcn;
+        struct { SVal **parts; int *names; } inf;   /* RCDSET: field names */
+        char *err;
+    } u;
+};
+
+static SVal *sv_new(int kind) { SVal *s = NEW(SVal); s->kind = (unsigned char)kind; return s; }
+static SVal *sv_const(Value *v) { SVal *s = sv_new(SV_CONST); s->value = v; return s; }
+static SVal *sv_bool(int lit) { SVal *s = sv_new(SV_BOOL); s->u.lit = lit; return s; }
+static SVal *sv_bits(int kind, int *bits) { SVal *s = sv_new(kind); s->u.bits = bits; return s; }
+
+static SVal *sv_set(int n) {
+    SVal *s = sv_new(SV_SET);
+    s->u.set.elems = NEWN(SVal *, n > 0 ? n : 1);
+    s->u.set.guards = NEWN(int, n > 0 ? n : 1);
+    return s;
+}
+
+static void set_add(SVal *s, SVal *e, int g) {
+    if (g == L_FALSE) return;
+    s->u.set.elems[s->n] = e;
+    s->u.set.guards[s->n++] = g;
+}
+
+static SVal *sv_fcn(int n, int rec) {
+    SVal *s = sv_new(SV_FCN);
+    s->rec = (unsigned char)rec;
+    s->u.fcn.keys = NEWN(SVal *, n > 0 ? n : 1);
+    s->u.fcn.vals = NEWN(SVal *, n > 0 ? n : 1);
+    s->u.fcn.guards = NEWN(int, n > 0 ? n : 1);
+    return s;
+}
+
+static void fcn_add(SVal *f, SVal *k, SVal *v, int g) {
+    if (g == L_FALSE) return;
+    f->u.fcn.keys[f->n] = k;
+    f->u.fcn.vals[f->n] = v;
+    f->u.fcn.guards[f->n++] = g;
+}
+
+static SVal *sv_inf(int inf, int n) {
+    SVal *s = sv_new(SV_INF);
+    s->inf = (unsigned char)inf;
+    s->n = n;
+    s->u.inf.parts = NEWN(SVal *, n > 0 ? n : 1);
+    s->u.inf.names = NEWN(int, n > 0 ? n : 1);
+    return s;
+}
+
+static SVal *sv_undef(void) {
+    SVal *s = sv_new(SV_UNDEF);
+    s->u.err = strdup(error_message.s ? error_message.s : "an undefined value");
+    return s;
+}
+
+static SVal *sv_int_const(int64_t i) { return sv_const(mk_int(i)); }
+
+static int64_t atom_code(Value *v) { return 2 * v->u.i + (v->kind == V_MODEL); }
+static Value *atom_value(int64_t code) { return code & 1 ? mk_model((int)(code >> 1)) : mk_str((int)(code >> 1)); }
+
+static int sv_class(SVal *s) {
+    switch (s->kind) {
+    case SV_CONST:
+        switch (s->value->kind) {
+        case V_BOOL: return C_BOOL;
+        case V_INT: return C_INT;
+        case V_STR: case V_MODEL: return C_ATOM;
+        case V_TUPLE: case V_FCN: case V_LAMBDA: return C_FCN;
+        case V_OPER: return C_NONE;
+        default: return C_SET;
+        }
+    case SV_BOOL: return C_BOOL;
+    case SV_INT: return C_INT;
+    case SV_ATOM: return C_ATOM;
+    case SV_SET: case SV_INF: return C_SET;
+    case SV_FCN: return C_FCN;
+    default: return C_NONE;
+    }
+}
+
+static const char *class_name(int c) {
+    static const char *names[] = {"a boolean", "an integer", "a string or model value", "a set", "a function", "an operator"};
+    return names[c];
+}
+
+/* s as a structure, one level down: a concrete value's parts stay concrete. */
+static SVal *sv_open(SVal *s) {
+    if (s->kind != SV_CONST) return s;
+    Value *v = realize(s->value);
+    SVal *o;
+    switch (v->kind) {
+    case V_BOOL: return sv_bool(v->u.i ? L_TRUE : L_FALSE);
+    case V_INT: return sv_bits(SV_INT, bv_const(v->u.i));
+    case V_STR: case V_MODEL: return sv_bits(SV_ATOM, bv_const(atom_code(v)));
+    case V_TUPLE: case V_FCN:
+        o = sv_fcn(v->n, v->kind == V_FCN && v->made == MADE_RECORD);
+        for (int i = 0; i < v->n; i++) fcn_add(o, sv_const(fcn_key(v, i)), sv_const(v->u.fcn.vals[i]), L_TRUE);
+        return o;
+    case V_SET:
+        o = sv_set(v->n);
+        for (int i = 0; i < v->n; i++) set_add(o, sv_const(v->u.set.elems[i]), L_TRUE);
+        return o;
+    case V_INTERVAL: {
+        int n = interval_size(v);
+        if (n > 1 << 20) fail("Symbolic checking cannot enumerate the interval %s.", pretty(v));
+        o = sv_set(n);
+        for (int i = 0; i < n; i++) set_add(o, sv_int_const(v->u.range.lo + i), L_TRUE);
+        return o;
+    }
+    case V_LAZY:
+        switch (v->lazy) {
+        case L_INT: return sv_inf(INF_INT, 0);
+        case L_NAT: return sv_inf(INF_NAT, 0);
+        case L_STRING: return sv_inf(INF_STRING, 0);
+        case L_SUBSET: o = sv_inf(INF_SUBSET, 1); o->u.inf.parts[0] = sv_const(v->u.l.a); return o;
+        case L_SEQ: o = sv_inf(INF_SEQ, 1); o->u.inf.parts[0] = sv_const(v->u.l.a); return o;
+        case L_FCNSET:
+            o = sv_inf(INF_FCNSET, 2);
+            o->u.inf.parts[0] = sv_const(v->u.l.a);
+            o->u.inf.parts[1] = sv_const(v->u.l.b);
+            return o;
+        case L_RCDSET: case L_TIMES:
+            o = sv_inf(v->lazy == L_RCDSET ? INF_RCDSET : INF_TIMES, v->n);
+            for (int i = 0; i < v->n; i++) {
+                if (v->lazy == L_RCDSET) o->u.inf.names[i] = (int)v->u.l.names[i]->u.i;
+                o->u.inf.parts[i] = sv_const(v->u.l.names[v->n + i]);
+            }
+            return o;
+        default:
+            return sv_open(sv_const(enumerate(v)));
+        }
+    default:
+        fail("Symbolic checking cannot use %s as a value.", pretty(v));
+    }
+}
+
+static Value *values_set(Value **vs, int n) { return manyan_set((size_t)n, vs); }
+
+/* A function of pairs as TLC has it: a record, a tuple, or another. */
+static Value *values_fcn(Value **keys, Value **vals, int n, int rec) {
+    int tuple = !rec;
+    for (int i = 0; i < n && tuple; i++) tuple = keys[i]->kind == V_INT;
+    if (tuple) {
+        Value **at = NEWN(Value *, n > 0 ? n : 1);
+        for (int i = 0; i < n && tuple; i++) {
+            int64_t k = keys[i]->u.i;
+            tuple = k >= 1 && k <= n && !at[k - 1];
+            if (tuple) at[k - 1] = vals[i];
+        }
+        if (tuple) return manyan_tuple((size_t)n, at);
+    }
+    return rec ? manyan_record((size_t)n, keys, vals) : manyan_function((size_t)n, keys, vals);
+}
+
+/* The concrete value s is, if its literals are all constant; else NULL. */
+static Value *sv_known(SVal *s) {
+    if (s->kind == SV_CONST || s->known) return s->value;
+    s->known = 1;
+    Value *v = NULL, **ks, **vs;
+    int64_t k;
+    int m = 0;
+    switch (s->kind) {
+    case SV_BOOL: if (s->u.lit <= L_FALSE) v = BOOLV(s->u.lit == L_TRUE); break;
+    case SV_INT: if (bv_value(s->u.bits, &k)) v = mk_int(k); break;
+    case SV_ATOM: if (bv_value(s->u.bits, &k)) v = atom_value(k); break;
+    case SV_SET:
+        vs = NEWN(Value *, s->n > 0 ? s->n : 1);
+        for (int i = 0; i < s->n; i++) {
+            if (s->u.set.guards[i] == L_FALSE) continue;
+            if (s->u.set.guards[i] != L_TRUE || !(vs[m++] = sv_known(s->u.set.elems[i]))) return NULL;
+        }
+        v = values_set(vs, m);
+        break;
+    case SV_FCN:
+        ks = NEWN(Value *, s->n > 0 ? s->n : 1);
+        vs = NEWN(Value *, s->n > 0 ? s->n : 1);
+        for (int i = 0; i < s->n; i++) {
+            if (s->u.fcn.guards[i] == L_FALSE) continue;
+            if (s->u.fcn.guards[i] != L_TRUE || !(ks[m] = sv_known(s->u.fcn.keys[i])) || !(vs[m] = sv_known(s->u.fcn.vals[i]))) return NULL;
+            m++;
+        }
+        v = values_fcn(ks, vs, m, s->rec);
+        break;
+    default: break;
+    }
+    return s->value = v;
+}
+
+/* Whether a and b are the same structure of the same literals. */
+static int sv_same(SVal *a, SVal *b) {
+    if (a == b) return 1;
+    Value *x = sv_known(a), *y = sv_known(b);
+    if (x || y) {
+        if (!x || !y || sv_class(a) != sv_class(b)) return 0;
+        if (x->kind == V_LAZY || y->kind == V_LAZY) return x == y;
+        return veq(x, y);
+    }
+    if (a->kind != b->kind || a->n != b->n) return 0;
+    switch (a->kind) {
+    case SV_BOOL: return a->u.lit == b->u.lit;
+    case SV_INT: case SV_ATOM: return !memcmp(a->u.bits, b->u.bits, sizeof(int) * BW);
+    case SV_SET:
+        for (int i = 0; i < a->n; i++)
+            if (a->u.set.guards[i] != b->u.set.guards[i] || !sv_same(a->u.set.elems[i], b->u.set.elems[i])) return 0;
+        return 1;
+    case SV_FCN:
+        if (a->rec != b->rec) return 0;
+        for (int i = 0; i < a->n; i++)
+            if (a->u.fcn.guards[i] != b->u.fcn.guards[i] || !sv_same(a->u.fcn.keys[i], b->u.fcn.keys[i])
+                || !sv_same(a->u.fcn.vals[i], b->u.fcn.vals[i])) return 0;
+        return 1;
+    case SV_INF:
+        if (a->inf != b->inf) return 0;
+        for (int i = 0; i < a->n; i++)
+            if (a->u.inf.names[i] != b->u.inf.names[i] || !sv_same(a->u.inf.parts[i], b->u.inf.parts[i])) return 0;
+        return 1;
+    default: return 0;
+    }
+}
+
+static _Noreturn void kinds_mismatch(SVal *a, SVal *b) {
+    fail("Symbolic checking cannot combine %s and %s in one value: Apalache would reject the spec's types.",
+         class_name(sv_class(a)), class_name(sv_class(b)));
+}
+
+static SVal *sv_ite(int c, SVal *a, SVal *b);
+
+/* The elements or pairs of a and b, those of a under c and those of b
+   under not c; the same element or key once. */
+static SVal *merge_parts(int c, SVal *a, SVal *b) {
+    int fcn = a->kind == SV_FCN;
+    SVal *r = fcn ? sv_fcn(a->n + b->n, a->rec | b->rec) : sv_set(a->n + b->n);
+    char *used = NEWN(char, b->n > 0 ? b->n : 1);
+    SVal **ak = fcn ? a->u.fcn.keys : a->u.set.elems, **bk = fcn ? b->u.fcn.keys : b->u.set.elems;
+    int *ag = fcn ? a->u.fcn.guards : a->u.set.guards, *bg = fcn ? b->u.fcn.guards : b->u.set.guards;
+    for (int i = 0; i < a->n; i++) {
+        int j = 0;
+        while (j < b->n && (used[j] || !sv_same(ak[i], bk[j]))) j++;
+        int g = j < b->n ? g_ite(c, ag[i], bg[j]) : g_and(c, ag[i]);
+        if (j < b->n) used[j] = 1;
+        if (!fcn) set_add(r, ak[i], g);
+        else fcn_add(r, ak[i], j < b->n ? sv_ite(c, a->u.fcn.vals[i], b->u.fcn.vals[j]) : a->u.fcn.vals[i], g);
+    }
+    for (int j = 0; j < b->n; j++) {
+        if (used[j]) continue;
+        if (!fcn) set_add(r, bk[j], g_and(c ^ 1, bg[j]));
+        else fcn_add(r, bk[j], b->u.fcn.vals[j], g_and(c ^ 1, bg[j]));
+    }
+    return r;
+}
+
+/* IF c THEN a ELSE b. */
+static SVal *sv_ite(int c, SVal *a, SVal *b) {
+    if (c == L_TRUE || b->kind == SV_UNDEF) return a;
+    if (c == L_FALSE || a->kind == SV_UNDEF) return b;
+    if (sv_same(a, b)) return a;
+    if (sv_class(a) != sv_class(b)) kinds_mismatch(a, b);
+    a = sv_open(a);
+    b = sv_open(b);
+    switch (a->kind) {
+    case SV_BOOL: return sv_bool(g_ite(c, a->u.lit, b->u.lit));
+    case SV_INT: case SV_ATOM: return sv_bits(a->kind, bv_ite(c, a->u.bits, b->u.bits));
+    case SV_SET: case SV_FCN:
+        if (a->kind != b->kind) break;
+        return merge_parts(c, a, b);
+    default: break;
+    }
+    fail("Symbolic checking cannot choose between two infinite sets by a condition.");
+}
+
+static int sv_lit(SVal *s, Expr *where) {
+    if (s->kind == SV_UNDEF) return 2 * sat_var();   /* unspecified, as Apalache leaves it */
+    if (sv_class(s) != C_BOOL) fail_at(where, "A non-boolean expression (%s) was used as a condition.", class_name(sv_class(s)));
+    return sv_open(s)->u.lit;
+}
+
+static int *sv_word(SVal *s, Expr *where) {
+    if (sv_class(s) != C_INT) fail_at(where, "Symbolic checking expected an integer, but has %s.", class_name(sv_class(s)));
+    return sv_open(s)->u.bits;
+}
+
+static int sv_eq(SVal *a, SVal *b);
+static int sv_in(SVal *x, SVal *s);
+static SVal *sv_enum(SVal *s);
+
+static int sv_subseteq(SVal *a, SVal *b) {
+    a = sv_open(a);
+    if (a->kind == SV_INF) {
+        b = sv_open(b);
+        if (b->kind == SV_INF && (b->inf == INF_INT ? a->inf == INF_INT || a->inf == INF_NAT : a->inf == b->inf && sv_same(a, b)))
+            return L_TRUE;
+        a = sv_enum(a);
+    }
+    int r = L_TRUE;
+    for (int i = 0; i < a->n && r != L_FALSE; i++) r = g_and(r, g_implies(a->u.set.guards[i], sv_in(a->u.set.elems[i], b)));
+    return r;
+}
+
+static int fcn_eq(SVal *a, SVal *b) {
+    int aligned = a->n == b->n, r = L_TRUE;
+    for (int i = 0; i < a->n && aligned; i++) aligned = sv_same(a->u.fcn.keys[i], b->u.fcn.keys[i]);
+    if (aligned) {
+        for (int i = 0; i < a->n && r != L_FALSE; i++)
+            r = g_and(r, g_and(g_iff(a->u.fcn.guards[i], b->u.fcn.guards[i]),
+                               g_implies(a->u.fcn.guards[i], sv_eq(a->u.fcn.vals[i], b->u.fcn.vals[i]))));
+        return r;
+    }
+    for (int i = 0; i < a->n && r != L_FALSE; i++) {
+        int match = L_FALSE;
+        for (int j = 0; j < b->n; j++) {
+            int k = g_and(b->u.fcn.guards[j], sv_eq(a->u.fcn.keys[i], b->u.fcn.keys[j]));
+            if (k != L_FALSE) match = g_or(match, g_and(k, sv_eq(a->u.fcn.vals[i], b->u.fcn.vals[j])));
+        }
+        r = g_and(r, g_implies(a->u.fcn.guards[i], match));
+    }
+    for (int j = 0; j < b->n && r != L_FALSE; j++) {
+        int has = L_FALSE;
+        for (int i = 0; i < a->n && has != L_TRUE; i++) has = g_or(has, g_and(a->u.fcn.guards[i], sv_eq(b->u.fcn.keys[j], a->u.fcn.keys[i])));
+        r = g_and(r, g_implies(b->u.fcn.guards[j], has));
+    }
+    return r;
+}
+
+static int sv_eq(SVal *a, SVal *b) {
+    if (a->kind == SV_UNDEF || b->kind == SV_UNDEF) return 2 * sat_var();
+    int ca = sv_class(a);
+    if (ca != sv_class(b)) return L_FALSE;
+    Value *x = sv_known(a), *y = sv_known(b);
+    if (x && y) return veq(x, y) ? L_TRUE : L_FALSE;
+    if (sv_same(a, b)) return L_TRUE;
+    a = sv_open(a);
+    b = sv_open(b);
+    switch (ca) {
+    case C_BOOL: return g_iff(a->u.lit, b->u.lit);
+    case C_INT: case C_ATOM: return bv_eq(a->u.bits, b->u.bits);
+    case C_SET:
+        if (a->kind == SV_INF && b->kind == SV_INF && a->inf == b->inf && a->n == b->n) {
+            int r = L_TRUE;
+            for (int i = 0; i < a->n; i++) {
+                if (a->u.inf.names[i] != b->u.inf.names[i]) return L_FALSE;
+                r = g_and(r, sv_eq(a->u.inf.parts[i], b->u.inf.parts[i]));
+            }
+            return r;
+        }
+        return g_and(sv_subseteq(a, b), sv_subseteq(b, a));
+    default: return fcn_eq(a, b);
+    }
+}
+
+static SVal *sv_domain(SVal *f) {
+    f = sv_open(f);
+    if (f->kind == SV_UNDEF) return f;
+    if (f->kind != SV_FCN) fail("Symbolic checking cannot take the domain of %s.", class_name(sv_class(f)));
+    SVal *d = sv_set(f->n);
+    for (int i = 0; i < f->n; i++) set_add(d, f->u.fcn.keys[i], f->u.fcn.guards[i]);
+    return d;
+}
+
+static SVal *names_set(SVal *s) {
+    Value **vs = NEWN(Value *, s->n > 0 ? s->n : 1);
+    for (int i = 0; i < s->n; i++) vs[i] = s->inf == INF_RCDSET ? mk_str(s->u.inf.names[i]) : mk_int(i + 1);
+    return sv_const(values_set(vs, s->n));
+}
+
+static SVal *sv_apply(SVal *f, SVal *x);
+
+static int values_in(SVal *f, SVal *s) {
+    f = sv_open(f);
+    int r = L_TRUE;
+    for (int i = 0; i < f->n && r != L_FALSE; i++) r = g_and(r, g_implies(f->u.fcn.guards[i], sv_in(f->u.fcn.vals[i], s)));
+    return r;
+}
+
+static int sv_in(SVal *x, SVal *s) {
+    if (x->kind == SV_UNDEF || s->kind == SV_UNDEF) return 2 * sat_var();
+    Value *xv = sv_known(x), *sv = sv_known(s);
+    if (xv && sv && sv->kind != V_LAZY) return set_member(xv, sv) ? L_TRUE : L_FALSE;
+    s = sv_open(s);
+    if (s->kind == SV_SET) {
+        int r = L_FALSE;
+        for (int i = 0; i < s->n && r != L_TRUE; i++) r = g_or(r, g_and(s->u.set.guards[i], sv_eq(x, s->u.set.elems[i])));
+        return r;
+    }
+    if (s->kind != SV_INF) fail("Symbolic checking found \\in applied to %s, not a set.", class_name(sv_class(s)));
+    int cx = sv_class(x);
+    switch (s->inf) {
+    case INF_INT: return cx == C_INT ? L_TRUE : L_FALSE;
+    case INF_NAT: return cx == C_INT ? sv_open(x)->u.bits[BW - 1] ^ 1 : L_FALSE;
+    case INF_STRING: return cx == C_ATOM ? sv_open(x)->u.bits[0] ^ 1 : L_FALSE;
+    case INF_RANGE: {
+        if (cx != C_INT) return L_FALSE;
+        int *b = sv_open(x)->u.bits;
+        return g_and(bv_le(sv_open(s->u.inf.parts[0])->u.bits, b), bv_le(b, sv_open(s->u.inf.parts[1])->u.bits));
+    }
+    case INF_SUBSET: return cx == C_SET ? sv_subseteq(x, s->u.inf.parts[0]) : L_FALSE;
+    case INF_FCNSET:
+        if (cx != C_FCN) return L_FALSE;
+        return g_and(sv_eq(sv_domain(x), s->u.inf.parts[0]), values_in(x, s->u.inf.parts[1]));
+    case INF_SEQ: {
+        if (cx != C_FCN) return L_FALSE;
+        x = sv_open(x);
+        int r = values_in(x, s->u.inf.parts[0]);
+        for (int i = 0; i < x->n && r != L_FALSE; i++) {   /* the keys are 1..n */
+            int k = x->u.fcn.guards[i];
+            r = g_and(r, g_implies(k, sv_in(x->u.fcn.keys[i], sv_inf(INF_NAT, 0))));
+            r = g_and(r, g_implies(k, sv_eq(x->u.fcn.keys[i], sv_int_const(0)) ^ 1));
+        }
+        return r;
+    }
+    default: {   /* INF_RCDSET, INF_TIMES */
+        if (cx != C_FCN) return L_FALSE;
+        int r = sv_eq(sv_domain(x), names_set(s));
+        for (int i = 0; i < s->n && r != L_FALSE; i++) {
+            SVal *k = s->inf == INF_RCDSET ? sv_const(mk_str(s->u.inf.names[i])) : sv_int_const(i + 1);
+            r = g_and(r, sv_in(sv_apply(x, k), s->u.inf.parts[i]));
+        }
+        return r;
+    }
+    }
+}
+
+/* The largest value a word can have, from its constant high bits; -1 if unknown. */
+static int64_t bv_bound(const int *b) {
+    if (b[BW - 1] != L_FALSE) return -1;
+    int top = BW - 2;
+    while (top >= 0 && b[top] == L_FALSE) top--;
+    if (top > 20) return -1;
+    return ((int64_t)1 << (top + 1)) - 1;
+}
+
+/* s as a finite set of guarded elements. */
+static SVal *sv_enum(SVal *s) {
+    s = sv_open(s);
+    if (s->kind == SV_SET) return s;
+    if (s->kind != SV_INF) fail("Symbolic checking expected a set, but has %s.", class_name(sv_class(s)));
+    SVal *r, **parts = NULL;
+    int64_t total = 1;
+    switch (s->inf) {
+    case INF_RANGE: {
+        int *lo = sv_open(s->u.inf.parts[0])->u.bits, *hi = sv_open(s->u.inf.parts[1])->u.bits;
+        int64_t l, h = bv_bound(hi);
+        if (!bv_value(lo, &l) || h < 0) break;
+        r = sv_set(h >= l ? (int)(h - l + 1) : 0);
+        for (int64_t i = l; i <= h; i++) {
+            int *w = bv_const(i);
+            set_add(r, sv_int_const(i), g_and(bv_le(lo, w), bv_le(w, hi)));
+        }
+        return r;
+    }
+    case INF_SUBSET: {
+        SVal *b = sv_enum(s->u.inf.parts[0]);
+        if (b->n > 16) break;
+        r = sv_set(1 << b->n);
+        for (int m = 0; m < 1 << b->n; m++) {
+            SVal *t = sv_set(b->n);
+            for (int i = 0; i < b->n; i++) if (m >> i & 1) set_add(t, b->u.set.elems[i], b->u.set.guards[i]);
+            set_add(r, t, L_TRUE);
+        }
+        return r;
+    }
+    case INF_FCNSET: {
+        SVal *d = sv_enum(s->u.inf.parts[0]), *rng = sv_enum(s->u.inf.parts[1]);
+        for (int i = 0; i < d->n && total <= 4096; i++) total *= rng->n;
+        if (total > 4096) break;
+        r = sv_set((int)total);
+        for (int64_t m = 0; m < total; m++) {
+            SVal *f = sv_fcn(d->n, 0);
+            int g = L_TRUE;
+            for (int64_t i = 0, k = m; i < d->n; i++, k /= rng->n) {
+                int j = (int)(k % rng->n);
+                fcn_add(f, d->u.set.elems[i], rng->u.set.elems[j], d->u.set.guards[i]);
+                g = g_and(g, g_implies(d->u.set.guards[i], rng->u.set.guards[j]));
+            }
+            set_add(r, f, g);
+        }
+        return r;
+    }
+    case INF_RCDSET: case INF_TIMES:
+        parts = NEWN(SVal *, s->n > 0 ? s->n : 1);
+        for (int i = 0; i < s->n && total <= 4096; i++) total *= (parts[i] = sv_enum(s->u.inf.parts[i]))->n;
+        if (total > 4096) break;
+        r = sv_set((int)total);
+        for (int64_t m = 0; m < total; m++) {
+            SVal *f = sv_fcn(s->n, s->inf == INF_RCDSET);
+            int g = L_TRUE;
+            for (int64_t i = 0, k = m; i < s->n; k /= parts[i]->n, i++) {
+                int j = (int)(k % parts[i]->n);
+                fcn_add(f, s->inf == INF_RCDSET ? sv_const(mk_str(s->u.inf.names[i])) : sv_int_const(i + 1), parts[i]->u.set.elems[j], L_TRUE);
+                g = g_and(g, parts[i]->u.set.guards[j]);
+            }
+            set_add(r, f, g);
+        }
+        return r;
+    default: break;
+    }
+    fail("Symbolic checking cannot enumerate this set: it is infinite or too large.");
+}
+
+/* f[x]: the value of the pair whose key x is, or of the last pair if none
+   is, which Apalache leaves unspecified. */
+static SVal *sv_apply(SVal *f, SVal *x) {
+    if (f->kind == SV_UNDEF) return f;
+    if (x->kind == SV_UNDEF) return x;
+    f = sv_open(f);
+    if (f->kind != SV_FCN) fail("Symbolic checking found %s applied as a function.", class_name(sv_class(f)));
+    Value *xv = sv_known(x);
+    for (int i = 0; xv && i < f->n; i++) {
+        Value *k = sv_known(f->u.fcn.keys[i]);
+        if (k && sv_class(f->u.fcn.keys[i]) == sv_class(x) && veq(k, xv) && f->u.fcn.guards[i] == L_TRUE) return f->u.fcn.vals[i];
+    }
+    if (!f->n) { error_reset(); buf_puts(&error_message, "A function with an empty domain was applied."); return sv_undef(); }
+    SVal *r = f->u.fcn.vals[f->n - 1];
+    for (int i = f->n - 2; i >= 0; i--) r = sv_ite(g_and(f->u.fcn.guards[i], sv_eq(f->u.fcn.keys[i], x)), f->u.fcn.vals[i], r);
+    return r;
+}
+
+/* [f EXCEPT ![k] = v]. */
+static SVal *sv_update(SVal *f, SVal *k, SVal *v) {
+    if (f->kind == SV_UNDEF) return f;
+    f = sv_open(f);
+    if (f->kind != SV_FCN) fail("Symbolic checking found EXCEPT applied to %s.", class_name(sv_class(f)));
+    SVal *g = sv_fcn(f->n, f->rec);
+    for (int i = 0; i < f->n; i++)
+        fcn_add(g, f->u.fcn.keys[i], sv_ite(sv_eq(f->u.fcn.keys[i], k), v, f->u.fcn.vals[i]), f->u.fcn.guards[i]);
+    return g;
+}
+
+/* Some element of s, with *g whether it is one: s's guard of it. */
+static SVal *sv_pick(SVal *s, int *g) {
+    if (s->kind == SV_UNDEF) { *g = L_FALSE; return s; }
+    s = sv_open(s);
+    SVal *r;
+    if (s->kind == SV_SET) {
+        if (!s->n) { *g = L_FALSE; error_reset(); buf_puts(&error_message, "No element of an empty set."); return sv_undef(); }
+        int *pick = one_hot(s->n);
+        r = s->u.set.elems[s->n - 1];
+        *g = L_FALSE;
+        for (int i = s->n - 1; i >= 0; i--) {
+            if (i < s->n - 1) r = sv_ite(pick[i], s->u.set.elems[i], r);
+            *g = g_or(*g, g_and(pick[i], s->u.set.guards[i]));
+        }
+        return r;
+    }
+    if (s->kind != SV_INF) fail("Symbolic checking expected a set, but has %s.", class_name(sv_class(s)));
+    int *w;
+    switch (s->inf) {
+    case INF_INT: *g = L_TRUE; return sv_bits(SV_INT, bv_fresh());
+    case INF_NAT: w = bv_fresh(); *g = w[BW - 1] ^ 1; return sv_bits(SV_INT, w);
+    case INF_RANGE:
+        w = bv_fresh();
+        *g = g_and(bv_le(sv_open(s->u.inf.parts[0])->u.bits, w), bv_le(w, sv_open(s->u.inf.parts[1])->u.bits));
+        return sv_bits(SV_INT, w);
+    case INF_SUBSET: {
+        SVal *b = sv_enum(s->u.inf.parts[0]);
+        r = sv_set(b->n);
+        for (int i = 0; i < b->n; i++) set_add(r, b->u.set.elems[i], g_and(2 * sat_var(), b->u.set.guards[i]));
+        *g = L_TRUE;
+        return r;
+    }
+    case INF_FCNSET: {
+        SVal *d = sv_enum(s->u.inf.parts[0]);
+        r = sv_fcn(d->n, 0);
+        *g = L_TRUE;
+        for (int i = 0; i < d->n; i++) {
+            int h;
+            SVal *v = sv_pick(s->u.inf.parts[1], &h);
+            fcn_add(r, d->u.set.elems[i], v, d->u.set.guards[i]);
+            *g = g_and(*g, g_implies(d->u.set.guards[i], h));
+        }
+        return r;
+    }
+    case INF_RCDSET: case INF_TIMES:
+        r = sv_fcn(s->n, s->inf == INF_RCDSET);
+        *g = L_TRUE;
+        for (int i = 0; i < s->n; i++) {
+            int h;
+            SVal *v = sv_pick(s->u.inf.parts[i], &h);
+            fcn_add(r, s->inf == INF_RCDSET ? sv_const(mk_str(s->u.inf.names[i])) : sv_int_const(i + 1), v, L_TRUE);
+            *g = g_and(*g, h);
+        }
+        return r;
+    default: break;
+    }
+    fail("Symbolic checking cannot choose an element of this set.");
+}
+
+/* The number of distinct elements of s: an element counts unless one
+   before it is the same. */
+static SVal *sv_card(SVal *s) {
+    s = sv_enum(s);
+    int *sum = bv_const(0);
+    for (int i = 0; i < s->n; i++) {
+        int c = s->u.set.guards[i];
+        for (int j = 0; j < i && c != L_FALSE; j++)
+            c = g_and(c, g_and(s->u.set.guards[j], sv_eq(s->u.set.elems[j], s->u.set.elems[i])) ^ 1);
+        int *one = bv_const(0);
+        one[0] = c;
+        sum = bv_add(sum, one);
+    }
+    return sv_bits(SV_INT, sum);
+}
+
+/* The concrete value of s in the solver's model. */
+static Value *sv_model(SVal *s) {
+    Value **ks, **vs;
+    int m = 0;
+    int64_t u = 0;
+    switch (s->kind) {
+    case SV_CONST: return s->value;
+    case SV_BOOL: return BOOLV(lit_true(s->u.lit));
+    case SV_INT: case SV_ATOM:
+        for (int i = 0; i < BW; i++) if (lit_true(s->u.bits[i])) u |= (int64_t)((uint64_t)1 << i);
+        return s->kind == SV_INT ? mk_int(u) : atom_value(u);
+    case SV_SET:
+        vs = NEWN(Value *, s->n > 0 ? s->n : 1);
+        for (int i = 0; i < s->n; i++) if (lit_true(s->u.set.guards[i])) vs[m++] = sv_model(s->u.set.elems[i]);
+        return values_set(vs, m);
+    case SV_FCN:
+        ks = NEWN(Value *, s->n > 0 ? s->n : 1);
+        vs = NEWN(Value *, s->n > 0 ? s->n : 1);
+        for (int i = 0; i < s->n; i++) {
+            if (!lit_true(s->u.fcn.guards[i])) continue;
+            Value *k = sv_model(s->u.fcn.keys[i]);
+            int dup = 0;
+            for (int j = 0; j < m && !dup; j++) dup = veq(ks[j], k);
+            if (!dup) { ks[m] = k; vs[m++] = sv_model(s->u.fcn.vals[i]); }
+        }
+        return values_fcn(ks, vs, m, s->rec);
+    case SV_INF:
+        if (s->inf == INF_INT) return mk_lazy(L_INT);
+        if (s->inf == INF_NAT) return mk_lazy(L_NAT);
+        return sv_model(sv_enum(s));
+    default:
+        fail("%s", s->u.err);
+    }
+}
+
+/* ---------------------------------------------------------------- symbolic evaluation */
+
+/* Evaluation follows the evaluator: a context binds names to concrete
+   values, in an environment the evaluator reads, or to symbolic ones and
+   unevaluated arguments, in a symbolic environment. An expression that
+   reads no state and names nothing symbolic is evaluated by the
+   evaluator. */
+typedef struct SEnv SEnv;
+typedef struct { Ctx c; SEnv *s; } SCtx;
+struct SEnv {
+    Def *def;
+    SVal *v;     /* its value, once known */
+    Expr *e;     /* else the argument or definition body e in ctx */
+    SCtx ctx;
+    SEnv *next;
+};
+
+static SVal **sym_cur;     /* the state being read */
+static SVal **sym_next;    /* the next state as far as assigned */
+static int sym_primed;     /* reading the next state */
+static int sym_init;       /* an initial predicate: assigning unprimed variables */
+static SVal *sym_at;       /* @ in an EXCEPT */
+
+enum { P_POS = 1, P_NEG = 2, P_BOTH = 3 };   /* where a formula is: under no negation, one, or either */
+
+static SEnv *senv_find(SEnv *s, Def *d) {
+    for (; s; s = s->next) if (s->def == d) return s;
+    return NULL;
+}
+
+static SEnv *senv_bind(Def *d, SVal *v, Expr *e, SCtx ctx, SEnv *next) {
+    SEnv *b = NEW(SEnv);
+    b->def = d; b->v = v; b->e = e; b->ctx = ctx; b->next = next;
+    return b;
+}
+
+/* What an expression names that a context may bind symbolically, and its
+   level, found once. */
+static Def at_mark;
+typedef struct { Expr *e; int level, n; Def **defs; } ExprInfo;
+static ExprInfo *infos;
+static int ninfos, capinfos;
+
+static void collect_names(Expr *e, Def ***defs, int *n, int *cap) {
+    if (!e) return;
+    Def *d = e->kind == K_BOUND || e->kind == K_PARAMCALL || (e->kind == K_CALL && e->def->local == 2) ? e->def
+           : e->kind == X_AT ? &at_mark : NULL;
+    if (d) {
+        int i = 0;
+        while (i < *n && (*defs)[i] != d) i++;
+        if (i == *n) {
+            if (*n == *cap) *defs = xrealloc(*defs, sizeof(Def *) * (size_t)(*cap = *cap ? 2 * *cap : 8));
+            (*defs)[(*n)++] = d;
+        }
+    }
+    for (int i = 0; i < e->n; i++) collect_names(e->args[i], defs, n, cap);
+    for (int i = 0; i < e->nb; i++) collect_names(e->bounds[i].set, defs, n, cap);
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (e->paths[i].fields[k] < 0) collect_names(e->paths[i].keys[k], defs, n, cap);
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) collect_names(e->defs[i]->body, defs, n, cap);
+    if (e->kind == X_LAMBDA) collect_names(e->def->body, defs, n, cap);
+    for (int i = 0; i < e->nseg; i++)
+        for (int k = 0; k < e->segs[i].n; k++) collect_names(e->segs[i].args[k], defs, n, cap);
+}
+
+static ExprInfo *expr_info(Expr *e);
+
+/* Whether e reads no state (0), the state (1), or the next state too (2),
+   3 for a temporal formula: from what it is made of, a native operator
+   from its arguments only, as its definition is TLC's stub. */
+static int max_sym_level(Expr **es, int n);
+static int def_sym_level(Def *d) {
+    static Def *busy[256];
+    static int nbusy;
+    if (d->replacement) d = d->replacement;
+    if (d->kind == D_VAR) return 1;
+    if (d->native || !d->body || d->kind == D_CONST || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
+    for (int i = 0; i < nbusy; i++) if (busy[i] == d) return 0;
+    if (nbusy == 256) return expr_level(d->body);
+    busy[nbusy++] = d;
+    int l = expr_info(d->body)->level;
+    for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_info(d->bounds[i].set)->level; if (b > l) l = b; }
+    nbusy--;
+    return l;
+}
+
+static int max_sym_level(Expr **es, int n) {
+    int l = 0;
+    for (int i = 0; i < n; i++) if (es[i]) { int a = expr_info(es[i])->level; if (a > l) l = a; }
+    return l;
+}
+
+static int sym_level(Expr *e) {
+    int l = max_sym_level(e->args, e->n);
+    for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) { int b = expr_info(e->bounds[i].set)->level; if (b > l) l = b; }
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (e->paths[i].fields[k] < 0) { int b = expr_info(e->paths[i].keys[k])->level; if (b > l) l = b; }
+    for (int i = 0; i < e->nseg; i++) { int b = max_sym_level(e->segs[i].args, e->segs[i].n); if (b > l) l = b; }
+    int own = 0;
+    switch (e->kind) {
+    case K_DECL: own = e->def->kind == D_VAR; break;
+    case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_CDOT: own = 2; break;
+    case K_ENABLED: return 1;
+    case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case X_WF: case X_SF: case K_WHILE: case X_TFORALL: case X_TEXISTS: own = 3; break;
+    case K_CALL: case K_INSTCALL: own = def_sym_level(e->def); break;
+    case X_LET: for (int i = 0; i < e->ndefs; i++) { int d = def_sym_level(e->defs[i]); if (d > own) own = d; } break;
+    case X_LAMBDA: own = expr_info(e->def->body)->level; break;
+    case X_OPREF: own = def_sym_level(e->def); break;
+    default: break;
+    }
+    return own > l ? own : l;
+}
+
+static ExprInfo *info_slot(Expr *e) {
+    int j = (int)(fmix((uint64_t)(uintptr_t)e) & (uint64_t)(capinfos - 1));
+    while (infos[j].e && infos[j].e != e) j = (j + 1) & (capinfos - 1);
+    return &infos[j];
+}
+
+static ExprInfo *expr_info(Expr *e) {
+    if (capinfos) { ExprInfo *in = info_slot(e); if (in->e) return in; }
+    /* Computed before it is stored: computing it stores others. */
+    int cap = 0;
+    ExprInfo in = {e, sym_level(e), 0, NULL};
+    collect_names(e, &in.defs, &in.n, &cap);
+    if (2 * (ninfos + 1) > capinfos) {
+        int size = capinfos ? 2 * capinfos : 1 << 12;
+        ExprInfo *old = infos;
+        int oldcap = capinfos;
+        infos = calloc((size_t)size, sizeof(ExprInfo));
+        if (!infos) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+        capinfos = size;
+        for (int i = 0; i < oldcap; i++) if (old[i].e) *info_slot(old[i].e) = old[i];
+        free(old);
+    }
+    ExprInfo *slot = info_slot(e);
+    if (!slot->e) { *slot = in; ninfos++; }
+    return slot;
+}
+
+/* Whether the evaluator can evaluate e in sc: e reads no state and
+   names nothing sc binds symbolically. */
+static int sym_plain(Expr *e, SCtx sc) {
+    ExprInfo *in = expr_info(e);
+    if (in->level) return 0;
+    for (int i = 0; i < in->n; i++) {
+        if (in->defs[i] == &at_mark) { if (!sym_at || !sv_known(sym_at)) return 0; }
+        else if (sc.s && senv_find(sc.s, in->defs[i])) return 0;
+    }
+    return 1;
+}
+
+/* Runs the evaluator on e: an error makes an undefined value. */
+static SVal *sym_plain_eval(Expr *e, Ctx c) {
+    EvalState es = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { eval_restore(es); return sv_undef(); }
+    cur_state = next_state = NULL;
+    primed = gen_init = 0;
+    if (sym_at) at_value = sv_known(sym_at);
+    Value *v = eval(e, c);
+    eval_restore(es);
+    return sv_const(v);
+}
+
+static SVal *sym(Expr *e, SCtx sc, int pol);
+static int sym_bool(Expr *e, SCtx sc, int pol) { return sv_lit(sym(e, sc, pol), e); }
+
+static SVal *senv_force(SEnv *b) {
+    if (b->v) return b->v;
+    int keep = !sym_primed && !sym_init && expr_info(b->e)->level < 2;
+    SVal *v = sym(b->e, b->ctx, P_BOTH);
+    if (keep) b->v = v;
+    return v;
+}
+
+static SCtx sym_bind(SCtx sc, Def *d, SVal *v) {
+    Value *k = sv_known(v);
+    if (k && k->kind != V_LAZY) sc.c.env = mk_binding(d, k, sc.c.env);
+    else sc.s = senv_bind(d, v, NULL, sc, sc.s);
+    return sc;
+}
+
+/* Binds d's parameters to args, written in caller, into inner. */
+static SCtx sym_bind_args(Def *d, Expr **args, int n, SCtx caller, SCtx inner) {
+    for (int i = 0; i < n && i < d->nparams; i++) {
+        Def *p = d->params[i];
+        if (sym_plain(args[i], caller))
+            inner.c.env = p->arity ? mk_binding(p, eval_operator_arg(args[i], caller.c), inner.c.env)
+                                   : mk_arg(p, args[i], caller.c, inner.c.env);
+        else inner.s = senv_bind(p, NULL, args[i], caller, inner.s);
+    }
+    return inner;
+}
+
+static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call);
+static SVal *sym_fcndef(Def *d, SCtx sc);
+
+/* The operator argument d stands for, applied to args. */
+static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol);
+static SVal *sym_param_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol) {
+    SEnv *b = senv_find(sc.s, d);
+    if (b) {
+        Expr *op = b->e;
+        if (op && (op->kind == X_LAMBDA || ((op->kind == K_CALL || op->kind == K_PARAMCALL) && op->n == 0)))
+            return sym_call(op->def, args, n, b->ctx, call, pol);
+        fail_at(call, "Symbolic checking cannot apply this operator argument.");
+    }
+    Env *cb = env_find(sc.c.env, d);
+    if (!cb) fail_at(call, "Unbound operator parameter %s.", S(d->name));
+    Value *v = force(cb);
+    if (v->kind != V_OPER || v->u.op.table) fail_at(call, "Symbolic checking cannot apply %s.", S(d->name));
+    Def *od = v->u.op.def->replacement ? v->u.op.def->replacement : v->u.op.def;
+    SCtx oc = {{v->u.op.env, v->u.op.inst}, NULL};
+    if (od->local == 2 && !od->native) { Env *lb = env_find(oc.c.env, od); if (lb) oc.c.env = lb->ctx_env; }
+    return sym_call(od, args, n, oc, call, pol);
+}
+
+/* The context a definition's body is evaluated in, before its parameters:
+   a LET definition's closure; *forced its value, for one without them. */
+static SCtx def_ctx(Def *d, SCtx sc, Expr *call, SVal **forced, int pol) {
+    SCtx inner = {{NULL, sc.c.inst}, NULL};
+    *forced = NULL;
+    if (d->local != 2) return inner;
+    SEnv *b = senv_find(sc.s, d);
+    Env *cb = b ? NULL : env_find(sc.c.env, d);
+    if (!b && !cb) fail_at(call, "Unbound LET definition %s.", S(d->name));
+    inner = b ? b->ctx : (SCtx){{cb->ctx_env, cb->ctx_inst}, NULL};
+    if (!d->nparams && d->kind != D_FCN) *forced = b ? senv_force(b) : sym(d->body, inner, pol);
+    return inner;
+}
+
+/* d applied to args in sc. */
+static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, Expr *call, int pol) {
+    if (d->replacement) d = d->replacement;
+    if (d->native) return sym_native(d, args, n, sc, call);
+    if (d->kind == D_PARAM) return sym_param_call(d, args, n, sc, call, pol);
+    SVal *forced;
+    SCtx inner = def_ctx(d, sc, call, &forced, pol);
+    if (forced) return forced;
+    if (d->kind == D_FCN) return sym_fcndef(d, inner);
+    if (d->kind != D_OP && d->kind != D_RECURSIVE) fail_at(call, "Symbolic checking cannot evaluate %s.", S(d->name));
+    inner = sym_bind_args(d, args, n, sc, inner);
+    deeper();
+    SVal *v = sym(d->body, inner, pol);
+    eval_depth--;
+    return v;
+}
+
+/* A bound name's or binding's value in sc. */
+static SVal *sym_bound(Def *d, SCtx sc, Expr *where) {
+    SEnv *b = senv_find(sc.s, d);
+    if (b) return senv_force(b);
+    return sym_plain_eval(where, sc.c);
+}
+
+static SVal *sym_var(Def *d, Expr *where) {
+    if (d->var_index < 0) fail_at(where, "Symbolic checking cannot read the variable %s of an instance.", S(d->name));
+    SVal *v = sym_primed ? sym_next[d->var_index] : sym_cur[d->var_index];
+    if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
+    return v;
+}
+
+/* Calls fn for each binding of the bounds, in sc; key is the element
+   bound, a tuple of them for several. */
+typedef void (*SBindFn)(SCtx inner, int guard, SVal *key, void *data);
+
+static void sym_bindings(Bound *bs, int nb, SVal **given, SCtx sc, SBindFn fn, void *data, Expr *where) {
+    int nslots = 0;
+    for (int i = 0; i < nb; i++) nslots += bs[i].tuple ? 1 : bs[i].n;
+    SVal **sets = NEWN(SVal *, nslots);
+    Bound **of = NEWN(Bound *, nslots);
+    int *name = NEWN(int, nslots), *at = NEWN(int, nslots);
+    for (int i = 0, k = 0; i < nb; i++) {
+        if (!bs[i].set) fail_at(where, "Symbolic checking cannot handle an unbounded quantifier.");
+        SVal *s = sv_enum(given ? given[i] : sym(bs[i].set, sc, P_BOTH));
+        for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++, k++) { sets[k] = s; of[k] = &bs[i]; name[k] = j; }
+    }
+    for (int k = 0; k < nslots; k++) if (!sets[k]->n) return;
+    for (;;) {
+        SCtx inner = sc;
+        int g = L_TRUE;
+        SVal *key = nslots == 1 ? sets[0]->u.set.elems[at[0]] : sv_fcn(nslots, 0);
+        for (int k = 0; k < nslots; k++) {
+            SVal *e = sets[k]->u.set.elems[at[k]];
+            g = g_and(g, sets[k]->u.set.guards[at[k]]);
+            if (nslots > 1) fcn_add(key, sv_int_const(k + 1), e, L_TRUE);
+            if (!of[k]->tuple) { inner = sym_bind(inner, of[k]->defs[name[k]], e); continue; }
+            for (int m = 0; m < of[k]->n; m++) inner = sym_bind(inner, of[k]->defs[m], sv_apply(e, sv_int_const(m + 1)));
+        }
+        if (g != L_FALSE) fn(inner, g, key, data);
+        int k = nslots - 1;
+        while (k >= 0 && ++at[k] == sets[k]->n) at[k--] = 0;
+        if (k < 0) return;
+    }
+}
+
+typedef struct { Expr *body; int pol, exists, value; SVal *out; } SQuant;
+
+static void sym_quant_fn(SCtx inner, int g, SVal *key, void *data) {
+    (void)key;
+    SQuant *q = data;
+    if (q->value == (q->exists ? L_TRUE : L_FALSE)) return;
+    int b = sym_bool(q->body, inner, q->pol);
+    q->value = q->exists ? g_or(q->value, g_and(g, b)) : g_and(q->value, g_implies(g, b));
+}
+
+static void sym_filter_fn(SCtx inner, int g, SVal *key, void *data) {
+    SQuant *q = data;
+    set_add(q->out, key, g_and(g, sym_bool(q->body, inner, P_BOTH)));
+}
+
+static void sym_map_fn(SCtx inner, int g, SVal *key, void *data) {
+    (void)key;
+    SQuant *q = data;
+    set_add(q->out, sym(q->body, inner, P_BOTH), g);
+}
+
+static void sym_fcn_fn(SCtx inner, int g, SVal *key, void *data) {
+    SQuant *q = data;
+    fcn_add(q->out, key, sym(q->body, inner, P_BOTH), g);
+}
+
+/* The number of bindings the bounds have, -1 if a set is not finite. */
+static int64_t bindings_count(Bound *bs, int nb, SCtx sc, SVal **sets) {
+    int64_t total = 1;
+    for (int i = 0; i < nb; i++) {
+        if (!bs[i].set) return -1;
+        SVal *s = sv_open(sets[i] = sym(bs[i].set, sc, P_BOTH));
+        if (s->kind != SV_SET) return -1;
+        for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) if ((total *= s->n) > 1 << 20) return -1;
+    }
+    return total;
+}
+
+/* Binds each name of bounds to a fresh element of its set: *g whether they are. */
+static SCtx sym_skolem(Bound *bs, int nb, SCtx sc, SVal **sets, int *g) {
+    *g = L_TRUE;
+    for (int i = 0; i < nb; i++)
+        for (int j = 0; j < (bs[i].tuple ? 1 : bs[i].n); j++) {
+            int h;
+            SVal *e = sv_pick(sets[i], &h);
+            *g = g_and(*g, h);
+            if (!bs[i].tuple) { sc = sym_bind(sc, bs[i].defs[j], e); continue; }
+            for (int m = 0; m < bs[i].n; m++) sc = sym_bind(sc, bs[i].defs[m], sv_apply(e, sv_int_const(m + 1)));
+        }
+    return sc;
+}
+
+static SVal *sym_quant(Expr *e, SCtx sc, int pol) {
+    int exists = e->kind == X_EXISTS;
+    SVal **sets = NEWN(SVal *, e->nb);
+    int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
+    if ((n < 0 || n > 64) && pol == (exists ? P_POS : P_NEG)) {   /* \E as a witness, as Apalache skolemizes */
+        int g;
+        for (int i = 0; i < e->nb; i++) if (!e->bounds[i].set) fail_at(e, "Symbolic checking cannot handle an unbounded quantifier.");
+        SCtx inner = sym_skolem(e->bounds, e->nb, sc, sets, &g);
+        int b = sym_bool(e->args[0], inner, pol);
+        return sv_bool(exists ? g_and(g, b) : g_implies(g, b));
+    }
+    SQuant q = {e->args[0], pol, exists, exists ? L_FALSE : L_TRUE, NULL};
+    sym_bindings(e->bounds, e->nb, sets, sc, sym_quant_fn, &q, e);
+    return sv_bool(q.value);
+}
+
+/* CHOOSE x \in S : P, an element that satisfies P if one does. */
+static SVal *sym_choose(Expr *e, SCtx sc) {
+    Bound *b = &e->bounds[0];
+    if (!b->set) fail_at(e, "Symbolic checking cannot handle an unbounded CHOOSE.");
+    SVal *set = sym(b->set, sc, P_BOTH);
+    int g;
+    SVal *x = sv_pick(set, &g);
+    SCtx inner = sc;
+    if (!b->tuple) inner = sym_bind(inner, b->defs[0], x);
+    else for (int m = 0; m < b->n; m++) inner = sym_bind(inner, b->defs[m], sv_apply(x, sv_int_const(m + 1)));
+    int holds = g_and(g, sym_bool(e->args[0], inner, P_BOTH));
+    SQuant q = {e->args[0], P_BOTH, 1, L_FALSE, NULL};
+    sym_bindings(b, 1, &set, sc, sym_quant_fn, &q, e);
+    sat_add2(q.value ^ 1, holds);
+    return x;
+}
+
+static SVal *sym_set_op(Expr *e, SVal *a, SVal *b) {
+    if (a->kind == SV_UNDEF) return a;
+    if (b->kind == SV_UNDEF) return b;
+    if (e->kind == K_SUBSETEQ) return sv_bool(sv_subseteq(a, b));
+    a = sv_enum(a);
+    SVal *r;
+    if (e->kind == K_CUP) {
+        b = sv_enum(b);
+        r = sv_set(a->n + b->n);
+        for (int i = 0; i < a->n; i++) set_add(r, a->u.set.elems[i], a->u.set.guards[i]);
+        for (int i = 0; i < b->n; i++) set_add(r, b->u.set.elems[i], b->u.set.guards[i]);
+        return r;
+    }
+    r = sv_set(a->n);
+    for (int i = 0; i < a->n; i++)
+        set_add(r, a->u.set.elems[i], g_and(a->u.set.guards[i], sv_in(a->u.set.elems[i], b) ^ (e->kind == K_SETMINUS)));
+    return r;
+}
+
+static SVal *sym_union(SVal *s) {
+    s = sv_enum(s);
+    int n = 0;
+    SVal **parts = NEWN(SVal *, s->n > 0 ? s->n : 1);
+    for (int i = 0; i < s->n; i++) n += (parts[i] = sv_enum(s->u.set.elems[i]))->n;
+    SVal *r = sv_set(n);
+    for (int i = 0; i < s->n; i++)
+        for (int j = 0; j < parts[i]->n; j++) set_add(r, parts[i]->u.set.elems[j], g_and(s->u.set.guards[i], parts[i]->u.set.guards[j]));
+    return r;
+}
+
+static SVal *sym_except_path(SVal *f, Path *p, int k, Expr *val, SCtx sc) {
+    SVal *key = p->fields[k] >= 0 ? sv_const(mk_str(p->fields[k])) : sym(p->keys[k], sc, P_BOTH);
+    SVal *old = sv_apply(f, key), *nv;
+    if (k + 1 < p->n) nv = sym_except_path(old, p, k + 1, val, sc);
+    else {
+        SVal *saved = sym_at;
+        sym_at = old;
+        nv = sym(val, sc, P_BOTH);
+        sym_at = saved;
+    }
+    return sv_update(f, key, nv);
+}
+
+static SVal *sym_fcndef(Def *d, SCtx sc) {
+    if (d->self) fail("Symbolic checking cannot evaluate the recursive function %s on symbolic values.", S(d->name));
+    SVal **sets = NEWN(SVal *, d->nb);
+    int64_t n = bindings_count(d->bounds, d->nb, sc, sets);
+    if (n < 0) fail("Symbolic checking cannot make the function %s over an infinite domain.", S(d->name));
+    SQuant q = {d->body, P_BOTH, 0, 0, sv_fcn((int)n, 0)};
+    sym_bindings(d->bounds, d->nb, sets, sc, sym_fcn_fn, &q, d->where);
+    return q.out;
+}
+
+static SCtx let_ctx(Expr *e, SCtx sc) {
+    /* A definition is bound for the evaluator unless it names what is
+       bound symbolically, or another definition that does. */
+    char *symbolic = NEWN(char, e->ndefs);
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (int i = 0; i < e->ndefs; i++) {
+            if (symbolic[i]) continue;
+            ExprInfo *in = expr_info(e->defs[i]->body);
+            for (int k = 0; k < in->n && !symbolic[i]; k++) {
+                Def *x = in->defs[k];
+                if (x == &at_mark) symbolic[i] = sym_at != NULL;
+                else if (sc.s && senv_find(sc.s, x)) symbolic[i] = 1;
+                for (int j = 0; j < e->ndefs && !symbolic[i]; j++) symbolic[i] = symbolic[j] && e->defs[j] == x;
+            }
+            changed |= symbolic[i];
+        }
+    }
+    SCtx inner = sc;
+    for (int i = 0; i < e->ndefs; i++)
+        if (symbolic[i]) inner.s = senv_bind(e->defs[i], NULL, e->defs[i]->body, sc, inner.s);
+        else inner.c.env = mk_thunk(e->defs[i], e->defs[i]->body, sc.c, inner.c.env);
+    for (Env *b = inner.c.env; b != sc.c.env; b = b->next) b->ctx_env = inner.c.env;
+    for (SEnv *b = inner.s; b != sc.s; b = b->next) b->ctx = inner;
+    return inner;
+}
+
+static SVal *seq_len(SVal *s);
+
+static SVal *sym(Expr *e, SCtx sc, int pol) {
+    if (sym_plain(e, sc)) return sym_plain_eval(e, sc.c);
+    SVal *a, *b, *r;
+    int l;
+    switch (e->kind) {
+    case K_BOUND: return sym_bound(e->def, sc, e);
+    case K_DECL:
+        if (e->def->kind == D_VAR) return sym_var(e->def, e);
+        return sym_plain_eval(e, sc.c);
+    case K_CALL: case K_PARAMCALL:
+        if (e->def->kind == D_VAR) return sym_var(e->def, e);
+        return sym_call(e->def, e->args, e->n, sc, e, pol);
+    case K_INSTCALL: fail_at(e, "Symbolic checking does not support instances yet.");
+    case K_AND: case K_OR: {
+        int and = e->kind == K_AND;
+        l = and ? L_TRUE : L_FALSE;
+        for (int i = 0; i < e->n && l != (and ? L_FALSE : L_TRUE); i++)
+            l = and ? g_and(l, sym_bool(e->args[i], sc, pol)) : g_or(l, sym_bool(e->args[i], sc, pol));
+        return sv_bool(l);
+    }
+    case K_NOT: return sv_bool(sym_bool(e->args[0], sc, pol ^ (pol == P_BOTH ? 0 : 3)) ^ 1);
+    case K_IMPLIES:
+        l = sym_bool(e->args[0], sc, pol ^ (pol == P_BOTH ? 0 : 3));
+        return sv_bool(l == L_FALSE ? L_TRUE : g_implies(l, sym_bool(e->args[1], sc, pol)));
+    case K_EQUIV: return sv_bool(g_iff(sym_bool(e->args[0], sc, P_BOTH), sym_bool(e->args[1], sc, P_BOTH)));
+    case K_EQ: case K_NEQ:
+        l = sv_eq(sym(e->args[0], sc, P_BOTH), sym(e->args[1], sc, P_BOTH));
+        return sv_bool(e->kind == K_EQ ? l : l ^ 1);
+    case K_IN: case K_NOTIN:
+        l = sv_in(sym(e->args[0], sc, P_BOTH), sym(e->args[1], sc, P_BOTH));
+        return sv_bool(e->kind == K_IN ? l : l ^ 1);
+    case K_CUP: case K_CAP: case K_SETMINUS: case K_SUBSETEQ:
+        return sym_set_op(e, sym(e->args[0], sc, P_BOTH), sym(e->args[1], sc, P_BOTH));
+    case K_SUBSET: r = sv_inf(INF_SUBSET, 1); r->u.inf.parts[0] = sym(e->args[0], sc, P_BOTH); return r;
+    case K_UNION: return sym_union(sym(e->args[0], sc, P_BOTH));
+    case K_DOMAIN: return sv_domain(sym(e->args[0], sc, P_BOTH));
+    case K_PRIME: {
+        if (sym_init) fail_at(e, "Symbolic checking found a primed variable in the initial predicate.");
+        int saved = sym_primed;
+        sym_primed = 1;
+        r = sym(e->args[0], sc, pol);
+        sym_primed = saved;
+        return r;
+    }
+    case K_UNCHANGED: {
+        a = sym(e->args[0], sc, P_BOTH);
+        int saved = sym_primed;
+        sym_primed = 1;
+        b = sym(e->args[0], sc, P_BOTH);
+        sym_primed = saved;
+        return sv_bool(sv_eq(a, b));
+    }
+    case X_SQACT: case X_ANGLEACT: {
+        int sq = e->kind == X_SQACT;
+        l = sym_bool(e->args[0], sc, pol);
+        a = sym(e->args[1], sc, P_BOTH);
+        int saved = sym_primed;
+        sym_primed = 1;
+        b = sym(e->args[1], sc, P_BOTH);
+        sym_primed = saved;
+        int same = sv_eq(a, b);
+        return sv_bool(sq ? g_or(l, same) : g_and(l, same ^ 1));
+    }
+    case K_TIMES:
+        r = sv_inf(INF_TIMES, e->n);
+        for (int i = 0; i < e->n; i++) r->u.inf.parts[i] = sym(e->args[i], sc, P_BOTH);
+        return r;
+    case X_SETENUM:
+        r = sv_set(e->n);
+        for (int i = 0; i < e->n; i++) set_add(r, sym(e->args[i], sc, P_BOTH), L_TRUE);
+        return r;
+    case X_TUPLE:
+        r = sv_fcn(e->n, 0);
+        for (int i = 0; i < e->n; i++) fcn_add(r, sv_int_const(i + 1), sym(e->args[i], sc, P_BOTH), L_TRUE);
+        return r;
+    case X_RECORD:
+        r = sv_fcn(e->n, 1);
+        for (int i = 0; i < e->n; i++) fcn_add(r, sv_const(mk_str(e->segs[i].name)), sym(e->args[i], sc, P_BOTH), L_TRUE);
+        return r;
+    case X_RCDSET:
+        r = sv_inf(INF_RCDSET, e->n);
+        for (int i = 0; i < e->n; i++) { r->u.inf.names[i] = e->segs[i].name; r->u.inf.parts[i] = sym(e->args[i], sc, P_BOTH); }
+        return r;
+    case X_FCNSET:
+        r = sv_inf(INF_FCNSET, 2);
+        r->u.inf.parts[0] = sym(e->args[0], sc, P_BOTH);
+        r->u.inf.parts[1] = sym(e->args[1], sc, P_BOTH);
+        return r;
+    case X_FCN: {
+        SVal **sets = NEWN(SVal *, e->nb);
+        int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
+        if (n < 0) fail_at(e, "Symbolic checking cannot make a function over an infinite domain.");
+        SQuant q = {e->args[0], P_BOTH, 0, 0, sv_fcn((int)n, 0)};
+        sym_bindings(e->bounds, e->nb, sets, sc, sym_fcn_fn, &q, e);
+        return q.out;
+    }
+    case X_APPLY:
+        a = sym(e->args[0], sc, P_BOTH);
+        if (e->n == 2) b = sym(e->args[1], sc, P_BOTH);
+        else {
+            b = sv_fcn(e->n - 1, 0);
+            for (int i = 1; i < e->n; i++) fcn_add(b, sv_int_const(i), sym(e->args[i], sc, P_BOTH), L_TRUE);
+        }
+        return sv_apply(a, b);
+    case X_DOT: return sv_apply(sym(e->args[0], sc, P_BOTH), sv_const(mk_str(e->op)));
+    case X_EXCEPT:
+        r = sym(e->args[0], sc, P_BOTH);
+        for (int i = 0; i < e->n - 1; i++) r = sym_except_path(r, &e->paths[i], 0, e->args[i + 1], sc);
+        return r;
+    case X_AT:
+        if (!sym_at) fail_at(e, "@ outside an EXCEPT.");
+        return sym_at;
+    case X_FILTER: case X_MAP: {
+        SVal **sets = NEWN(SVal *, e->nb);
+        int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
+        if (n < 0) fail_at(e, "Symbolic checking cannot make a set from an infinite one.");
+        SQuant q = {e->args[0], P_BOTH, 0, 0, sv_set((int)n)};
+        sym_bindings(e->bounds, e->nb, sets, sc, e->kind == X_FILTER ? sym_filter_fn : sym_map_fn, &q, e);
+        return q.out;
+    }
+    case X_FORALL: case X_EXISTS: return sym_quant(e, sc, pol);
+    case X_CHOOSE: return sym_choose(e, sc);
+    case X_IF:
+        l = sym_bool(e->args[0], sc, P_BOTH);
+        if (l == L_TRUE) return sym(e->args[1], sc, pol);
+        if (l == L_FALSE) return sym(e->args[2], sc, pol);
+        return sv_ite(l, sym(e->args[1], sc, pol), sym(e->args[2], sc, pol));
+    case X_CASE: {
+        int last = e->n - 2;
+        r = NULL;
+        if (!e->args[last]) { r = sym(e->args[last + 1], sc, pol); last -= 2; }
+        for (int i = last; i >= 0; i -= 2) {
+            SVal *v = sym(e->args[i + 1], sc, pol);
+            r = r ? sv_ite(sym_bool(e->args[i], sc, P_BOTH), v, r) : v;
+        }
+        return r;
+    }
+    case X_LET: return sym(e->args[0], let_ctx(e, sc), pol);
+    case K_ENABLED: fail_at(e, "Symbolic checking does not support ENABLED.");
+    default: break;
+    }
+    if (expr_info(e)->level >= 3) fail_at(e, "Symbolic checking does not check temporal formulas.");
+    fail_at(e, "Symbolic checking does not support this expression.");
+}
+
+/* ---------------------------------------------------------------- symbolic operators */
+
+/* The words of a sequence's positions 1..n, with their guards; fails
+   unless its keys are integers known. */
+static SVal *seq_open(SVal *s, SVal ***vals, int **guards, int *n, Expr *where) {
+    s = sv_open(s);
+    if (s->kind != SV_FCN) fail_at(where, "Symbolic checking expected a sequence, but has %s.", class_name(sv_class(s)));
+    int64_t max = 0, k;
+    for (int i = 0; i < s->n; i++) {
+        Value *key = sv_known(s->u.fcn.keys[i]);
+        if (!key || key->kind != V_INT || (k = key->u.i) < 1) fail_at(where, "Symbolic checking cannot use a function as a sequence unless its domain is 1..n.");
+        if (k > max) max = k;
+    }
+    *n = (int)max;
+    *vals = NEWN(SVal *, max > 0 ? max : 1);
+    *guards = NEWN(int, max > 0 ? max : 1);
+    for (int i = 0; i < max; i++) (*guards)[i] = L_FALSE;
+    for (int i = 0; i < s->n; i++) {
+        int at = (int)sv_known(s->u.fcn.keys[i])->u.i - 1;
+        (*vals)[at] = s->u.fcn.vals[i];
+        (*guards)[at] = s->u.fcn.guards[i];
+    }
+    for (int i = 0; i < max; i++) if (!(*vals)[i]) (*vals)[i] = s->n ? s->u.fcn.vals[0] : NULL;
+    return s;
+}
+
+static SVal *seq_len(SVal *s) {
+    SVal **v;
+    int *g, n;
+    seq_open(s, &v, &g, &n, NULL);
+    int *sum = bv_const(0);
+    for (int i = 0; i < n; i++) { int *one = bv_const(0); one[0] = g[i]; sum = bv_add(sum, one); }
+    return sv_bits(SV_INT, sum);
+}
+
+static SVal *seq_make(SVal **v, int *g, int n) {
+    SVal *r = sv_fcn(n, 0);
+    for (int i = 0; i < n; i++) fcn_add(r, sv_int_const(i + 1), v[i], g[i]);
+    return r;
+}
+
+static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
+    if (d->lazy || n > 3) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
+    SVal *a[3];
+    Value *vals[3];
+    int known = 1;
+    for (int i = 0; i < n; i++) {
+        if (d->params[i]->arity) fail_at(call, "Symbolic checking does not support %s.", S(d->name));
+        a[i] = sym(args[i], sc, P_BOTH);
+        if (a[i]->kind == SV_UNDEF) return a[i];
+        known &= (vals[i] = sv_known(a[i])) != NULL;
+    }
+    Native f = d->native;
+    if (f == n_print) return a[1];
+    if (f == n_printt || f == n_assert) return sv_const(TRUEV);
+    if (known) {   /* the operator itself */
+        EvalState es = eval_save();
+        sigjmp_buf here;
+        handler = &here;
+        if (sigsetjmp(here, 0)) { eval_restore(es); return sv_undef(); }
+        Value *v = call_native(d, call, vals, sc.c);
+        eval_restore(es);
+        return sv_const(v);
+    }
+    int *x = NULL, *y = NULL, *q, *r;
+    if (f == n_plus || f == n_minus || f == n_times || f == n_lt || f == n_gt || f == n_leq || f == n_geq
+        || f == n_mod || f == n_div || f == n_range || f == n_pow) {
+        x = sv_word(a[0], args[0]);
+        y = sv_word(a[1], args[1]);
+    }
+    if (f == n_plus) return sv_bits(SV_INT, bv_add(x, y));
+    if (f == n_minus) return sv_bits(SV_INT, bv_sub(x, y));
+    if (f == n_times) return sv_bits(SV_INT, bv_mul(x, y));
+    if (f == n_lt) return sv_bool(bv_lt(x, y));
+    if (f == n_gt) return sv_bool(bv_lt(y, x));
+    if (f == n_leq) return sv_bool(bv_le(x, y));
+    if (f == n_geq) return sv_bool(bv_le(y, x));
+    if (f == n_mod || f == n_div) { bv_divmod(x, y, &q, &r); return sv_bits(SV_INT, f == n_div ? q : r); }
+    if (f == n_pow) {
+        int64_t k;
+        if (!bv_value(y, &k) || k < 0) fail_at(call, "Symbolic checking supports a ^ b only for a constant b >= 0.");
+        int *p = bv_const(1);
+        while (k-- > 0) p = bv_mul(p, x);
+        return sv_bits(SV_INT, p);
+    }
+    if (f == n_range) {
+        SVal *s = sv_inf(INF_RANGE, 2);
+        s->u.inf.parts[0] = a[0];
+        s->u.inf.parts[1] = a[1];
+        return s;
+    }
+    if (f == n_cardinality) return sv_card(a[0]);
+    if (f == n_isfinite) {
+        SVal *s = sv_open(a[0]);
+        return sv_const(BOOLV(s->kind != SV_INF || (s->inf != INF_INT && s->inf != INF_NAT && s->inf != INF_STRING && s->inf != INF_SEQ)));
+    }
+    if (f == n_seq) { SVal *s = sv_inf(INF_SEQ, 1); s->u.inf.parts[0] = a[0]; return s; }
+    if (f == n_singleton) { SVal *s = sv_fcn(1, 0); fcn_add(s, a[0], a[1], L_TRUE); return s; }
+    if (f == n_merge) {
+        SVal *g = sv_open(a[0]), *h = sv_open(a[1]);
+        if (g->kind != SV_FCN || h->kind != SV_FCN) fail_at(call, "Symbolic checking expected functions for @@.");
+        SVal *s = sv_fcn(g->n + h->n, 0), *dom = sv_domain(g);
+        for (int i = 0; i < g->n; i++) fcn_add(s, g->u.fcn.keys[i], g->u.fcn.vals[i], g->u.fcn.guards[i]);
+        for (int i = 0; i < h->n; i++) fcn_add(s, h->u.fcn.keys[i], h->u.fcn.vals[i], g_and(h->u.fcn.guards[i], sv_in(h->u.fcn.keys[i], dom) ^ 1));
+        return s;
+    }
+    SVal **v, **w;
+    int *g, *h, m, k;
+    if (f == n_len) return seq_len(a[0]);
+    if (f == n_head) return sv_apply(a[0], sv_int_const(1));
+    if (f == n_tail) {
+        seq_open(a[0], &v, &g, &m, call);
+        return m ? seq_make(v + 1, g + 1, m - 1) : a[0];
+    }
+    if (f == n_append) {
+        seq_open(a[0], &v, &g, &m, call);
+        int *len = sv_open(seq_len(a[0]))->u.bits;
+        SVal **nv = NEWN(SVal *, m + 1);
+        int *ng = NEWN(int, m + 1);
+        for (int i = 0; i <= m; i++) {
+            int here = bv_eq(len, bv_const(i));
+            nv[i] = i < m ? sv_ite(here, a[1], v[i]) : a[1];
+            ng[i] = i < m ? g_or(g[i], here) : here;
+        }
+        return seq_make(nv, ng, m + 1);
+    }
+    if (f == n_concat) {
+        seq_open(a[0], &v, &g, &m, call);
+        seq_open(a[1], &w, &h, &k, call);
+        int *ls = sv_open(seq_len(a[0]))->u.bits, *lt = sv_open(seq_len(a[1]))->u.bits, *total = bv_add(ls, lt);
+        SVal **nv = NEWN(SVal *, m + k + 1);
+        int *ng = NEWN(int, m + k + 1);
+        for (int i = 0; i < m + k; i++) {
+            int *pos = bv_const(i + 1);
+            SVal *from_t = k ? sv_apply(a[1], sv_bits(SV_INT, bv_sub(pos, ls))) : NULL;
+            nv[i] = i < m ? (from_t ? sv_ite(bv_le(pos, ls), v[i], from_t) : v[i]) : from_t;
+            ng[i] = bv_le(pos, total);
+        }
+        return seq_make(nv, ng, m + k);
+    }
+    if (f == n_subseq) {
+        seq_open(a[0], &v, &g, &m, call);
+        int *lo = sv_word(a[1], args[1]), *hi = sv_word(a[2], args[2]), *len = bv_add(bv_sub(hi, lo), bv_const(1));
+        SVal **nv = NEWN(SVal *, m + 1);
+        int *ng = NEWN(int, m + 1);
+        for (int i = 0; i < m; i++) {
+            nv[i] = sv_apply(a[0], sv_bits(SV_INT, bv_add(lo, bv_const(i))));
+            ng[i] = bv_le(bv_const(i + 1), len);
+        }
+        return seq_make(nv, ng, m);
+    }
+    fail_at(call, "Symbolic checking does not support %s.", S(d->name));
+}
+
+/* ---------------------------------------------------------------- symbolic actions */
+
+/* An action is evaluated as the generator evaluates it, but once for all
+   states: a branch is a guard and the next state as far as it assigns
+   it. A disjunction, an \E and an IF split the branch; the branches that
+   assign the same variables then merge again into one, each variable the
+   value of the branch that fresh literals choose, so that a step is one
+   branch whatever the number of the action's cases. */
+typedef struct { int guard; SVal **next; } Branch;
+typedef struct { Branch *v; int n, cap; } Branches;
+
+static void branches_add(Branches *bs, Branch b) {
+    if (b.guard == L_FALSE) return;
+    if (bs->n == bs->cap) {
+        Branch *g = NEWN(Branch, bs->cap = bs->cap ? 2 * bs->cap : 4);
+        if (bs->n) memcpy(g, bs->v, sizeof(Branch) * (size_t)bs->n);
+        bs->v = g;
+    }
+    bs->v[bs->n++] = b;
+}
+
+static Branch branch_and(Branch b, int g) { b.guard = g_and(b.guard, g); return b; }
+
+static Branch branch_set(Branch b, int var, SVal *v) {
+    if (v->kind == SV_UNDEF) fail("%s", v->u.err);
+    SVal **next = NEWN(SVal *, nvars);
+    memcpy(next, b.next, sizeof(SVal *) * (size_t)nvars);
+    next[var] = v;
+    b.next = next;
+    return b;
+}
+
+static int same_assigned(Branch *a, Branch *b) {
+    for (int i = 0; i < nvars; i++) if (!a->next[i] != !b->next[i]) return 0;
+    return 1;
+}
+
+/* One branch for bs: the first of pick whose branch is taken. */
+static Branch merge_branches(Branch *bs, int n, int *pick) {
+    Branch m = {L_FALSE, NEWN(SVal *, nvars)};
+    for (int i = 0; i < n; i++) m.guard = g_or(m.guard, g_and(pick[i], bs[i].guard));
+    for (int v = 0; v < nvars; v++) {
+        if (!bs[0].next[v]) continue;
+        SVal *x = bs[n - 1].next[v];
+        for (int i = n - 2; i >= 0; i--) x = sv_ite(pick[i], bs[i].next[v], x);
+        m.next[v] = x;
+    }
+    return m;
+}
+
+/* The branches of in, those that assign the same variables merged; an
+   exclusive set's guards choose, as no two hold together. */
+static void merge_into(Branches *in, Branches *out, int exclusive) {
+    char *done = NEWN(char, in->n > 0 ? in->n : 1);
+    Branch *group = NEWN(Branch, in->n > 0 ? in->n : 1);
+    for (int i = 0; i < in->n; i++) {
+        if (done[i]) continue;
+        int n = 0;
+        for (int j = i; j < in->n; j++)
+            if (!done[j] && same_assigned(&in->v[i], &in->v[j])) { done[j] = 1; group[n++] = in->v[j]; }
+        if (n == 1) { branches_add(out, group[0]); continue; }
+        int *pick = exclusive ? NEWN(int, n) : one_hot(n);
+        for (int k = 0; exclusive && k < n; k++) pick[k] = group[k].guard;
+        branches_add(out, merge_branches(group, n, pick));
+    }
+}
+
+static void act(Expr *e, SCtx sc, Branch in, Branches *out);
+
+typedef struct { Expr *body; Branch in; Branches *out; } SAct;
+
+static void sym_act_fn(SCtx inner, int g, SVal *key, void *data) {
+    (void)key;
+    SAct *a = data;
+    act(a->body, inner, branch_and(a->in, g), a->out);
+}
+
+/* The variable that `lhs = e` or `lhs \in S` assigns, -1 if none. */
+static int assign_target(Expr *lhs) {
+    if (!sym_init) {
+        if (lhs->kind != K_PRIME) return -1;
+        lhs = lhs->args[0];
+    }
+    if (lhs->kind != K_DECL || lhs->def->kind != D_VAR) return -1;
+    if (lhs->def->var_index < 0) fail_at(lhs, "Symbolic checking cannot assign the variable %s of an instance.", S(lhs->def->name));
+    return lhs->def->var_index;
+}
+
+static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
+    if (e->kind == X_TUPLE) {
+        for (int i = 0; i < e->n; i++) b = act_unchanged(e->args[i], sc, b);
+        return b;
+    }
+    if (e->kind == K_CALL && e->def->kind == D_OP && !e->def->native && !e->def->replacement && !e->n && e->def->local != 2)
+        return act_unchanged(e->def->body, (SCtx){{NULL, sc.c.inst}, NULL}, b);
+    if (e->kind == K_DECL && e->def->kind == D_VAR && e->def->var_index >= 0) {
+        int v = e->def->var_index;
+        return b.next[v] ? branch_and(b, sv_eq(b.next[v], sym_cur[v])) : branch_set(b, v, sym_cur[v]);
+    }
+    sym_next = b.next;
+    SVal *now = sym(e, sc, P_BOTH);
+    sym_primed = 1;
+    SVal *then = sym(e, sc, P_BOTH);
+    sym_primed = 0;
+    return branch_and(b, sv_eq(now, then));
+}
+
+static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
+    if (in.guard == L_FALSE) return;
+    sym_next = in.next;
+    if (expr_info(e)->level < (sym_init ? 1 : 2)) { branches_add(out, branch_and(in, sym_bool(e, sc, P_POS))); return; }
+    Branches tmp = {0};
+    switch (e->kind) {
+    case K_AND: {
+        Branches cur = {0};
+        branches_add(&cur, in);
+        for (int i = 0; i < e->n && cur.n; i++) {
+            Branches next = {0};
+            for (int k = 0; k < cur.n; k++) act(e->args[i], sc, cur.v[k], &next);
+            cur = (Branches){0};
+            merge_into(&next, &cur, 0);
+        }
+        for (int k = 0; k < cur.n; k++) branches_add(out, cur.v[k]);
+        return;
+    }
+    case K_OR:
+        for (int i = 0; i < e->n; i++) act(e->args[i], sc, in, &tmp);
+        merge_into(&tmp, out, 0);
+        return;
+    case X_EXISTS: {
+        SVal **sets = NEWN(SVal *, e->nb);
+        int64_t n = bindings_count(e->bounds, e->nb, sc, sets);
+        if (n < 0 || n > 64) {
+            int g;
+            SCtx inner = sym_skolem(e->bounds, e->nb, sc, sets, &g);
+            act(e->args[0], inner, branch_and(in, g), out);
+            return;
+        }
+        SAct a = {e->args[0], in, &tmp};
+        sym_bindings(e->bounds, e->nb, sets, sc, sym_act_fn, &a, e);
+        merge_into(&tmp, out, 0);
+        return;
+    }
+    case X_IF: {
+        int c = sym_bool(e->args[0], sc, P_BOTH);
+        act(e->args[1], sc, branch_and(in, c), &tmp);
+        act(e->args[2], sc, branch_and(in, c ^ 1), &tmp);
+        merge_into(&tmp, out, 1);
+        return;
+    }
+    case X_CASE: {
+        int none = L_TRUE;
+        for (int i = 0; i + 1 < e->n; i += 2) {
+            sym_next = in.next;
+            int c = e->args[i] ? sym_bool(e->args[i], sc, P_BOTH) : L_TRUE;
+            act(e->args[i + 1], sc, branch_and(in, g_and(none, c)), &tmp);
+            none = g_and(none, c ^ 1);
+        }
+        merge_into(&tmp, out, 1);
+        return;
+    }
+    case X_LET: act(e->args[0], let_ctx(e, sc), in, out); return;
+    case K_CALL: {
+        Def *d = e->def->replacement ? e->def->replacement : e->def;
+        if (d->kind != D_OP || d->native) break;
+        SCtx inner = {{NULL, sc.c.inst}, NULL};
+        if (d->local == 2) {
+            SEnv *b = senv_find(sc.s, d);
+            Env *cb = b ? NULL : env_find(sc.c.env, d);
+            if (!b && !cb) break;
+            inner = b ? b->ctx : (SCtx){{cb->ctx_env, cb->ctx_inst}, NULL};
+        }
+        inner = sym_bind_args(d, e->args, e->n, sc, inner);
+        deeper();
+        act(d->body, inner, in, out);
+        eval_depth--;
+        return;
+    }
+    case K_EQ: case K_IN: {
+        int v = assign_target(e->args[0]);
+        if (v < 0 || in.next[v]) break;
+        int saved = sym_primed;
+        sym_primed = sym_init;
+        SVal *x = sym(e->args[1], sc, P_BOTH);
+        sym_primed = saved;
+        if (e->kind == K_EQ) { branches_add(out, branch_set(in, v, x)); return; }
+        int g;
+        SVal *pick = sv_pick(x, &g);
+        if (g == L_FALSE) return;
+        branches_add(out, branch_set(branch_and(in, g), v, pick));
+        return;
+    }
+    case K_UNCHANGED:
+        if (sym_init) break;
+        branches_add(out, act_unchanged(e->args[0], sc, in));
+        return;
+    case X_SQACT: {
+        act(e->args[0], sc, in, &tmp);
+        if (!sym_init) branches_add(&tmp, act_unchanged(e->args[1], sc, in));
+        merge_into(&tmp, out, 0);
+        return;
+    }
+    default: break;
+    }
+    sym_next = in.next;
+    branches_add(out, branch_and(in, sym_bool(e, sc, P_POS)));
+}
+
+/* The single branch of an action that assigns every variable, as one
+   step needs; NULL if it is never enabled. */
+static Branch *act_step(Expr *e, Ctx c, const char *what) {
+    Branches out = {0};
+    Branch in = {L_TRUE, NEWN(SVal *, nvars)};
+    act(e, (SCtx){c, NULL}, in, &out);
+    if (!out.n) return NULL;
+    for (int k = 0; k < out.n; k++)
+        for (int v = 0; v < nvars; v++)
+            if (!out.v[k].next[v])
+                fail_at(e, "%s does not assign the variable %s on every branch, as symbolic checking requires.", what, S(vars[v]->name));
+    Branches one = {0};
+    merge_into(&out, &one, 0);
+    Branch *b = NEW(Branch);
+    *b = one.v[0];
+    return b;
+}
+
+/* ---------------------------------------------------------------- symbolic checking */
+
+static long sym_length = 10;
+
+static void sym_print(Value ***s, int *act_of, int n) {
+    printf("Error: The behavior up to this point is:\n");
+    for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], s[i], i ? s[i - 1] : NULL, s[i + (i + 1 < n)]);
+}
+
+/* Each state of the behavior the model gives, checked by the evaluator:
+   it satisfies Init, each step its action and, for a violation, the last
+   state does not satisfy the invariant. A behavior that does not replay
+   is a fault of the symbolic encoding, reported as such. */
+static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, Value ****out, int **acts) {
+    Value ***s = NEWN(Value **, n);
+    int *act_of = NEWN(int, n);
+    for (int i = 0; i < n; i++) {
+        s[i] = NEWN(Value *, nvars);
+        for (int v = 0; v < nvars; v++) s[i][v] = sv_model(st[i][v]);
+        act_of[i] = -1;
+        if (i) for (int k = 0; k < nenabled[i - 1]; k++) if (lit_true(picks[i - 1][k])) act_of[i] = enabled[i - 1][k];
+    }
+    EvalState es = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    const char *wrong = NULL;
+    if (sigsetjmp(here, 0)) { eval_restore(es); wrong = error_message.s ? error_message.s : "an error"; }
+    else {
+        cur_state = s[0];
+        next_state = NULL;
+        if (!eval_bool(init_expr, root_ctx)) wrong = "the initial state does not satisfy the initial predicate";
+        for (int i = 1; i < n && !wrong; i++) {
+            cur_state = s[i - 1];
+            next_state = s[i];
+            Action *a = &actions[act_of[i]];
+            if (!eval_bool(a->e, a->c)) wrong = "a step is not one of its action";
+        }
+        if (!wrong && bad >= 0) {
+            cur_state = s[n - 1];
+            next_state = NULL;
+            if (eval_bool(invariants[bad].expr, invariants[bad].ctx)) wrong = "the last state satisfies the invariant";
+        }
+        eval_restore(es);
+    }
+    if (wrong) {
+        printf("Error: The behavior symbolic checking found does not replay: %s.\nThis is a bug in manyan.\n", wrong);
+        sym_print(s, act_of, n);
+        return 0;
+    }
+    *out = s;
+    *acts = act_of;
+    return 1;
+}
+
+
+static int symbolic(void) {
+    if (ntemporal_props || naction_props || nconstraints || naction_constraints || nimplied_inits) {
+        printf("Error: Symbolic checking checks invariants and deadlock only: the configuration has properties or constraints.\n");
+        return MANYAN_ERROR;
+    }
+    sat_init();
+    SVal ***st = NEWN(SVal **, sym_length + 1);
+    int **picks = NEWN(int *, sym_length + 1), **enabled = NEWN(int *, sym_length + 1), *nenabled = NEWN(int, sym_length + 1);
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        handler = NULL;
+        printf("Error: ");
+        print_error_text();
+        return MANYAN_ERROR;
+    }
+    sym_init = sym_primed = 1;
+    Branch *init = act_step(init_expr, root_ctx, "The initial predicate");
+    sym_init = sym_primed = 0;
+    if (init) {
+        sat_unit(init->guard);
+        st[0] = init->next;
+    }
+    /* stuck: no behavior goes on, which is a deadlock if they are checked */
+    int depth = 0, bad = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
+    for (; !stuck; depth++) {
+        sym_cur = st[depth];
+        sym_next = NULL;
+        for (int i = 0; i < ninvariants && bad < 0; i++) {
+            int violated = sym_bool(invariants[i].expr, (SCtx){invariants[i].ctx, NULL}, P_NEG) ^ 1;
+            if (sat_solve(&violated, 1)) bad = i;
+        }
+        if (bad >= 0 || depth == sym_length || !nactions) break;
+        Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
+        enabled[depth] = NEWN(int, nactions);
+        for (int k = 0; k < nactions; k++) {
+            sym_cur = st[depth];
+            steps[k] = act_step(actions[k].e, actions[k].c, "The action");
+            if (steps[k]) { by[nenabled[depth]] = *steps[k]; enabled[depth][nenabled[depth]++] = k; }
+        }
+        picks[depth] = one_hot(nenabled[depth]);
+        Branch step = nenabled[depth] ? merge_branches(by, nenabled[depth], picks[depth]) : (Branch){L_FALSE, NULL};
+        if (!sat_solve(&step.guard, 1)) { stuck = 1; break; }
+        sat_unit(step.guard);
+        st[depth + 1] = step.next;
+    }
+    if (bad < 0 && !(stuck && check_deadlock)) {
+        handler = NULL;
+        printf("Model checking completed. No error has been found");
+        if (none) printf(". No state satisfies the initial predicate.\n");
+        else if (stuck) printf(". No behavior has more than %d steps.\n", depth);
+        else printf(" in behaviors of up to %ld steps.\n", sym_length);
+        return MANYAN_OK;
+    }
+    if (none) {
+        handler = NULL;
+        printf("Error: Deadlock reached.\nError: No state satisfies the initial predicate.\n");
+        return MANYAN_VIOLATION_SAFETY;
+    }
+    if (bad < 0) sat_solve(NULL, 0);
+    else {
+        int violated = sym_bool(invariants[bad].expr, (SCtx){invariants[bad].ctx, NULL}, P_NEG) ^ 1;
+        sat_solve(&violated, 1);
+    }
+    handler = NULL;
+    Value ***states;
+    int *act_of;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, &states, &act_of)) return MANYAN_ERROR;
+    if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+    else printf("Error: Deadlock reached.\n");
+    sym_print(states, act_of, depth + 1);
+    return MANYAN_VIOLATION_SAFETY;
+}
+
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
     size_t len = strlen(o->spec);
@@ -13685,7 +16033,8 @@ int manyan_check(const ManyanOptions *o) {
     }
     /* A simulation is TLC's with one worker; -continue reports in the search's order. */
     nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
-    status = o->simulate ? simulate(o) : search();
+    sym_length = o->length ? o->length : 10;
+    status = o->symbolic ? symbolic() : o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();
     stop_workers();
@@ -13719,6 +16068,8 @@ int main(int argc, char **argv) {
             }
         }
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
+        else if (strcmp(argv[i], "-symbolic") == 0) o.symbolic = 1;
+        else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
         else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);
         else if (strcmp(argv[i], "-workers") == 0 && i + 1 < argc) {

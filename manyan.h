@@ -44,6 +44,8 @@ typedef struct {
     long long aril;      /* simulation: draws to skip after seeding (-aril) */
     const char *trace_file;  /* simulation: write behavior N to FILE_0_N, or NULL (-simulate file=FILE) */
     const char *const *properties;  /* Java system properties, "k=v" each, NULL-terminated (-Dk=v) */
+    int symbolic;        /* check behaviors of up to length steps with a solver, as Apalache does (-symbolic) */
+    long length;         /* symbolic checking: the steps in a behavior, 0 for 10 (-length) */
 } ManyanOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an

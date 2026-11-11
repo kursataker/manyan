@@ -36,8 +36,15 @@ COMMUNITY = $(OBJDIR)/CommunityModules-$(COMMUNITY_REV)
 JAVA ?= $(firstword $(wildcard /opt/homebrew/opt/openjdk/bin/java) java)
 TLC_CP = $(abspath $(TLA_JAR)):$(abspath $(COMMUNITY)/modules.jar)
 TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP) tlc2.TLC
+# Apalache 0.63.0, the oracle of -symbolic, pinned by checksum; it runs
+# on the same Java.
+APALACHE_VERSION = 0.63.0
+APALACHE_URL = https://github.com/apalache-mc/apalache/releases/download/v$(APALACHE_VERSION)/apalache-$(APALACHE_VERSION).tgz
+APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59df
+APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
+APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench install clean
 
 all: manyan
 
@@ -73,7 +80,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec
+test: test-spec test-symbolic
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -86,6 +93,23 @@ test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 # Rewrite the expected outputs from the oracle (after adding a test).
 bless: $(TLA_JAR) $(COMMUNITY)
 	python3 tests/spec_runner.py ./manyan --oracle "$(TLC)" --bless $(if $(ONLY),--only $(ONLY))
+
+# -symbolic against Apalache: the outcome of each test in tests/symbolic.
+test-symbolic: manyan
+	python3 tests/symbolic_runner.py ./manyan --strict
+
+test-symbolic-oracle: manyan $(APALACHE)
+	python3 tests/symbolic_runner.py ./manyan --strict --oracle "$(APALACHE_RUN)"
+
+bless-symbolic: $(APALACHE)
+	python3 tests/symbolic_runner.py ./manyan --oracle "$(APALACHE_RUN)" --bless $(if $(ONLY),--only $(ONLY))
+
+$(APALACHE):
+	mkdir -p $(OBJDIR)
+	curl -fsSL -o $(OBJDIR)/apalache.tgz.tmp $(APALACHE_URL)
+	echo "$(APALACHE_SHA256)  $(OBJDIR)/apalache.tgz.tmp" | shasum -a 256 -c -
+	tar xzf $(OBJDIR)/apalache.tgz.tmp -C $(OBJDIR) && rm $(OBJDIR)/apalache.tgz.tmp
+	touch $@
 
 test-tla: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 tests/tla_check.py ./manyan --tlc "$(TLC)"
