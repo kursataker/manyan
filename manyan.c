@@ -2220,6 +2220,7 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 if (!s[len] || s[len] == '\n') parse_error(file, t->line, t->col, "Unterminated string");
                 if (s[len] == '\\') {
                     char e = s[len + 1];
+                    if (!e) parse_error(file, t->line, t->col, "Unterminated string");
                     char c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'f' ? '\f' : e;
                     buf_add(&b, &c, 1);
                     len += 2;
