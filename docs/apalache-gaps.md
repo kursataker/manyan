@@ -13,8 +13,8 @@ in TLC's format, with TLC's exit statuses.
 
 | | checks | |
 |---|---:|---|
-| ported, giving Apalache's verdict | 179 | invariants (state, action, trace), temporal properties, deadlock, `--cinit` |
-| skipped | 9 | below |
+| ported, giving Apalache's verdict | 182 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen` |
+| skipped | 6 | below |
 | not ported: options `-symbolic` lacks | about 20 | below |
 | Apalache refuses the specification | 37 | below |
 
@@ -28,8 +28,6 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
   function to arbitrary sets of integers. Bounding the sets' size would
   miss behaviors.
 - SafeMath, SafeMath_2: integers of more than 64 bits.
-- Bug2973, Bug2973_2, Bug3158: `Gen`, whose bound comes from Apalache's
-  types (see `apalache-mc typecheck` below).
 - TestFunctions: Apalache itself runs out of 4 GB.
 - FoldSetInInit: `ApaFoldSet` over `SUBSET (1..10)` takes more than 1 GB.
 
@@ -70,7 +68,8 @@ tlaplus/Examples, `-typecheck` gives Apalache's outcome on 58. Of the
 others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
 (SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
 Apalache names the last in SANY's hash table, Manyan the last declared.
-`-symbolic` does not yet use the types, so `Gen` stays unsupported.
+`-symbolic` uses the types for `Gen` only, and only where a call has one
+type: not in an operator whose parameters leave it open.
 
 ## Output
 

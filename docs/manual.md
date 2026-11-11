@@ -150,8 +150,8 @@ the assumptions then constrain that choice. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
-0.63.0: `make test-symbolic` runs 179 of Apalache's integration tests and
-34 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+0.63.0: `make test-symbolic` runs 182 of Apalache's integration tests and
+36 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -161,9 +161,13 @@ counterexample, and none stutters but as `Next` does. A violation is
 printed as TLC prints one, ending with `Back to state N`. Fairness in the
 specification is not supported with properties, as it needs `ENABLED`.
 
+`Gen(n)` is any value of its type, with sets, functions and sequences of
+up to `n` elements, as in Apalache: the specification is type checked
+first, as `-typecheck` checks it, and each call makes another value.
+
 Not supported yet: fairness and `ENABLED`; constraints; functions over an
-infinite domain; `Gen`, which needs Apalache's types; integers beyond 64
-bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
+infinite domain; `Gen` in an operator whose parameters leave its type
+open, and of strings or variants; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.
 
 ## Type checking (experimental)

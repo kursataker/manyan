@@ -6202,6 +6202,31 @@ typedef struct { Expr *e; Value **vals; } Witness;
 static Witness *witnesses;
 static int nwitnesses;
 
+/* The values symbolic checking chose for each call of Apalache's Gen, as
+   it replays a behavior: a call's in step 0 (Init) or N (the Nth step),
+   in the order they were made. */
+typedef struct { Expr *e; int step, used; Value *v; } GenValue;
+static GenValue *gen_values;
+static int ngen_values, gen_step;
+
+static int is_gen(Def *d) {
+    static int gen, apalache;
+    if (!gen) gen = intern("Gen"), apalache = intern("Apalache");
+    return d->name == gen && d->mod && d->mod->name == apalache && d->kind == D_OP;
+}
+
+static Value *gen_value(Expr *call) {
+    GenValue *any = NULL;
+    for (int i = 0; i < ngen_values; i++) {
+        GenValue *g = &gen_values[i];
+        if (g->e != call) continue;
+        if (g->step == gen_step && !g->used) { g->used = 1; return g->v; }
+        if (!any) any = g;
+    }
+    if (!any) fail_at(call, "Symbolic checking chose no value for this Gen.");
+    return any->v;
+}
+
 /* Whether a value chosen for \E e satisfies it in c: tried before its
    bounds, which may be infinite, are enumerated. */
 static int witnessed(Expr *e, Ctx c) {
@@ -6546,6 +6571,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
     if (d->value) return d->value;
+    if (ngen_values && is_gen(d)) return gen_value(call);
     if (d->kind == D_FCN) {
         if (d->local != 2 && d->level == 0 && d->cache) return d->cache;
         Value *v = fcndef_value(d, c);
@@ -14998,6 +15024,9 @@ static SVal **sym_cur;     /* the state being read */
 static SVal **sym_next;    /* the next state as far as assigned */
 static int sym_primed;     /* reading the next state */
 static int sym_init;       /* an initial predicate: assigning unprimed variables */
+static int sym_gen_step;   /* what makes the values of Gen: 0 Init, N the Nth step, -1 another */
+static struct { Expr *e; int step; SVal *v; } *sym_gens;   /* those values, for the evaluator to replay */
+static int nsym_gens;
 static SVal *sym_at;       /* @ in an EXCEPT */
 static Def **sym_consts;   /* the constants -cinit chooses */
 static SVal **sym_const_vals;
@@ -15068,7 +15097,7 @@ static int def_sym_level(Def *d) {
     static Def *busy[256];
     static int nbusy;
     if (d->replacement) d = d->replacement;
-    if (d->kind == D_VAR || (d->native && sym_impure(d->native))) return 1;
+    if (d->kind == D_VAR || (d->native && sym_impure(d->native)) || is_gen(d)) return 1;
     if (d->kind == D_INST) {
         int l = 0;
         for (int i = 0; i < d->nsubst; i++) if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_info(d->subst_expr[i])->level; if (b > l) l = b; }
@@ -15548,6 +15577,7 @@ static SCtx let_ctx(Expr *e, SCtx sc) {
 static SVal *seq_len(SVal *s);
 
 static SVal *sym_parts(Expr *e, SCtx sc, int pol);
+static SVal *sym_gen(Expr *e, SCtx sc);
 
 /* Where the evaluator fails on e, only the part of e that fails is
    undefined, as Apalache has it, and e has one meaning in its context
@@ -15574,9 +15604,11 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     case K_DECL: return sym_decl(e->def, sc, e);
     case K_CALL: case K_PARAMCALL:
         if (e->def->kind == D_VAR) return sym_decl(e->def, sc, e);
+        if (is_gen(e->def)) return sym_gen(e, sc);
         return sym_call(e->def, e->args, e->n, sc, sc, e, pol);
     case K_INSTCALL: {
         Def *d = e->def;
+        if (is_gen(d)) return sym_gen(e, sc);
         if (d->replacement) return sym_call(d, e->args, e->n, sc, sc, e, pol);
         SCtx at = {{NULL, sym_instance(e, sc)}, NULL};
         if (d->kind == D_CONST || d->kind == D_VAR) return sym_decl(d, at, e);
@@ -16233,6 +16265,9 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
         w->vals = NEWN(Value *, n);
         while (k--) w->vals[k] = sv_model(sym_witnesses[i].vals[k]);
     }
+    gen_values = NEWN(GenValue, nsym_gens + 1);
+    for (int i = 0; i < nsym_gens; i++) gen_values[i] = (GenValue){sym_gens[i].e, sym_gens[i].step, 0, sv_model(sym_gens[i].v)};
+    ngen_values = nsym_gens;
     EvalState es = eval_save();
     sigjmp_buf here;
     handler = &here;
@@ -16240,8 +16275,10 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
     if (sigsetjmp(here, 0)) { eval_restore(es); wrong = error_message.s ? error_message.s : "an error"; }
     else {
         cur_state = next_state = s[0];   /* x' is x in the initial predicate */
+        gen_step = 0;
         if (!eval_bool(init_expr, root_ctx)) wrong = "the initial state does not satisfy the initial predicate";
         for (int i = 1; i < n && !wrong; i++) {
+            gen_step = i;
             cur_state = s[i - 1];
             next_state = s[i];
             Action *a = &actions[act_of[i]];
@@ -16269,7 +16306,7 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
         }
         eval_restore(es);
     }
-    nwitnesses = 0;
+    nwitnesses = ngen_values = 0;
     if (wrong) {
         printf("Error: The behavior symbolic checking found does not replay: %s.\nThis is a bug in manyan.\n", wrong);
         sym_print(s, act_of, n);
@@ -16404,6 +16441,7 @@ static int symbolic(void) {
     sym_init = sym_primed = 1;
     if (init) init = act_step(init_expr, root_ctx, "The initial predicate");
     sym_init = sym_primed = 0;
+    sym_gen_step = -1;
     if (init) {
         sat_unit(init->guard);
         st[0] = init->next;
@@ -16424,11 +16462,13 @@ static int symbolic(void) {
         if (bad >= 0 || prop >= 0 || depth == sym_length || !nactions) break;
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
         enabled[depth] = NEWN(int, nactions);
+        sym_gen_step = depth + 1;
         for (int k = 0; k < nactions; k++) {
             sym_cur = st[depth];
             steps[k] = act_step(actions[k].e, actions[k].c, "The action");
             if (steps[k]) { by[nenabled[depth]] = *steps[k]; enabled[depth][nenabled[depth]++] = k; }
         }
+        sym_gen_step = -1;
         picks[depth] = one_hot(nenabled[depth]);
         Branch step = nenabled[depth] ? merge_branches(by, nenabled[depth], picks[depth]) : (Branch){L_FALSE, NULL};
         if (!sat_solve(&step.guard, 1)) { stuck = 1; break; }
@@ -18155,6 +18195,10 @@ static Type *tc_opname(Def *d, Expr *at) {
     return tc_name(d, at, &oper);
 }
 
+/* The type of each call of Apalache's Gen. */
+static struct { Expr *e; Type *t; } *gen_types;
+static int ngen_types;
+
 static Type *tc(Expr *e) {
     Type *a, *b, **ts;
     switch (e->kind) {
@@ -18188,7 +18232,12 @@ static Type *tc(Expr *e) {
         tc_frame = callee;
         a = tc_name(d, e, &oper);
         tc_frame = caller;
-        return !oper && !e->n ? a : tc_app_why(e, EX_CALL, d->name, &a, 1, ts, e->n);
+        a = !oper && !e->n ? a : tc_app_why(e, EX_CALL, d->name, &a, 1, ts, e->n);
+        if (is_gen(d)) {   /* for symbolic checking to make its value */
+            gen_types = xrealloc(gen_types, sizeof *gen_types * (size_t)(ngen_types + 1));
+            gen_types[ngen_types].e = e, gen_types[ngen_types++].t = a;
+        }
+        return a;
     }
     case X_OPREF: return tc_opname(e->def, e);
     case X_LAMBDA: {
@@ -18753,8 +18802,10 @@ static Type *tc_letdef(Def *d) {
 }
 
 /* -typecheck: the root module's declarations, as Apalache's TypeCheckerTool checks them. */
+static int tc_quiet;   /* for symbolic checking: only the errors */
+
 static int typecheck(Module *m) {
-    printf("Type checking %s.tla\n", S(m->name));
+    if (!tc_quiet) printf("Type checking %s.tla\n", S(m->name));
     jmp_buf here;
     tc_unwind = &here;
     tc_status = 0;
@@ -18806,9 +18857,80 @@ static int typecheck(Module *m) {
         printf("Type checker [FAILED]\n");
         return 120;
     }
-    printf(" > Your types are purrfect!\n");
-    printf("Type checker [OK]\n");
+    if (!tc_quiet) printf(" > Your types are purrfect!\n");
+    if (!tc_quiet) printf("Type checker [OK]\n");
     return MANYAN_OK;
+}
+
+/* ---------------------------------------------------------------- Gen */
+
+/* Apalache's Gen(n): any value of its type, with sets, functions and
+   sequences of up to n elements, which the type checker tells. */
+static SVal *gen_of(Type *t, int n, Expr *at) {
+    t = ty_zonk(t);
+    SVal *r;
+    switch (t->kind) {
+    case TY_BOOL: return sv_bool(2 * sat_var());
+    case TY_INT: return sv_bits(SV_INT, bv_fresh());
+    case TY_SET:
+        r = sv_set(n);
+        for (int i = 0; i < n; i++) set_add(r, gen_of(t->args[0], n, at), 2 * sat_var());
+        return r;
+    case TY_SEQ:
+        r = sv_fcn(n, 0);
+        for (int i = 0; i < n; i++) {
+            int g = 2 * sat_var();
+            if (i) sat_add2(g ^ 1, r->u.fcn.guards[i - 1]);   /* its indices are 1..Len */
+            fcn_add(r, sv_int_const(i + 1), gen_of(t->args[0], n, at), g);
+        }
+        return r;
+    case TY_FUN:
+        r = sv_fcn(n, 0);
+        for (int i = 0; i < n; i++) {
+            fcn_add(r, gen_of(t->args[0], n, at), gen_of(t->args[1], n, at), 2 * sat_var());
+            for (int j = 0; j < i; j++)   /* a key once */
+                sat_add2(g_and(r->u.fcn.guards[i], r->u.fcn.guards[j]) ^ 1, sv_eq(r->u.fcn.keys[i], r->u.fcn.keys[j]) ^ 1);
+        }
+        return r;
+    case TY_TUP:
+        r = sv_fcn(t->n, 0);
+        for (int i = 0; i < t->n; i++) fcn_add(r, sv_int_const(i + 1), gen_of(t->args[i], n, at), L_TRUE);
+        return r;
+    case TY_REC: {
+        Type *row = ty_zonk(t->args[0]);
+        if (row->kind != TY_ROW || (row->tail && ty_zonk(row->tail)->kind != TY_ROW)) break;
+        r = sv_fcn(row->n, 1);
+        for (int i = 0; i < row->n; i++) fcn_add(r, sv_const(mk_str(row->keys[i])), gen_of(row->args[i], n, at), L_TRUE);
+        return r;
+    }
+    default: break;
+    }
+    if (t->kind == TY_VAR) fail_at(at, "Symbolic checking cannot tell the type of this Gen: the operator's parameters leave it open.");
+    Buf b = {0};
+    ty_print(&b, t);
+    fail_at(at, "Symbolic checking cannot make a Gen of type %s.", b.s);
+}
+
+static SVal *sym_gen(Expr *e, SCtx sc) {
+    static int typed;
+    if (!typed) {   /* the types, once, as Apalache checks them first */
+        Arena *saved = arena;
+        tc_quiet = typed = 1;
+        int status = typecheck(root);
+        tc_quiet = 0;
+        arena = saved;
+        if (status) fail_at(e, "Symbolic checking needs the types of Gen's values, and the specification's types do not check.");
+    }
+    SVal *size = e->n == 1 ? sym(e->args[0], sc, P_BOTH) : NULL;
+    if (!size || size->kind != SV_CONST || size->value->kind != V_INT || size->value->u.i < 0 || size->value->u.i > 64)
+        fail_at(e, "Symbolic checking needs Gen's size as a constant from 0 to 64.");
+    Type *t = NULL;
+    for (int i = 0; i < ngen_types && !t; i++) if (gen_types[i].e == e) t = gen_types[i].t;
+    if (!t) fail_at(e, "Symbolic checking cannot tell the type of this Gen.");
+    SVal *v = gen_of(t, (int)size->value->u.i, e);
+    sym_gens = xrealloc(sym_gens, sizeof *sym_gens * (size_t)(nsym_gens + 1));
+    sym_gens[nsym_gens].e = e, sym_gens[nsym_gens].step = sym_gen_step, sym_gens[nsym_gens++].v = v;
+    return v;
 }
 
 int manyan_check(const ManyanOptions *o) {

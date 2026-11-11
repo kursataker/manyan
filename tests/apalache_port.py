@@ -42,8 +42,6 @@ WIRED = {"BagsExt": "__rewire_bags_ext_in_apalache", "Functions": "__rewire_func
 # The tests ported by name that -symbolic does not take, and why.
 SKIP = {
     "TestFunctions": "Apalache runs out of 4 GB of heap",
-    "Bug2973": "Gen needs Apalache's types", "Bug2973_2": "Gen needs Apalache's types",
-    "Bug3158": "Gen needs Apalache's types",
     "InfDomFun": "Apalache reports f[0] = 42 violated, where f[0] is 42", "FunInInfiniteSubset": "a function over an infinite domain",
     "SafeMath": "integers of more than 64 bits", "SafeMath_2": "integers of more than 64 bits",
     "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",

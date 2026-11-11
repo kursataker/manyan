@@ -6,6 +6,9 @@ unreleased:
   messages and exit statuses. All 75 of Apalache 0.63.0's type checking
   tests give its outcome (tests/typecheck/apalache, ported by
   tests/apalache_port.py)
+- `-symbolic` makes Apalache's `Gen(n)` from the types `-typecheck` infers:
+  Bug2973 and Bug3158 of Apalache's tests now run, and 182 of them give its
+  outcome
 
 2026-11-12 0.10.0:
 
