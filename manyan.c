@@ -8734,8 +8734,10 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
 
 /* Whether action a has a successor from the current state. */
 static int enabled_found;
+static Value **enabled_seen;   /* if set, where the successor found is put */
 static int enabled_emit(void) {
     enabled_found = 1;
+    if (enabled_seen) memcpy(enabled_seen, gen_target, sizeof *gen_target * (size_t)nvars);
     return 1;
 }
 
@@ -13039,6 +13041,22 @@ static int fair_step(Fair *f, int s, int to) {
     return holds_in(f->step, f->c, state_values(s), state_values(to));
 }
 
+/* Whether the lasso of the n states ls, back to ls[cyc], is fair. */
+static int fair_on_lasso(Value ***ls, int n, int cyc) {
+    for (int f = 0; f < nfairs; f++) {
+        int took = 0, on = 0, off = 0;
+        for (int i = cyc; i < n; i++) {
+            cur_state = ls[i], next_state = ls[i + 1 < n ? i + 1 : cyc];
+            took |= eval_bool(fairs[f].step, fairs[f].c);
+            next_state = NULL;
+            if (eval_bool(fairs[f].enabled, fairs[f].c)) on = 1;
+            else off = 1;
+        }
+        if (!took && (fairs[f].strong ? on : !off)) return 0;
+    }
+    return 1;
+}
+
 static void collect_fairness(Expr *e, Ctx c);
 
 static int fairness_bound_fn(Ctx c, void *body) {
@@ -16392,9 +16410,10 @@ static TF **sym_negated;
 /* Each state of the behavior the model gives, checked by the evaluator:
    it satisfies Init, each step its action and, for a violation, the last
    state does not satisfy invariant bad, or the behavior is a lasso, back
-   to state *loop, that violates property prop. A behavior that does not
+   to state *loop, or stuttering at its last, that violates property prop
+   and is fair. A behavior that does not
    replay is a fault of the symbolic encoding, reported as such. */
-static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, int prop, int *loop, Value ****out, int **acts) {
+static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, int prop, int stutter, int *loop, Value ****out, int **acts) {
     for (int i = 0; i < nsym_consts; i++) sym_consts[i]->value = sv_model(sym_const_vals[i]);
     Value ***s = NEWN(Value **, n);
     int *act_of = NEWN(int, n);
@@ -16446,14 +16465,15 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
             if (eval_bool(c->expr, at)) wrong = "the last state satisfies the invariant";
         }
         if (!wrong && prop >= 0) {
-            int l = 0;
-            for (int v; l < n - 1; l++) {
+            int l = 0, m = n - !stutter;   /* the lasso's states */
+            for (int v; l < n - 1 && !stutter; l++) {
                 for (v = 0; v < nvars && veq(s[l][v], s[n - 1][v]); v++) {}
                 if (v == nvars) break;
             }
             *loop = l;
-            if (l == n - 1) wrong = "the last state is none before it";
-            else if (!holds_on_lasso(sym_negated[prop], s, n - 1, l, 0)) wrong = "the lasso satisfies the property";
+            if (l == m) wrong = "the last state is none before it";
+            else if (!holds_on_lasso(sym_negated[prop], s, m, l, 0)) wrong = "the lasso satisfies the property";
+            else if (!fair_on_lasso(s, m, l)) wrong = "the lasso is not fair";
         }
         eval_restore(es);
     }
@@ -16506,7 +16526,12 @@ static int sym_violated(int i, SVal ***st, int depth) {
    of k steps whose last state is one before it, as the bounded encoding
    of Biere et al. (2006) has it. A behavior with no such loop is no
    counterexample. Each lasso Apalache finds is one, but where its
-   tableau's own variables differ, it may find only a longer one. */
+   tableau's own variables differ, it may find only a longer one.
+
+   Apalache has no fairness. With fairness, the counterexample is TLC's:
+   a fair lasso, which may also stutter forever at its last state. */
+
+typedef struct { SVal ***st; int k, *back; } Lasso;   /* st[0..k]: back[j], whether the loop goes back to j or before */
 
 static int states_eq(SVal **a, SVal **b) {
     int l = L_TRUE;
@@ -16546,15 +16571,86 @@ static int sym_lasso(TF *t, SVal ***st, int k, int *back, int i, LassoMemo **mem
     return l;
 }
 
-/* The literal that the behavior st[0..k] is a lasso violating property p. */
-static int sym_lasso_violated(int p, SVal ***st, int k) {
-    if (!k) return L_FALSE;
-    int *back = NEWN(int, k);
+/* The behavior st[0..k] as a lasso, its last state one before it. */
+static Lasso sym_loop(SVal ***st, int k) {
+    int *back = NEWN(int, k + 1);
     for (int j = 0; j < k; j++) back[j] = g_or(j ? back[j - 1] : L_FALSE, states_eq(st[j], st[k]));
+    return (Lasso){st, k, back};
+}
+
+/* The behavior st[0..k] stuttering forever at st[k]. */
+static Lasso sym_stutter(SVal ***st, int k) {
+    SVal ***s = NEWN(SVal **, k + 2);
+    memcpy(s, st, sizeof *s * (size_t)(k + 1));
+    s[k + 1] = st[k];
+    int *back = NEWN(int, k + 1);
+    for (int j = 0; j < k; j++) back[j] = L_FALSE;
+    back[k] = L_TRUE;
+    return (Lasso){s, k + 1, back};
+}
+
+/* Whether fairness f's action is disabled at st[i]: a literal of its own,
+   which only sym_refine ties to the action. */
+static int **sym_disabled;
+
+static int sym_disabled_at(int f, int i) {
+    if (!sym_disabled[f][i]) sym_disabled[f][i] = 2 * sat_var();
+    return sym_disabled[f][i];
+}
+
+/* That the lasso is fair: for each WF_v(A), some step on its loop is an
+   <<A>>_v step or A is disabled at some state on it; for SF_v(A), at all. */
+static int sym_fair(Lasso ls) {
+    int fair = L_TRUE;
+    for (int f = 0; f < nfairs; f++) {
+        int strong = fairs[f].strong, took = L_FALSE, off = strong ? L_TRUE : L_FALSE;
+        for (int i = 0; i < ls.k; i++) {
+            int on = ls.back[i], d = sym_disabled_at(f, i);
+            sym_cur = ls.st[i], sym_next = ls.st[i + 1];
+            took = g_or(took, g_and(on, sym_bool(fairs[f].step, (SCtx){fairs[f].c, NULL}, P_BOTH)));
+            off = strong ? g_and(off, g_implies(on, d)) : g_or(off, g_and(on, d));
+        }
+        fair = g_and(fair, g_or(took, off));
+    }
+    return fair;
+}
+
+/* Whether the model's lasso is fair, as the evaluator finds it: where the
+   model has an action disabled that the evaluator finds enabled, the
+   successor it finds is no step of the action from any state disabled
+   so, for every model, and 0 is returned. */
+static int sym_refine(Lasso ls) {
+    for (int i = 0; i < nsym_consts; i++) sym_consts[i]->value = sv_model(sym_const_vals[i]);
+    int fair = 1;
+    for (int f = 0; f < nfairs; f++)
+        for (int i = 0; i < ls.k; i++) {
+            int d = sym_disabled[f][i];
+            if (!lit_true(ls.back[i]) || !lit_true(d)) continue;
+            Value **s = NEWN(Value *, nvars), **t = NEWN(Value *, nvars);
+            for (int v = 0; v < nvars; v++) s[v] = sv_model(ls.st[i][v]);
+            cur_state = s, next_state = NULL, enabled_seen = t;
+            int on = eval_bool(fairs[f].enabled, fairs[f].c);
+            enabled_seen = NULL;
+            if (!on) continue;
+            SVal **next = NEWN(SVal *, nvars);
+            for (int v = 0; v < nvars; v++) next[v] = sv_const(t[v] ? t[v] : s[v]);
+            sym_cur = ls.st[i], sym_next = next;
+            sat_add2(d ^ 1, sym_bool(fairs[f].step, (SCtx){fairs[f].c, NULL}, P_BOTH) ^ 1);
+            fair = 0;
+        }
+    return fair;
+}
+
+/* Whether a model has the lasso violate property p, fairly; it is left
+   as the solver's model. */
+static int sym_lasso_violated(int p, Lasso ls) {
+    if (!ls.k) return 0;
     LassoMemo *memo = NULL;
-    int n = 0, l = g_and(back[k - 1], sym_lasso(sym_negated[p], st, k, back, 0, &memo, &n));
+    int n = 0, l = g_and(ls.back[ls.k - 1], sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
     free(memo);
-    return l;
+    if (nfairness) l = g_and(l, sym_fair(ls));
+    while (sat_solve(&l, 1)) if (sym_refine(ls)) return 1;
+    return 0;
 }
 
 static int sym_types(void);
@@ -16584,7 +16680,7 @@ static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int
     sat_solve(&violated, 1);
     Value ***states;
     int *act_of, loop;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, &loop, &states, &act_of)) return 0;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, 0, &loop, &states, &act_of)) return 0;
     if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
     else printf("Error: Deadlock reached.\n");
     sym_print(states, act_of, depth + 1);
@@ -16615,10 +16711,6 @@ static int symbolic(void) {
     }
     if (sym_max_error > 1 && (!view_expr || sym_cinit_name)) {
         printf("Error: Symbolic checking finds more than one violation only of a configuration with a VIEW, which tells them apart, and without -cinit.\n");
-        return MANYAN_ERROR;
-    }
-    if (ntemporal_props && nfairness) {   /* which needs ENABLED, as Apalache's checking does */
-        printf("Error: Symbolic checking checks temporal properties without fairness: the specification has some.\n");
         return MANYAN_ERROR;
     }
     sat_init();
@@ -16653,9 +16745,15 @@ static int symbolic(void) {
         st[0] = init->next;
     }
     /* stuck: no behavior goes on, which is a deadlock if they are checked */
+    if (ntemporal_props) collect_fairnesses();
+    sym_disabled = NEWN(int *, nfairs + 1);
+    for (int f = 0; f < nfairs; f++) sym_disabled[f] = NEWN(int, sym_length + 2);
     sym_negated = NEWN(TF *, ntemporal_props + 1);
-    for (int p = 0; p < ntemporal_props; p++) sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
-    int depth = 0, bad = -1, prop = -1, stuck = !init || !sat_solve(NULL, 0), none = stuck;
+    for (int p = 0; p < ntemporal_props; p++) {   /* and the fairness that is no WF or SF, as TLC checks it */
+        sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+        for (int i = nfair_rest - 1; i >= 0; i--) sym_negated[p] = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), sym_negated[p]);
+    }
+    int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sat_solve(NULL, 0), none = stuck;
     int found = 0;   /* the violations reported, before the last one */
     SVal **views = NEWN(SVal *, sym_length + 1);
     for (; !stuck; depth++) {
@@ -16675,8 +16773,8 @@ static int symbolic(void) {
             }
         }
         for (int p = 0; p < ntemporal_props && bad < 0 && prop < 0; p++) {
-            int violated = sym_lasso_violated(p, st, depth);
-            if (sat_solve(&violated, 1)) prop = p;
+            if (sym_lasso_violated(p, sym_loop(st, depth))) prop = p;
+            else if (nfairness && sym_lasso_violated(p, sym_stutter(st, depth))) prop = p, stutter = 1;
         }
         if (bad >= 0 || prop >= 0 || depth == sym_length || !nactions) break;
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
@@ -16716,15 +16814,17 @@ static int symbolic(void) {
         handler = NULL;
         return ok ? MANYAN_VIOLATION_SAFETY : MANYAN_ERROR;
     }
-    int violated = sym_lasso_violated(prop, st, depth);
-    sat_solve(&violated, 1);
-    handler = NULL;
+    handler = NULL;   /* the solver's model is the lasso's */
     Value ***states;
-    int *act_of, loop;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, &loop, &states, &act_of)) return MANYAN_ERROR;
-    print_violated(states, depth, loop);   /* as TLC prints a lasso */
+    int *act_of, loop, n = depth + stutter;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, &loop, &states, &act_of)) return MANYAN_ERROR;
+    print_violated(states, n, loop);   /* as TLC prints a lasso */
     printf("Error: The following behavior constitutes a counter-example:\n\n");
-    for (int i = 0; i < depth; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + 1]);
+    for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + (i < depth)]);
+    if (stutter) {
+        printf("State %d: Stuttering\n", n + 1);
+        return MANYAN_VIOLATION_LIVENESS;
+    }
     printf("Back to state %d: ", loop + 1);
     action_label(act_of[depth]);
     printf("\n\n");

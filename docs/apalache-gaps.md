@@ -58,8 +58,9 @@ so Manyan may check a specification Apalache rejects.
 - A temporal property's counterexample is a lasso. Apalache closes a loop
   only where its tableau's own variables repeat too, so it may find only
   a longer lasso than Manyan; the length is not compared.
-- Fairness (`WF`, `SF`) in the specification is refused with temporal
-  properties: it needs `ENABLED`, which neither checks symbolically.
+- Apalache has no fairness: `WF` and `SF` are left for the user to write
+  out, and `ENABLED` too. With fairness in the specification, Manyan
+  gives TLC's verdict: a fair lasso, which may also stutter forever.
 - Constraints and action constraints are refused. Apalache 0.63.0 reads
   `CONSTRAINT` and `ACTION_CONSTRAINT` and then ignores them: with
   `CONSTRAINT x < 2` it reports `x < 3` violated, a state TLC never

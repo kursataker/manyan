@@ -16,6 +16,9 @@ unreleased:
 - `-symbolic -max-error N` finds up to N violations told apart by the
   configuration's `VIEW`, as Apalache's `--max-error` with `--view`; its
   View, View2 and Test1305 tests give its count of errors
+- `-symbolic` checks temporal properties under the specification's weak
+  and strong fairness, as TLC does: a counterexample is a fair lasso, or
+  one stuttering forever at its last state
 - CommunityModules' `Json` is built in, with its serializers as TLC's
   override writes them: `ToJson`, `ToJsonArray`, `ToJsonObject`,
   `JsonSerialize`, `ndJsonSerialize`

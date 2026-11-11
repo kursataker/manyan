@@ -152,15 +152,20 @@ invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
 0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-36 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+40 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
 behavior of up to `-length` steps whose last state is one before it,
 which then repeats forever. A behavior that never repeats a state is no
 counterexample, and none stutters but as `Next` does. A violation is
-printed as TLC prints one, ending with `Back to state N`. Fairness in the
-specification is not supported with properties, as it needs `ENABLED`.
+printed as TLC prints one, ending with `Back to state N`.
+
+Apalache has no fairness. With `WF_` and `SF_` in the specification, a
+counterexample is TLC's: a fair lasso, which may also stutter forever at
+its last state (`State N: Stuttering`). That an action is disabled is
+asked of the evaluator, which finds a successor where the solver
+supposed none.
 
 `-max-error N` goes on past a violation, as Apalache's `--max-error`
 does, until N are found: each behavior after one must differ from it in
@@ -178,7 +183,7 @@ value not of its type: a model value is a string, but `p_OF_PROC` a
 up to `n` elements, as in Apalache: the specification is type checked
 first, as `-typecheck` checks it, and each call makes another value.
 
-Not supported yet: fairness and `ENABLED`; constraints; functions over an
+Not supported yet: `ENABLED` in a property; constraints; functions over an
 infinite domain; `Gen` in an operator whose parameters leave its type
 open, and of strings or variants; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.
