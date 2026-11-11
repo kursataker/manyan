@@ -48,6 +48,7 @@ typedef struct {
     int symbolic;        /* check behaviors of up to length steps with a solver, as Apalache does (-symbolic) */
     long length;         /* symbolic checking: the steps in a behavior, 0 for 10 (-length) */
     const char *cinit;   /* symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's --cinit (-cinit) */
+    int typecheck;       /* type the specification as Apalache's type checker does, and check nothing else (-typecheck) */
 } ManyanOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an

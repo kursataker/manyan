@@ -1,0 +1,2 @@
+Typing input error: Parser error in type annotation of Op: '=>' expected but -> found
+exit 255

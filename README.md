@@ -130,6 +130,10 @@ report as TLC with one worker.
   invariants and its module; 179 of
   Apalache's own tests give its outcome (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
+- Experimental: `-typecheck` checks types and `@type` annotations as
+  Apalache's type checker does; all 75 of Apalache's type checking tests
+  give its outcome (see the
+  [manual](docs/manual.md#type-checking-experimental)).
 
 Not yet supported: TLC's `-terse`, `-maxSetSize`, `-dfid`, `-coverage`,
 `-tool` and `-generateSpecTE`, checkpoints, distributed checking (see
@@ -160,6 +164,8 @@ Java (they download tla2tools 1.8.0 themselves):
 - `tests/symbolic`: 213 models for `-symbolic`, 179 of them from Apalache's
   own tests, each with Apalache 0.63.0's outcome; `make
   test-symbolic-oracle` runs Apalache on them too.
+- `tests/typecheck`: Apalache's 75 type checking tests for `-typecheck`,
+  each with Apalache's outcome.
 
 ## Layout
 

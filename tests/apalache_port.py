@@ -1,4 +1,5 @@
-"""Port Apalache's integration tests of `apalache-mc check` to tests/symbolic/apalache.
+"""Port Apalache's integration tests of `apalache-mc check` to tests/symbolic/apalache,
+and of `apalache-mc typecheck` to tests/typecheck/apalache.
 
 usage: apalache_port.py APALACHE_SOURCE COMMUNITY_MODULES
 
@@ -13,6 +14,10 @@ Apalache's library (Variants, Option) or from the Community Modules,
 whose definitions Apalache's rewired copies stand for. A module checked more
 than once is renamed for each further check. The expected outcomes are
 then Apalache's own: make bless-symbolic.
+
+Each `apalache-mc typecheck` of a .tla file becomes a test of the module
+alone, with the modules it uses; its outcome is Apalache's own too: make
+bless-typecheck.
 """
 import re
 import shlex
@@ -22,12 +27,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests/symbolic/apalache"
+TYPECHECK = ROOT / "tests/typecheck/apalache"
 # Options that do not change the outcome, and those -symbolic has.
 IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--discard-disabled", "--smt-solver",
            "--profiling", "--smtprof", "--output-traces"}
 KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock"}
 # The modules manyan builds in, Apalache's among them.
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache"}
+# The modules Apalache reads in place of a module of that name, as its
+# StandardLibrary.wiredModules; manyan builds in TLC, Sequences and Bags.
+WIRED = {"BagsExt": "__rewire_bags_ext_in_apalache", "Functions": "__rewire_functions_in_apalache",
+         "FiniteSetsExt": "__rewire_finite_sets_ext_in_apalache", "SequencesExt": "__rewire_sequences_ext_in_apalache",
+         "Folds": "__rewire_folds_in_apalache"}
 # The tests ported by name that -symbolic does not take, and why.
 SKIP = {
     "TestFunctions": "Apalache runs out of 4 GB of heap",
@@ -57,32 +68,77 @@ def checks(md):
             yield shlex.split(command.group(1)), status.group(1)
 
 
-def used(module, directories, seen):
+def typechecks(md):
+    """The modules `apalache-mc typecheck` checks, each once."""
+    for block in re.findall(r"```sh\n(.*?)```", md, flags=re.S):
+        command = re.match(r"\$ apalache-mc typecheck (?:--output=\S+ )?(\w+)\.tla", block.split("\n")[0])
+        if command:
+            yield command.group(1)
+
+
+def clear(directory):
+    """Empty directory, but for the outcomes Apalache gave."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for old in directory.iterdir():
+        if old.suffix != ".out":
+            shutil.rmtree(old) if old.is_dir() else old.unlink()
+
+
+def copy(module, directory, directories, wired):
+    """Write module to directory with the modules it uses in a sibling MODULE.files,
+    those Apalache rewires from wired."""
+    seen = {}
+    used(module, directories, seen, wired)
+    shutil.copy(seen.pop(module), directory)
+    if seen:
+        (directory / f"{module}.files").mkdir(exist_ok=True)
+        for name, other in seen.items():
+            shutil.copy(other, directory / f"{module}.files" / f"{name}.tla")
+
+
+def prune(directory):
+    for out in directory.glob("*.out"):
+        if not out.with_suffix(".tla").exists():
+            out.unlink()
+    print(len(list(directory.glob("*.tla"))), "tests in", directory.relative_to(ROOT))
+
+
+def used(module, directories, seen, wired=None):
     """The modules that module extends or instantiates, itself too, by name:
     each from the first of directories that has it, and what a library's
-    module uses from that library on."""
-    at = next((i for i, d in enumerate(directories) if (d / f"{module}.tla").exists()), None)
-    if module in seen or module in BUILT_IN or at is None:
+    module uses from that library on; from wired, the modules Apalache
+    reads in place of others."""
+    if module in seen or module in BUILT_IN:
         return
-    path = seen[module] = directories[at] / f"{module}.tla"
-    directories = directories[at:] if at else directories
+    if wired and module in WIRED:
+        path, directories = wired / f"{WIRED[module]}.tla", [wired]
+    else:
+        at = next((i for i, d in enumerate(directories) if (d / f"{module}.tla").exists()), None)
+        if at is None:
+            return
+        path = directories[at] / f"{module}.tla"
+        directories = directories[at:] if at else directories
+    seen[module] = path
     text = re.sub(r"\(\*.*?\*\)|\\\*[^\n]*", "", path.read_text(), flags=re.S)
     for names in re.findall(r"\bEXTENDS\b([\w\s,]+)", text):
         for name in re.findall(r"\w+", names):
-            used(name, directories, seen)
+            used(name, directories, seen, wired)
     for name in re.findall(r"\bINSTANCE\s+(\w+)", text):
-        used(name, directories, seen)
+        used(name, directories, seen, wired)
 
 
 def main():
     source = Path(sys.argv[1]) / "test/tla"
     libraries = [Path(sys.argv[1]) / "src/tla", Path(sys.argv[2])]
-    OUT.mkdir(parents=True, exist_ok=True)
-    for old in OUT.iterdir():   # the outcomes Apalache gave stay
-        if old.suffix != ".out":
-            shutil.rmtree(old) if old.is_dir() else old.unlink()
+    md = (source / "cli-integration-tests.md").read_text()
+    clear(TYPECHECK)
+    for module in dict.fromkeys(typechecks(md)):
+        if (source / f"{module}.tla").exists():
+            copy(module, TYPECHECK, [source] + libraries, libraries[0])
+    prune(TYPECHECK)
+    clear(OUT)
     names, done = {}, set()
-    for words, status in checks((source / "cli-integration-tests.md").read_text()):
+    for words, status in checks(md):
         options, files = {}, [w for w in words if not w.startswith("--")]
         flags = [w.split("=", 1) for w in words if w.startswith("--")]
         if len(files) != 1 or not files[0].endswith(".tla") or any(f[0] not in KNOWN | IGNORED for f in flags):
@@ -124,10 +180,7 @@ def main():
             (OUT / f"{name}.files").mkdir(exist_ok=True)
             for other in seen.values():
                 shutil.copy(other, OUT / f"{name}.files")
-    for out in OUT.glob("*.out"):
-        if not out.with_suffix(".tla").exists():
-            out.unlink()
-    print(len(list(OUT.glob("*.tla"))), "tests")
+    prune(OUT)
 
 
 if __name__ == "__main__":

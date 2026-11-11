@@ -50,6 +50,7 @@ for it; [std.md](std.md) lists them.
 | `-symbolic` | experimental: check behaviors of up to `-length` steps with a SAT solver instead of enumerating states, as Apalache does (see [Symbolic checking](#symbolic-checking-experimental)) |
 | `-length N` | symbolic checking: the steps in a behavior (10) |
 | `-cinit C` | symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's `--cinit` |
+| `-typecheck` | experimental: check the module's types as Apalache's `apalache-mc typecheck` does, without a configuration (see [Type checking](#type-checking-experimental)) |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
@@ -165,6 +166,34 @@ infinite domain; `Gen`, which needs Apalache's types; integers beyond 64
 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.
 
+## Type checking (experimental)
+
+`-typecheck` checks a module's types as Apalache's type checker, Snowcat,
+does, and prints what it prints:
+
+```
+$ manyan -typecheck MC
+Type checking MC.tla
+ > Your types are purrfect!
+Type checker [OK]
+```
+
+Every `CONSTANT` and `VARIABLE` needs a `@type:` annotation in the
+comment before its name, and an operator may have one before its
+definition. `@typeAlias: name = type;` names a type, and the old
+upper-case aliases are read too. The rest is inferred: records and
+variants with rows, tuples, sequences, functions, sets and operators,
+polymorphic where nothing fixes a type. A type error names where it is
+and each definition whose type could not be computed, and exits with 120;
+a missing or unreadable annotation is a typing input error, and exits
+with 255. Apalache's modules (`Apalache`, `Variants`, `Option`) and the
+types it gives the standard and community modules are built in.
+
+`make test-typecheck` runs Apalache 0.63.0's 75 type checking tests, each
+with Apalache's outcome (`tests/typecheck/apalache`). Where several
+`CONSTANT`s or `VARIABLE`s lack an annotation, Manyan names the last one
+declared; Apalache names the last in SANY's hash table.
+
 ## Exit statuses
 
 | status | meaning |
@@ -225,6 +254,9 @@ make test-symbolic     # tests/symbolic with -symbolic
 make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
 make bless-symbolic ONLY=name  # writes a test's expected outcome from Apalache
 make full-bench-symbolic  # tlaplus/Examples' Apalache models; writes docs/symbolic-bench.md
+make test-typecheck    # tests/typecheck with -typecheck
+make test-typecheck-oracle  # also runs Apalache 0.63.0 on every test
+make bless-typecheck ONLY=name  # writes a test's expected outcome from Apalache
 ```
 
 A test in `tests/symbolic` is a module and its configuration, as in
@@ -235,6 +267,11 @@ status. `tests/symbolic/apalache` is ported from Apalache's own
 integration tests by `tests/apalache_port.py`. Each run is killed past
 `--memory` MB resident (1000, 3000 with an oracle), and only as many run
 at once as keep to half the machine's memory.
+
+A test in `tests/typecheck` is `NAME.tla` with the modules it uses in
+`NAME.files`; `NAME.out` is Apalache's outcome: `Type checker [OK]`,
+`Type checker [FAILED]` with the definitions it could not type, or its
+typing input error, then the exit status.
 
 A test in `tests/spec` is `NAME.tla`: a module, then its configuration
 after the line that ends the module. `NAME.out` is TLC's normalized

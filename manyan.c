@@ -1921,6 +1921,7 @@ typedef struct {
     const char *text;    /* a string literal's contents, unescaped */
     int len;
     int line, col, eline, ecol;
+    const char *notes;   /* the comments before it, if they may hold annotations: @type */
 } Tok;
 
 /* Expression kinds. The parser produces the X_ kinds; the resolver turns
@@ -2031,6 +2032,7 @@ struct Def {
     Module *subst_in;     /* a declaration's: the module subst_at was found for (subst_index) */
     int subst_at;
     Expr *where;          /* the definition's location */
+    const char *notes;    /* the comments before it, for annotations: @type */
     int part;             /* a copy whose body is part of the original's, as an instance sees it (in_instance) */
 };
 
@@ -2175,11 +2177,13 @@ static Tok *lex(const char *src, const char *file, int *count) {
         lex_advance(&L, 1);
     }
     for (;;) {
+        int gap = L.pos;
         lex_space(&L);
         if (n + 2 >= cap) { cap = cap ? cap * 2 : 1024; toks = xrealloc(toks, sizeof(Tok) * (size_t)cap); }
         Tok *t = &toks[n];
         memset(t, 0, sizeof *t);
         t->line = L.line; t->col = L.col;
+        if (memchr(src + gap, '@', (size_t)(L.pos - gap))) t->notes = strndup(src + gap, (size_t)(L.pos - gap));
         const char *s = src + L.pos;
         if (!*s) { t->kind = T_EOF; n++; break; }
         int len = 0;
@@ -3212,6 +3216,7 @@ static Def *parse_instance(Tok *start, int name);
 /* Name == e, Name(p) == e, f[x \in S] == e, a + b == e, -. a == e, a ^+ == e. */
 static Def *parse_definition(int local) {
     Tok *t = peek();
+    const char *notes = t->notes;
     Def *d;
     Def *params[64];
     int np = 0;
@@ -3264,6 +3269,7 @@ static Def *parse_definition(int local) {
     }
     expect_op("==");
     d->local = local;
+    d->notes = notes;
     d->nparams = np;
     d->params = NEWN(Def *, np);
     memcpy(d->params, params, sizeof(Def *) * (size_t)np);
@@ -3399,7 +3405,9 @@ static Module *parse_module(Module *outer) {
             int var = is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES");
             next();
             do {
+                const char *notes = peek()->notes;
                 Def *d = parse_param(var ? D_VAR : D_CONST);
+                d->notes = notes;
                 add_unit(m, 0, d, NULL, NULL, 0);
             } while (is_op(peek(), ",") && next());
             continue;
@@ -3447,6 +3455,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         Def *d = parse_definition(local);
+        if (local && !d->notes) d->notes = first->notes;
         add_unit(m, 0, d, NULL, NULL, local);
     }
     P->mod = saved_mod;
@@ -16464,6 +16473,2344 @@ static int symbolic(void) {
 #pragma clang attribute pop
 #endif
 
+/* ---------------------------------------------------------------- types */
+
+/* -typecheck: Apalache's type checker, Snowcat (Apalache 0.63.0, Type
+   System 1.2 with rows). Each definition is typed from @type annotations
+   in the comments before it and from its body: its type is the most
+   general one constraints on it allow, solved by unification, and an
+   operator is polymorphic in the variables its use leaves free.
+   Constraints are solved as Apalache's ConstraintSolver solves them: an
+   equation at once, a choice of overloaded signatures once only one of
+   them fits; a definition whose constraints have no solution is a type
+   error. */
+
+enum { TY_VAR, TY_INT, TY_BOOL, TY_STR, TY_REAL, TY_CONST, TY_SET, TY_SEQ, TY_FUN, TY_OPER, TY_TUP, TY_SPARSE,
+       TY_ROW, TY_REC, TY_VARIANT, TY_OLDREC };
+
+typedef struct Type Type;
+struct Type {
+    int kind;
+    int n;          /* TY_OPER: parameters; TY_TUP, TY_SPARSE, TY_ROW, TY_OLDREC: elements */
+    int var;        /* TY_VAR: its number; TY_CONST: its name */
+    int *keys;      /* TY_SPARSE: indices, ascending; TY_ROW, TY_OLDREC: field names, in order */
+    Type **args;    /* TY_SET, TY_SEQ: the element; TY_FUN: argument, result; TY_OPER: parameters, result;
+                       TY_REC, TY_VARIANT: the row; others: elements */
+    Type *tail;     /* TY_ROW: its variable, or NULL for a closed row */
+};
+
+static Type ty_int = {.kind = TY_INT}, ty_bool = {.kind = TY_BOOL}, ty_str = {.kind = TY_STR}, ty_real = {.kind = TY_REAL};
+
+static Type *ty_new(int kind, int n) {
+    Type *t = NEW(Type);
+    t->kind = kind;
+    t->n = n;
+    if (n) t->args = NEWN(Type *, n + (kind == TY_OPER));
+    if (n && (kind == TY_SPARSE || kind == TY_ROW || kind == TY_OLDREC)) t->keys = NEWN(int, n);
+    return t;
+}
+
+static Type *ty_of(int kind, Type *a) {
+    Type *t = ty_new(kind, 0);
+    t->args = NEWN(Type *, 2);
+    t->args[0] = a;
+    return t;
+}
+
+static Type *ty_fun(Type *a, Type *b) {
+    Type *t = ty_of(TY_FUN, a);
+    t->args[1] = b;
+    return t;
+}
+
+static Type *ty_oper(int n, Type **params, Type *res) {
+    Type *t = ty_new(TY_OPER, n);
+    if (!n) t->args = NEWN(Type *, 1);
+    for (int i = 0; i < n; i++) t->args[i] = params[i];
+    t->args[n] = res;
+    return t;
+}
+
+static Type *ty_tup(int n, Type **elems) {
+    Type *t = ty_new(TY_TUP, n);
+    for (int i = 0; i < n; i++) t->args[i] = elems[i];
+    return t;
+}
+
+static int field_cmp(int a, int b) { return strcmp(S(a), S(b)); }
+
+/* A row of fields, sorted by name, and its variable. */
+static Type *ty_row(int n, const int *keys, Type **types, Type *tail) {
+    Type *t = ty_new(TY_ROW, n);
+    for (int i = 0; i < n; i++) {
+        int k = i;
+        while (k > 0 && field_cmp(t->keys[k - 1], keys[i]) > 0) { t->keys[k] = t->keys[k - 1]; t->args[k] = t->args[k - 1]; k--; }
+        t->keys[k] = keys[i];
+        t->args[k] = types[i];
+    }
+    t->tail = tail;
+    return t;
+}
+
+/* ---------------------------------------------------------------- unification */
+
+static Type **ty_bind;   /* each variable's binding, NULL while free */
+static int ty_nvars;
+static struct { int var; Type *old; } *ty_trail;   /* the bindings made, to undo them */
+static int ty_ntrail;
+
+static Type *ty_fresh(void) {
+    PUSH(ty_bind, ty_nvars, NULL);
+    Type *t = ty_new(TY_VAR, 0);
+    t->var = ty_nvars - 1;
+    return t;
+}
+
+/* A variable of an annotation, by its name's number: never bound, renamed at each use (ty_named). */
+static Type *ty_named_var(int v) {
+    Type *t = ty_new(TY_VAR, 0);
+    t->var = -1 - v;
+    return t;
+}
+
+static void ty_set(int v, Type *t) {
+    ty_trail = grow(ty_trail, ty_ntrail, sizeof *ty_trail);
+    ty_trail[ty_ntrail].var = v;
+    ty_trail[ty_ntrail++].old = ty_bind[v];
+    ty_bind[v] = t;
+}
+
+static void ty_undo(int mark) {
+    while (ty_ntrail > mark) { ty_ntrail--; ty_bind[ty_trail[ty_ntrail].var] = ty_trail[ty_ntrail].old; }
+}
+
+/* The variable a variable stands for, through bindings to variables. */
+static Type *ty_root(Type *t) {
+    while (t->kind == TY_VAR && ty_bind[t->var] && ty_bind[t->var]->kind == TY_VAR) t = ty_bind[t->var];
+    return t;
+}
+
+/* t with its row's variable's binding merged in: its fields, and a free variable or none. */
+static Type *row_norm(Type *r) {
+    Type *tail = r->tail ? ty_root(r->tail) : NULL;
+    if (!tail || !ty_bind[tail->var]) {
+        if (tail == r->tail) return r;
+        return ty_row(r->n, r->keys, r->args, tail);
+    }
+    Type *more = row_norm(ty_bind[tail->var]);
+    int n = r->n + more->n;
+    int *keys = NEWN(int, n ? n : 1);
+    Type **types = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < r->n; i++) keys[i] = r->keys[i], types[i] = r->args[i];
+    for (int i = 0; i < more->n; i++) keys[r->n + i] = more->keys[i], types[r->n + i] = more->args[i];
+    return ty_row(n, keys, types, more->tail);
+}
+
+static int ty_occurs(int v, Type *t) {
+    if (t->kind == TY_VAR) {
+        t = ty_root(t);
+        if (t->var == v) return 1;
+        return ty_bind[t->var] && ty_occurs(v, ty_bind[t->var]);
+    }
+    if (t->kind == TY_ROW && t->tail && ty_occurs(v, t->tail)) return 1;
+    int n = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    for (int i = 0; i < n && t->args; i++) if (ty_occurs(v, t->args[i])) return 1;
+    return 0;
+}
+
+static Type *ty_compute(Type *l, Type *r);
+
+/* Apalache's unifyVarWithNonVarTerm: v, a free variable or bound to a term, with t. */
+static Type *unify_var(Type *v, Type *t) {
+    v = ty_root(v);
+    if (ty_occurs(v->var, t)) return NULL;
+    Type *bound = ty_bind[v->var];
+    if (!bound) { ty_set(v->var, t); return t; }
+    Type *u = ty_compute(bound, t);
+    if (u && u != bound) ty_set(v->var, u);
+    return u;
+}
+
+static Type *as_row(Type *t) {
+    if (!t) return NULL;
+    if (t->kind == TY_VAR) return ty_row(0, NULL, NULL, ty_root(t));
+    return t;
+}
+
+static Type *unify_rows(Type *l, Type *r) {
+    l = row_norm(l), r = row_norm(r);
+    Type *lv = l->tail, *rv = r->tail;
+    if (!l->n) {
+        if (!lv && !rv) return r->n ? NULL : l;
+        if (lv && rv) return r->n ? as_row(unify_var(lv, r)) : as_row(ty_compute(lv, rv));
+        if (lv) return as_row(unify_var(lv, r));
+        return r->n ? NULL : as_row(unify_var(rv, ty_row(0, NULL, NULL, NULL)));
+    }
+    if (!r->n) return unify_rows(r, l);
+    int nshared = 0;
+    for (int i = 0; i < l->n; i++)
+        for (int k = 0; k < r->n; k++) nshared += l->keys[i] == r->keys[k];
+    if (!nshared) {
+        Type *tail = ty_fresh();
+        if (!ty_compute(lv ? lv : ty_row(0, NULL, NULL, NULL), ty_row(r->n, r->keys, r->args, tail))
+            || !ty_compute(rv ? rv : ty_row(0, NULL, NULL, NULL), ty_row(l->n, l->keys, l->args, tail)))
+            return NULL;
+        return row_norm(ty_row(l->n, l->keys, l->args, lv));
+    }
+    int *lk = NEWN(int, l->n), *rk = NEWN(int, r->n), nl = 0, nr = 0;
+    Type **lt = NEWN(Type *, l->n), **rt = NEWN(Type *, r->n);
+    for (int i = 0; i < l->n; i++) {
+        int shared = 0;
+        for (int k = 0; k < r->n; k++) shared |= l->keys[i] == r->keys[k];
+        if (!shared) lk[nl] = l->keys[i], lt[nl++] = l->args[i];
+    }
+    for (int k = 0; k < r->n; k++) {
+        int shared = 0;
+        for (int i = 0; i < l->n; i++) shared |= l->keys[i] == r->keys[k];
+        if (!shared) rk[nr] = r->keys[k], rt[nr++] = r->args[k];
+    }
+    Type *rest = ty_compute(ty_row(nl, lk, lt, lv), ty_row(nr, rk, rt, rv));
+    if (!rest || rest->kind != TY_ROW) return NULL;
+    rest = row_norm(rest);
+    int n = nshared + rest->n, m = 0;
+    int *keys = NEWN(int, n);
+    Type **types = NEWN(Type *, n);
+    for (int i = 0; i < l->n; i++)
+        for (int k = 0; k < r->n; k++)
+            if (l->keys[i] == r->keys[k]) {
+                Type *u = ty_compute(l->args[i], r->args[k]);
+                if (!u) return NULL;
+                keys[m] = l->keys[i], types[m++] = u;
+            }
+    for (int i = 0; i < rest->n; i++) keys[m] = rest->keys[i], types[m++] = rest->args[i];
+    return ty_row(n, keys, types, rest->tail);
+}
+
+/* Apalache's TypeUnifier.compute: the unifier of l and r, binding their
+   variables, or NULL. */
+static Type *ty_compute(Type *l, Type *r) {
+    if (l->kind == TY_VAR) l = ty_root(l);
+    if (r->kind == TY_VAR) r = ty_root(r);
+    if (l->kind == TY_VAR && r->kind == TY_VAR) {
+        if (l->var == r->var) return l;
+        Type *lb = ty_bind[l->var], *rb = ty_bind[r->var];
+        if (!lb) { if (rb && ty_occurs(l->var, rb)) return NULL; ty_set(l->var, r); return r; }
+        if (!rb) { if (ty_occurs(r->var, lb)) return NULL; ty_set(r->var, l); return l; }
+        ty_set(l->var, r);
+        Type *u = ty_compute(lb, rb);
+        if (u) ty_set(r->var, u);
+        return u;
+    }
+    if (l->kind == TY_VAR) return unify_var(l, r);
+    if (r->kind == TY_VAR) return unify_var(r, l);
+    if (l->kind == TY_TUP && r->kind == TY_SPARSE) { Type *x = l; l = r; r = x; }
+    if (l->kind == TY_SPARSE && r->kind == TY_TUP) {
+        for (int i = 0; i < l->n; i++) if (l->keys[i] < 1 || l->keys[i] > r->n) return NULL;
+        Type *t = ty_tup(r->n, r->args);
+        for (int i = 0; i < l->n; i++)
+            if (!(t->args[l->keys[i] - 1] = ty_compute(l->args[i], r->args[l->keys[i] - 1]))) return NULL;
+        return t;
+    }
+    if (l->kind != r->kind) return NULL;
+    Type *t, *u, *v;
+    switch (l->kind) {
+    case TY_INT: case TY_BOOL: case TY_STR: case TY_REAL: return l;
+    case TY_CONST: return l->var == r->var ? l : NULL;
+    case TY_SET: case TY_SEQ:
+        u = ty_compute(l->args[0], r->args[0]);
+        return !u ? NULL : u == l->args[0] ? l : ty_of(l->kind, u);
+    case TY_FUN:
+        u = ty_compute(l->args[0], r->args[0]);
+        v = ty_compute(l->args[1], r->args[1]);
+        return u && v ? ty_fun(u, v) : NULL;
+    case TY_OPER:
+        if (l->n != r->n) return NULL;
+        t = ty_new(TY_OPER, l->n);
+        if (!l->n) t->args = NEWN(Type *, 1);
+        if (!(t->args[l->n] = ty_compute(l->args[l->n], r->args[r->n]))) return NULL;
+        for (int i = 0; i < l->n; i++) if (!(t->args[i] = ty_compute(l->args[i], r->args[i]))) return NULL;
+        return t;
+    case TY_TUP:
+        if (l->n != r->n) return NULL;
+        t = ty_tup(l->n, l->args);
+        for (int i = 0; i < l->n; i++) if (!(t->args[i] = ty_compute(l->args[i], r->args[i]))) return NULL;
+        return t;
+    case TY_SPARSE: {
+        int n = l->n;
+        for (int k = 0; k < r->n; k++) {
+            int shared = 0;
+            for (int i = 0; i < l->n; i++) shared |= l->keys[i] == r->keys[k];
+            n += !shared;
+        }
+        t = ty_new(TY_SPARSE, n);
+        int m = 0;
+        for (int i = 0; i < l->n; i++) {
+            t->keys[m] = l->keys[i];
+            t->args[m] = l->args[i];
+            for (int k = 0; k < r->n; k++)
+                if (r->keys[k] == l->keys[i] && !(t->args[m] = ty_compute(l->args[i], r->args[k]))) return NULL;
+            m++;
+        }
+        for (int k = 0; k < r->n; k++) {
+            int shared = 0;
+            for (int i = 0; i < l->n; i++) shared |= l->keys[i] == r->keys[k];
+            if (!shared) t->keys[m] = r->keys[k], t->args[m++] = r->args[k];
+        }
+        for (int i = 1; i < n; i++)   /* by index */
+            for (int k = i; k > 0 && t->keys[k - 1] > t->keys[k]; k--) {
+                int key = t->keys[k]; t->keys[k] = t->keys[k - 1]; t->keys[k - 1] = key;
+                Type *x = t->args[k]; t->args[k] = t->args[k - 1]; t->args[k - 1] = x;
+            }
+        return t;
+    }
+    case TY_ROW: return unify_rows(l, r);
+    case TY_REC: case TY_VARIANT:
+        u = unify_rows(l->args[0], r->args[0]);
+        return u ? ty_of(l->kind, u) : NULL;
+    default: return NULL;
+    }
+}
+
+/* Unifies l and r, or leaves the bindings as they were. */
+static Type *ty_unify(Type *l, Type *r) {
+    int mark = ty_ntrail;
+    Type *u = ty_compute(l, r);
+    if (!u) ty_undo(mark);
+    return u;
+}
+
+/* t with its variables' bindings substituted. */
+static Type *ty_zonk(Type *t) {
+    if (t->kind == TY_VAR) {
+        t = ty_root(t);
+        return ty_bind[t->var] ? ty_zonk(ty_bind[t->var]) : t;
+    }
+    if (t->kind == TY_ROW) {
+        t = row_norm(t);
+        Type *r = ty_row(t->n, t->keys, t->args, t->tail);
+        for (int i = 0; i < r->n; i++) r->args[i] = ty_zonk(r->args[i]);
+        return r;
+    }
+    int n = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    if (!n || !t->args) return t;
+    Type *c = NEW(Type);
+    *c = *t;
+    c->args = NEWN(Type *, n + 1);
+    for (int i = 0; i < n; i++) c->args[i] = ty_zonk(t->args[i]);
+    return c;
+}
+
+/* The free variables of t, zonked, that are not marked, each once, in order. */
+static void ty_vars(Type *t, char *mark, int **vars, int *n) {
+    if (t->kind == TY_VAR) {
+        if (!mark[t->var]) { mark[t->var] = 1; PUSH(*vars, *n, t->var); }
+        return;
+    }
+    if (t->kind == TY_ROW && t->tail) ty_vars(t->tail, mark, vars, n);
+    int k = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    for (int i = 0; i < k && t->args; i++) ty_vars(t->args[i], mark, vars, n);
+}
+
+/* t, zonked, with variables vars[i] renamed to to[i]. */
+static Type *ty_rename(Type *t, const int *vars, Type **to, int n) {
+    if (t->kind == TY_VAR) {
+        for (int i = 0; i < n; i++) if (vars[i] == t->var) return to[i];
+        return t;
+    }
+    int k = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    Type *c = NEW(Type);
+    *c = *t;
+    if (t->kind == TY_ROW && t->tail) c->tail = ty_rename(t->tail, vars, to, n);
+    if (k && t->args) {
+        c->args = NEWN(Type *, k + 1);
+        for (int i = 0; i < k; i++) c->args[i] = ty_rename(t->args[i], vars, to, n);
+    }
+    return c;
+}
+
+/* t with each of its free variables renamed to a fresh one. */
+static Type *ty_freshen(Type *t) {
+    t = ty_zonk(t);
+    char *mark = xcalloc((size_t)ty_nvars + 1, 1);
+    int *vars = NULL, n = 0;
+    ty_vars(t, mark, &vars, &n);
+    free(mark);
+    Type **to = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) to[i] = ty_fresh();
+    Type *r = ty_rename(t, vars, to, n);
+    return r;
+}
+
+/* An annotation's type, its named variables renamed to fresh ones: the same name, the same variable. */
+static Type *ty_named_rec(Type *t, int **names, Type ***to, int *n) {
+    if (t->kind == TY_VAR) {
+        if (t->var >= 0) return t;
+        for (int i = 0; i < *n; i++) if ((*names)[i] == t->var) return (*to)[i];
+        Type *v = ty_fresh();
+        PUSH(*names, *n, t->var);
+        (*n)--;
+        PUSH(*to, *n, v);
+        return v;
+    }
+    int k = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    Type *c = NEW(Type);
+    *c = *t;
+    if (t->kind == TY_ROW && t->tail) c->tail = ty_named_rec(t->tail, names, to, n);
+    if (k && t->args) {
+        c->args = NEWN(Type *, k + 1);
+        for (int i = 0; i < k; i++) c->args[i] = ty_named_rec(t->args[i], names, to, n);
+    }
+    return c;
+}
+
+static Type *ty_named(Type *t) {
+    int *names = NULL, n = 0;
+    Type **to = NULL;
+    Type *r = ty_named_rec(t, &names, &to, &n);
+    return r;
+}
+
+static void ty_print(Buf *b, Type *t);
+
+static void row_print(Buf *b, Type *r, const char *sep, int variant) {
+    for (int i = 0; i < r->n; i++) {
+        if (i) buf_puts(b, sep);
+        if (variant) { buf_printf(b, "%s(", S(r->keys[i])); ty_print(b, r->args[i]); buf_puts(b, ")"); }
+        else { buf_printf(b, "%s: ", S(r->keys[i])); ty_print(b, r->args[i]); }
+    }
+}
+
+/* t as Apalache prints a type. */
+static void ty_print(Buf *b, Type *t) {
+    if (!(t->kind == TY_VAR && t->var < 0)) t = ty_zonk(t);
+    switch (t->kind) {
+    case TY_VAR: {
+        int v = t->var < 0 ? -1 - t->var : t->var;
+        if (v < 26) buf_printf(b, "%c", 'a' + v); else buf_printf(b, "a%d", v);
+        return;
+    }
+    case TY_INT: buf_puts(b, "Int"); return;
+    case TY_BOOL: buf_puts(b, "Bool"); return;
+    case TY_STR: buf_puts(b, "Str"); return;
+    case TY_REAL: buf_puts(b, "Real"); return;
+    case TY_CONST: buf_puts(b, S(t->var)); return;
+    case TY_SET: case TY_SEQ:
+        buf_puts(b, t->kind == TY_SET ? "Set(" : "Seq(");
+        ty_print(b, t->args[0]);
+        buf_puts(b, ")");
+        return;
+    case TY_FUN:
+        buf_puts(b, "(");
+        ty_print(b, t->args[0]);
+        buf_puts(b, " -> ");
+        ty_print(b, t->args[1]);
+        buf_puts(b, ")");
+        return;
+    case TY_OPER:
+        buf_puts(b, "((");
+        for (int i = 0; i < t->n; i++) { if (i) buf_puts(b, ", "); ty_print(b, t->args[i]); }
+        buf_puts(b, ") => ");
+        ty_print(b, t->args[t->n]);
+        buf_puts(b, ")");
+        return;
+    case TY_TUP:
+        buf_puts(b, "<<");
+        for (int i = 0; i < t->n; i++) { if (i) buf_puts(b, ", "); ty_print(b, t->args[i]); }
+        buf_puts(b, ">>");
+        return;
+    case TY_SPARSE:
+        buf_puts(b, "<| ");
+        for (int i = 0; i < t->n; i++) { if (i) buf_puts(b, ", "); buf_printf(b, "%d: ", t->keys[i]); ty_print(b, t->args[i]); }
+        buf_puts(b, " |>");
+        return;
+    case TY_ROW:
+        buf_puts(b, "(| ");
+        row_print(b, t, " | ", 0);
+        if (t->tail) { buf_puts(b, t->n ? " | " : ""); ty_print(b, t->tail); }
+        buf_puts(b, " |)");
+        return;
+    case TY_REC:
+        buf_puts(b, "{ ");
+        row_print(b, t->args[0], ", ", 0);
+        if (t->args[0]->tail) { buf_puts(b, t->args[0]->n ? ", " : ""); ty_print(b, t->args[0]->tail); }
+        buf_puts(b, " }");
+        return;
+    case TY_VARIANT:
+        row_print(b, t->args[0], " | ", 1);
+        if (t->args[0]->tail) {
+            if (t->args[0]->n) { buf_puts(b, " | "); ty_print(b, t->args[0]->tail); }
+            else { buf_puts(b, "Variant("); ty_print(b, t->args[0]->tail); buf_puts(b, ")"); }
+        }
+        return;
+    case TY_OLDREC:
+        buf_puts(b, "[");
+        for (int i = 0; i < t->n; i++) { if (i) buf_puts(b, ", "); buf_printf(b, "%s: ", S(t->keys[i])); ty_print(b, t->args[i]); }
+        buf_puts(b, "]");
+        return;
+    }
+}
+
+static const char *ty_text(Type *t) {
+    Buf b = {0};
+    ty_print(&b, t);
+    char *s = strdup(b.s ? b.s : "");
+    free(b.s);
+    return s;
+}
+
+/* ---------------------------------------------------------------- type annotations */
+
+static jmp_buf *tc_unwind;   /* where a typing error ends the checking */
+static int tc_status;
+
+/* Apalache's TypingInputException: the annotations are not to be read. */
+static __attribute__((noreturn, format(printf, 1, 2))) void tc_input_error(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    printf("Typing input error: ");
+    vprintf(fmt, ap);
+    printf("\n");
+    va_end(ap);
+    tc_status = MANYAN_ERROR;
+    longjmp(*tc_unwind, 1);
+}
+
+/* The tokens of Apalache's type grammar (Type1Lexer). */
+enum { TT_IDENT, TT_INT, TT_REAL, TT_BOOL, TT_STR, TT_SET, TT_SEQ, TT_REC, TT_VARIANT, TT_NUM, TT_STRLIT,
+       TT_ARROW, TT_DARROW, TT_EQ, TT_LROW, TT_RROW, TT_LTROW, TT_RTROW, TT_LPAREN, TT_RPAREN, TT_PIPE,
+       TT_LBRACKET, TT_RBRACKET, TT_LCURLY, TT_RCURLY, TT_LANGLE, TT_RANGLE, TT_COMMA, TT_COLON, TT_DOLLAR };
+static const char *const tt_text[] = {"", "Int", "Real", "Bool", "Str", "Set", "Seq", "Rec", "Variant", "", "",
+    "->", "=>", "=", "(|", "|)", "<|", "|>", "(", ")", "|", "[", "]", "{", "}", "<<", ">>", ",", ":", "$"};
+
+typedef struct { int kind; int id; int num; } TTok;
+
+/* A parse in the manner of Scala's parser combinators, which Apalache's
+   type parser is written in: a success, a failure (st 0) or an error
+   (st 2), with the failure that went farthest, which a failed parse
+   reports. A failure's position is its token's; past the end it is
+   NoPosition, before every other. */
+typedef struct { int st; int next; Type *t; int hasf; int fpos; const char *fmsg; } PR;
+
+static TTok *tp_toks;
+static int tp_n;
+
+static int tp_pos(int i) { return i < tp_n ? i : -1; }
+
+static PR pr_fail(int i, const char *msg) { return (PR){0, i, NULL, 1, tp_pos(i), msg}; }
+
+/* Scala's selectLastFailure: the later of two failures, the first if level. */
+static PR pr_last(PR r, int hasf, int fpos, const char *fmsg) {
+    if (!hasf) return r;
+    if (!r.hasf || r.fpos < fpos) { r.hasf = 1; r.fpos = fpos; r.fmsg = fmsg; }
+    return r;
+}
+
+/* p ~ q: q's result, with the farther of the failures. */
+static PR pr_then(PR p, PR q) {
+    if (q.st == 2) return q;
+    if (q.st == 1) return pr_last(q, p.hasf, p.fpos, p.fmsg);
+    PR f = q;
+    if (p.hasf && f.fpos < p.fpos) { f.fpos = p.fpos; f.fmsg = p.fmsg; }
+    return f;
+}
+
+/* p | q, q given p failed: q's success with p's failure, or the farther failure, q's if level. */
+static PR pr_or(PR p, PR q) {
+    if (q.st == 2) return q;
+    if (q.st == 1) {
+        PR r = q;
+        if (!r.hasf || !(p.fpos < r.fpos)) { r.hasf = 1; r.fpos = p.fpos; r.fmsg = p.fmsg; }
+        return r;
+    }
+    return q.fpos < p.fpos ? p : q;
+}
+
+static const char *tt_found(int i) {
+    TTok *t = &tp_toks[i];
+    char *s = xmalloc(64 + (t->kind == TT_IDENT || t->kind == TT_STRLIT ? strlen(S(t->id)) : 0));
+    if (t->kind == TT_IDENT) sprintf(s, "record field '%s'", S(t->id));
+    else if (t->kind == TT_STRLIT) sprintf(s, "\"%s\"", S(t->id));
+    else if (t->kind == TT_NUM) sprintf(s, "%d", t->num);
+    else strcpy(s, tt_text[t->kind]);
+    return s;
+}
+
+static PR tp_tok(int i, int kind) {
+    if (i >= tp_n) return pr_fail(i, "end of input");
+    if (tp_toks[i].kind == kind) return (PR){1, i + 1, NULL, 0, 0, NULL};
+    const char *found = tt_found(i);
+    char *msg = xmalloc(strlen(found) + 32);
+    sprintf(msg, "'%s' expected but %s found", tt_text[kind], found);
+    return pr_fail(i, msg);
+}
+
+static int camel_case(const char *s) {   /* ^[a-z]+(?:[A-Z0-9][a-z0-9]*)*$ */
+    if (!islower((unsigned char)*s)) return 0;
+    while (islower((unsigned char)*s)) s++;
+    for (; *s; s++) if (!isalnum((unsigned char)*s)) return 0;
+    return 1;
+}
+
+static int upper_case(const char *s) {
+    for (; *s; s++) if (islower((unsigned char)*s)) return 0;
+    return 1;
+}
+
+/* A type variable's number: a to z, or a0, a1, ...; -1 if s is none. */
+static int var_number(const char *s) {
+    if (s[0] >= 'a' && s[0] <= 'z' && !s[1]) return s[0] - 'a';
+    if (s[0] != 'a' || !s[1]) return -1;
+    long n = 0;
+    for (const char *p = s + 1; *p; p++) { if (!isdigit((unsigned char)*p) || n > 100000000) return -1; n = n * 10 + (*p - '0'); }
+    return (int)n;
+}
+
+/* An identifier that kind accepts: TT_IDENT for a field or tag, 'v' a variable, 'c' a constant, '$' an alias. */
+static PR tp_ident(int i, int kind, const char *expected) {
+    if (i >= tp_n) return pr_fail(i, "end of input");
+    TTok *t = &tp_toks[i];
+    const char *s = S(t->id);
+    int ok = t->kind == TT_IDENT && (kind == TT_IDENT || (kind == 'v' && var_number(s) >= 0)
+                                     || (kind == 'c' && upper_case(s)) || (kind == '$' && camel_case(s)));
+    if (!ok) {
+        char *msg = xmalloc(strlen(expected) + 10);
+        sprintf(msg, "%s expected", expected);
+        return pr_fail(i, msg);
+    }
+    PR r = {1, i + 1, NULL, 0, 0, NULL};
+    if (kind == 'v') r.t = ty_named_var(var_number(s));
+    else if (kind == 'c') { r.t = ty_new(TY_CONST, 0); r.t->var = t->id; }
+    else if (kind == '$') {
+        char *name = xmalloc(strlen(s) + 2);
+        sprintf(name, "$%s", s);
+        r.t = ty_new(TY_CONST, 0);
+        r.t->var = intern(name);
+        free(name);
+    } else {
+        r.t = ty_new(TY_CONST, 0);   /* a field's name */
+        r.t->var = t->id;
+    }
+    return r;
+}
+
+static PR tp_type(int i);
+
+/* p sep p sep ... (rep1sep; repsep if empty): the parses in *items. As
+   Scala's p ~ rep(sep ~> p): rep's failure is the first (sep ~> p)'s or,
+   once one succeeded, the last success's unless the next failure is farther. */
+static PR tp_list(int i, PR (*item)(int), int sep, int empty, Type ***items, int *n) {
+    *items = NULL;
+    *n = 0;
+    PR r = item(i);
+    if (r.st != 1) return !empty || r.st == 2 ? r : pr_or(r, (PR){1, i, NULL, 0, 0, NULL});
+    PUSH(*items, *n, r.t);
+    PR last = {1, 0, NULL, 0, 0, NULL};
+    int next = r.next;
+    for (int k = 0;; k++) {
+        PR s = tp_tok(next, sep);
+        PR x = s.st == 1 ? pr_then(s, item(s.next)) : s;
+        if (x.st == 2) return x;
+        if (x.st == 0) {
+            if (k == 0) last = (PR){1, 0, NULL, 1, x.fpos, x.fmsg};
+            else last = pr_last(last, 1, x.fpos, x.fmsg);
+            break;
+        }
+        PUSH(*items, *n, x.t);
+        next = x.next;
+        last = (PR){1, 0, NULL, x.hasf, x.fpos, x.fmsg};
+    }
+    PR done = {1, next, NULL, last.hasf, last.fpos, last.fmsg};   /* p ~ rep: rep's failure, p's if farther */
+    return pr_last(done, r.hasf, r.fpos, r.fmsg);
+}
+
+/* field: Type, as one Type: a TY_CONST field name in t->tail. */
+static PR tp_field_any(int i, int number) {
+    PR name = number ? (i < tp_n && tp_toks[i].kind == TT_NUM ? (PR){1, i + 1, NULL, 0, 0, NULL}
+                                                             : i < tp_n ? pr_fail(i, "field number expected") : pr_fail(i, "end of input"))
+                     : tp_ident(i, TT_IDENT, "field name");
+    if (name.st != 1) return name;
+    PR r = pr_then(name, tp_tok(name.next, TT_COLON));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_type(r.next));
+    if (r.st != 1) return r;
+    Type *f = ty_new(TY_CONST, 0);
+    f->var = number ? tp_toks[i].num : tp_toks[i].id;
+    f->tail = r.t;
+    r.t = f;
+    return r;
+}
+static PR tp_field(int i) { return tp_field_any(i, 0); }
+static PR tp_field_no(int i) { return tp_field_any(i, 1); }
+
+/* A row or record from fields: name in tail->var, type in tail. */
+static Type *fields_row(Type **items, int n, Type *tail) {
+    int *keys = NEWN(int, n ? n : 1);
+    Type **types = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) keys[i] = items[i]->var, types[i] = items[i]->tail;
+    return ty_row(n, keys, types, tail);
+}
+
+static const char *tp_dup(Type **items, int n, const char *what) {
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < n; k++)
+            if (i != k && items[i]->var == items[k]->var) {
+                char *msg = xmalloc(strlen(S(items[i]->var)) + 40);
+                sprintf(msg, "Found a duplicate %s %s in a %s", what, S(items[i]->var), what[0] == 'k' ? "record" : "variant");
+                return msg;
+            }
+    return NULL;
+}
+
+/* Tag(Type) of a variant. */
+static PR tp_option(int i) {
+    PR r = tp_ident(i, TT_IDENT, "variant tag");
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_LPAREN));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_type(r.next));
+    if (r.st != 1) return r;
+    Type *t = r.t;
+    r = pr_then(r, tp_tok(r.next, TT_RPAREN));
+    if (r.st != 1) return r;
+    Type *f = ty_new(TY_CONST, 0);
+    f->var = tp_toks[i].id;
+    f->tail = t;
+    r.t = f;
+    return r;
+}
+
+/* opt(sep ~ typeVar): the variable, or none. */
+static PR tp_opt_var(int i, int sep) {
+    PR r = tp_tok(i, sep);
+    if (r.st == 1) r = pr_then(r, tp_ident(r.next, 'v', "type variable"));
+    if (r.st == 1 || r.st == 2) return r;
+    return pr_or(r, (PR){1, i, NULL, 0, 0, NULL});
+}
+
+static PR tp_nofun(int i);
+
+/* Set(T), Seq(T) */
+static PR tp_of(int i, int kw, int kind) {
+    PR r = tp_tok(i, kw);
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_LPAREN));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_type(r.next));
+    if (r.st != 1) return r;
+    Type *t = r.t;
+    r = pr_then(r, tp_tok(r.next, TT_RPAREN));
+    if (r.st == 1) r.t = ty_of(kind, t);
+    return r;
+}
+
+static PR tp_alt_tuple(int i) {
+    PR r = tp_tok(i, TT_LANGLE);
+    if (r.st != 1) return r;
+    Type **items;
+    int n;
+    r = pr_then(r, tp_list(r.next, tp_type, TT_COMMA, 0, &items, &n));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_RANGLE));
+    if (r.st == 1) r.t = ty_tup(n, items);
+    return r;
+}
+
+static PR tp_alt_row(int i) {
+    PR r = tp_tok(i, TT_LROW);
+    if (r.st == 1) {
+        Type **items;
+        int n;
+        r = pr_then(r, tp_list(r.next, tp_field, TT_PIPE, 1, &items, &n));
+        if (r.st == 1) {
+            PR v = pr_then(r, tp_opt_var(r.next, TT_PIPE));
+            if (v.st == 1) {
+                Type *tail = v.t;
+                r = pr_then(v, tp_tok(v.next, TT_RROW));
+                if (r.st == 1) { r.t = fields_row(items, n, tail); return r; }
+            } else r = v;
+        }
+    }
+    if (r.st == 2) return r;
+    PR b = tp_tok(i, TT_LROW);   /* (| v |) */
+    if (b.st == 1) {
+        b = pr_then(b, tp_ident(b.next, 'v', "type variable"));
+        if (b.st == 1) {
+            Type *v = b.t;
+            b = pr_then(b, tp_tok(b.next, TT_RROW));
+            if (b.st == 1) b.t = ty_row(0, NULL, NULL, v);
+        }
+    }
+    return pr_or(r, b);
+}
+
+static PR tp_alt_sparse(int i) {
+    PR r = tp_tok(i, TT_LTROW);
+    if (r.st != 1) return r;
+    Type **items;
+    int n;
+    r = pr_then(r, tp_list(r.next, tp_field_no, TT_COMMA, 1, &items, &n));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_RTROW));
+    if (r.st != 1) return r;
+    Type *t = ty_new(TY_SPARSE, n);
+    for (int k = 0; k < n; k++) {
+        int at = k;
+        while (at > 0 && t->keys[at - 1] > items[k]->var) { t->keys[at] = t->keys[at - 1]; t->args[at] = t->args[at - 1]; at--; }
+        t->keys[at] = items[k]->var;
+        t->args[at] = items[k]->tail;
+    }
+    r.t = t;
+    return r;
+}
+
+static PR tp_alt_record(int i) {
+    PR r = tp_tok(i, TT_LBRACKET);
+    if (r.st != 1) return r;
+    Type **items;
+    int n;
+    r = pr_then(r, tp_list(r.next, tp_field, TT_COMMA, 1, &items, &n));
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_RBRACKET));
+    if (r.st != 1) return r;
+    Type *row = fields_row(items, n, NULL);
+    Type *t = ty_new(TY_OLDREC, row->n);
+    for (int k = 0; k < row->n; k++) t->keys[k] = row->keys[k], t->args[k] = row->args[k];
+    r.t = t;
+    return r;
+}
+
+/* { f: T, ..., v }: a duplicate key is an error, as Apalache's first rule gives it. */
+static PR tp_alt_rowrec(int i) {
+    PR r = tp_tok(i, TT_LCURLY);
+    if (r.st == 1) {
+        Type **items;
+        int n;
+        r = pr_then(r, tp_list(r.next, tp_field, TT_COMMA, 1, &items, &n));
+        if (r.st == 1) {
+            PR v = pr_then(r, tp_opt_var(r.next, TT_COMMA));
+            if (v.st == 1) {
+                Type *tail = v.t;
+                PR c = pr_then(v, tp_tok(v.next, TT_RCURLY));
+                if (c.st == 1) {
+                    const char *dup = tp_dup(items, n, "key");
+                    if (dup) return (PR){2, c.next, NULL, 1, tp_pos(c.next), dup};
+                    /* the first rule's failure(""), then the second's success */
+                    PR ok = c;
+                    ok.t = ty_of(TY_REC, fields_row(items, n, tail));
+                    return pr_or(pr_then(c, pr_fail(c.next, "")), ok);
+                }
+                r = c;
+            } else r = v;
+        }
+    }
+    if (r.st == 2) return r;
+    /* the second rule fails where the first did; the third: { v } */
+    PR b = tp_tok(i, TT_LCURLY);
+    if (b.st == 1) {
+        b = pr_then(b, tp_ident(b.next, 'v', "type variable"));
+        if (b.st == 1) {
+            Type *v = b.t;
+            b = pr_then(b, tp_tok(b.next, TT_RCURLY));
+            if (b.st == 1) b.t = ty_of(TY_REC, ty_row(0, NULL, NULL, v));
+        }
+    }
+    return pr_or(r, b);
+}
+
+static PR tp_alt_variant(int i) {
+    Type **items;
+    int n;
+    PR r = tp_list(i, tp_option, TT_PIPE, 0, &items, &n);
+    if (r.st != 1) return r;
+    PR v = pr_then(r, tp_opt_var(r.next, TT_PIPE));
+    if (v.st != 1) return v;
+    const char *dup = tp_dup(items, n, "tag");
+    if (dup) return (PR){2, v.next, NULL, 1, tp_pos(v.next), dup};
+    PR ok = v;
+    ok.t = ty_of(TY_VARIANT, fields_row(items, n, v.t));
+    return pr_or(pr_then(v, pr_fail(v.next, "")), ok);
+}
+
+static PR tp_alt_variant_var(int i) {
+    PR r = tp_tok(i, TT_VARIANT);
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_tok(r.next, TT_LPAREN));
+    if (r.st != 1) return r;
+    PR v = tp_ident(r.next, 'v', "type variable");
+    Type *tail = v.st == 1 ? v.t : NULL;
+    r = pr_then(r, v.st == 1 ? v : pr_or(v, (PR){1, r.next, NULL, 0, 0, NULL}));
+    r = pr_then(r, tp_tok(r.next, TT_RPAREN));
+    if (r.st == 1) r.t = ty_of(TY_VARIANT, ty_row(0, NULL, NULL, tail));
+    return r;
+}
+
+static PR tp_alt_paren(int i) {
+    PR r = tp_tok(i, TT_LPAREN);
+    if (r.st != 1) return r;
+    r = pr_then(r, tp_type(r.next));
+    if (r.st != 1) return r;
+    Type *t = r.t;
+    r = pr_then(r, tp_tok(r.next, TT_RPAREN));
+    if (r.st == 1) r.t = t;
+    return r;
+}
+
+static PR tp_alt_alias(int i) {
+    PR r = tp_tok(i, TT_DOLLAR);
+    if (r.st != 1) return r;
+    return pr_then(r, tp_ident(r.next, '$', "type constant"));
+}
+
+static PR tp_basic(int i, int kw, Type *t) {
+    PR r = tp_tok(i, kw);
+    if (r.st == 1) r.t = t;
+    return r;
+}
+
+static PR tp_nofun(int i) {
+    PR r = tp_basic(i, TT_INT, &ty_int);
+    int tries = 0;
+    while (r.st == 0) {
+        PR q;
+        switch (tries++) {
+        case 0: q = tp_basic(i, TT_REAL, &ty_real); break;
+        case 1: q = tp_basic(i, TT_BOOL, &ty_bool); break;
+        case 2: q = tp_basic(i, TT_STR, &ty_str); break;
+        case 3: q = tp_of(i, TT_SET, TY_SET); break;
+        case 4: q = tp_of(i, TT_SEQ, TY_SEQ); break;
+        case 5: q = tp_alt_tuple(i); break;
+        case 6: q = tp_alt_row(i); break;
+        case 7: q = tp_alt_sparse(i); break;
+        case 8: q = tp_alt_record(i); break;
+        case 9: q = tp_alt_rowrec(i); break;
+        case 10: q = tp_alt_variant(i); break;
+        case 11: q = tp_alt_variant_var(i); break;
+        case 12: q = tp_ident(i, 'v', "type variable"); break;
+        case 13: q = tp_ident(i, 'c', "type constant"); break;
+        case 14: q = tp_alt_alias(i); break;
+        case 15: q = tp_alt_paren(i); break;
+        default: return r;
+        }
+        r = pr_or(r, q);
+    }
+    return r;
+}
+
+/* operatorArgs: ( T, ... ) or one; the list in *args. */
+static PR tp_args(int i, Type ***args, int *n) {
+    PR r = tp_tok(i, TT_LPAREN);
+    if (r.st == 1) {
+        r = pr_then(r, tp_list(r.next, tp_type, TT_COMMA, 1, args, n));
+        if (r.st == 1) r = pr_then(r, tp_tok(r.next, TT_RPAREN));
+        if (r.st == 1) return r;
+    }
+    if (r.st == 2) return r;
+    PR q = tp_nofun(i);
+    if (q.st == 1) { *args = NEWN(Type *, 1); (*args)[0] = q.t; *n = 1; }
+    return pr_or(r, q);
+}
+
+/* The parses of typeExpr, a packrat parser's: each position's once. */
+static PR *tp_memo;
+static char *tp_memoized;
+
+static PR tp_type(int i) {
+    if (i <= tp_n && tp_memoized[i]) return tp_memo[i];
+    Type **args;
+    int n;
+    PR r = tp_args(i, &args, &n);   /* operator */
+    if (r.st == 1) {
+        r = pr_then(r, tp_tok(r.next, TT_DARROW));
+        if (r.st == 1) {
+            r = pr_then(r, tp_type(r.next));
+            if (r.st == 1) r.t = ty_oper(n, args, r.t);
+        }
+    }
+    if (r.st == 0) {   /* function */
+        PR f = tp_nofun(i);
+        if (f.st == 1) {
+            Type *from = f.t;
+            f = pr_then(f, tp_tok(f.next, TT_ARROW));
+            if (f.st == 1) {
+                f = pr_then(f, tp_type(f.next));
+                if (f.st == 1) f.t = ty_fun(from, f.t);
+            }
+        }
+        r = pr_or(r, f);
+        if (r.st == 0) r = pr_or(r, tp_nofun(i));
+    }
+    tp_memo[i] = r;
+    tp_memoized[i] = 1;
+    return r;
+}
+
+/* Lexes text, as Type1Lexer; returns an error message, or NULL. */
+static const char *tp_lex(const char *s) {
+    tp_toks = NULL;
+    tp_n = 0;
+    for (;;) {
+        for (;;) {   /* whitespace, line feeds and // comments */
+            while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\f' || *s == '\n') s++;
+            if (s[0] == '/' && s[1] == '/') { while (*s && *s != '\n') s++; continue; }
+            break;
+        }
+        if (!*s) return NULL;
+        TTok t = {0, 0, 0};
+        int len = 0;
+        static const struct { const char *kw; int kind; } kws[] = {
+            {"Int", TT_INT}, {"Real", TT_REAL}, {"Bool", TT_BOOL}, {"Str", TT_STR}, {"Set", TT_SET},
+            {"Seq", TT_SEQ}, {"Rec", TT_REC}, {"Variant", TT_VARIANT}};
+        for (size_t k = 0; k < sizeof kws / sizeof *kws && !len; k++) {
+            size_t n = strlen(kws[k].kw);
+            if (!strncmp(s, kws[k].kw, n) && !(isalnum((unsigned char)s[n]) || s[n] == '_')) { len = (int)n; t.kind = kws[k].kind; }
+        }
+        if (len) {
+        } else if (isalpha((unsigned char)*s) || *s == '_') {
+            while (isalnum((unsigned char)s[len]) || s[len] == '_') len++;
+            t.kind = TT_IDENT;
+            t.id = intern_n(s, len);
+        } else if (isdigit((unsigned char)*s)) {
+            while (isdigit((unsigned char)s[len])) len++;
+            t.kind = TT_NUM;
+            t.num = atoi(s);
+        } else if (*s == '"' && strchr(s + 1, '"')) {
+            len = (int)(strchr(s + 1, '"') - s) + 1;
+            t.kind = TT_STRLIT;
+            t.id = intern_n(s + 1, len - 2);
+        } else {
+            static const char *const punct[] = {"->", "=>", "=", "(|", "|)", "<|", "|>", "(", ")", "|", "[", "]", "{", "}", "<<", ">>", ",", ":", "$"};
+            static const int kinds[] = {TT_ARROW, TT_DARROW, TT_EQ, TT_LROW, TT_RROW, TT_LTROW, TT_RTROW, TT_LPAREN, TT_RPAREN, TT_PIPE,
+                                        TT_LBRACKET, TT_RBRACKET, TT_LCURLY, TT_RCURLY, TT_LANGLE, TT_RANGLE, TT_COMMA, TT_COLON, TT_DOLLAR};
+            for (size_t k = 0; k < sizeof punct / sizeof *punct && !len; k++)
+                if (!strncmp(s, punct[k], strlen(punct[k]))) { len = (int)strlen(punct[k]); t.kind = kinds[k]; }
+            if (!len) return "unexpected character";
+        }
+        tp_toks = grow(tp_toks, tp_n, sizeof *tp_toks);
+        tp_toks[tp_n++] = t;
+        s += len;
+    }
+}
+
+/* A type annotation's type, or (alias) NAME = type; NULL with *error set if it does not parse. */
+static Type *tp_parse(const char *text, int alias, int *name, const char **error) {
+    if ((*error = tp_lex(text))) return NULL;
+    tp_memo = NEWN(PR, tp_n + 1);
+    tp_memoized = NEWN(char, tp_n + 1);
+    memset(tp_memoized, 0, (size_t)tp_n + 1);
+    PR r;
+    int start = 0;
+    if (alias) {
+        r = tp_ident(0, TT_IDENT, "alias name");
+        if (r.st == 1) {
+            const char *s = S(tp_toks[0].id);
+            if (upper_case(s)) *name = tp_toks[0].id;
+            else if (camel_case(s)) {
+                char *n = xmalloc(strlen(s) + 2);
+                sprintf(n, "$%s", s);
+                *name = intern(n);
+                free(n);
+            } else r = pr_fail(0, "alias name expected");
+        }
+        if (r.st == 1) r = pr_then(r, tp_tok(r.next, TT_EQ));
+        if (r.st == 1) start = r.next;
+        if (r.st == 1) r = pr_then(r, tp_type(start));
+    } else {
+        r = tp_type(0);
+    }
+    if (r.st == 1 && r.next < tp_n) r = r.hasf ? pr_fail(0, r.fmsg) : pr_fail(r.next, "end of input expected");
+    if (r.st != 1) { *error = r.fmsg; return NULL; }
+    return r.t;
+}
+
+/* The annotations in comments, as Apalache's CommentPreprocessor finds
+   them: each @name: text; or @name(args), with its text. */
+typedef struct { int name; char *text; } Note;
+
+static int note_start(const char *s, size_t at) { return at == 0 || isspace((unsigned char)s[at - 1]) || s[at - 1] == '*'; }
+static int note_end(char c) { return !c || strchr(" \n\t\r*", c); }
+
+#define INLINE_CHARS "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_~!#\\$%^&*-+=|(){}[],:`'<>.?/\r\n \t\f"
+
+static Note *read_notes(const char *text, int *count) {
+    Note *notes = NULL;
+    *count = 0;
+    if (!text) return NULL;
+    int one_line = 0, level = 0, parens = 0, colon = 0, in_string = 0;
+    Buf b = {0};
+    size_t last = 0, n = strlen(text);
+    for (size_t i = 0; i < n;) {
+        const char *s = text + i;
+        size_t len = 0;
+        if (*s == '\n' || *s == ')' || *s == ';' || *s == '"') len = 1;
+        else if ((s[0] == '\\' && s[1] == '*') || (s[0] == '(' && s[1] == '*') || (s[0] == '*' && s[1] == ')')) len = 2;
+        else if (s[0] == '@' && (isalpha((unsigned char)s[1]) || s[1] == '_')) for (len = 1; isalnum((unsigned char)s[len]) || s[len] == '_'; len++) {}
+        if (!len) { i++; continue; }
+        int good = note_start(text, i);
+        int in_note = parens || colon;
+        if (i > last && !((one_line && level > 0) || level > 1) && in_note) buf_add(&b, text + last, i - last);
+        last = i + len;
+        char look = text[last];
+        int at = s[0] == '@';
+        if (!in_note && !in_string && at && good && (look == ':' || look == '(')) last++;
+        /* the next state */
+        int np = parens, nc = colon, ns = in_string;
+        if (len == 2 && s[0] == '\\') one_line = 1;
+        else if (*s == '\n') one_line = 0;
+        else if (*s == '"') { if (!colon) ns = !in_string; }
+        else if (len == 2 && s[0] == '(') { if (!one_line) level++; }
+        else if (len == 2 && s[0] == '*') { if (level > 0) { one_line = 0; level--; } else if (one_line) one_line = 0; }
+        else if (*s == ')') { if (!in_string && !colon) np = nc = ns = 0; }
+        else if (*s == ';') { if (!in_string && in_note) np = nc = ns = 0; }
+        else if (at && good) {
+            if (look == '(' && !in_note) np = 1, nc = 0, ns = 0;
+            else if (look == ':' && !in_note) np = 0, nc = 1, ns = 0;
+            else if (!in_note && note_end(look)) {}
+            else if (!in_string) np = nc = ns = 0;
+        }
+        int now = np || nc;
+        if (!in_note && now) { b.n = 0; buf_add(&b, s, len); buf_add(&b, &look, 1); }
+        else if (in_note && now) { if (!(len == 2 && (s[0] == '\\' || s[0] == '(' || s[0] == '*'))) buf_add(&b, s, len); }
+        else if (in_note && !now) {
+            buf_add(&b, s, len);
+            Note k = {0, strndup(b.s, b.n)};
+            PUSH(notes, *count, k);
+            b.n = 0;
+        }
+        parens = np, colon = nc, in_string = ns;
+        i += len;
+    }
+    if (b.n) { Note k = {0, strndup(b.s, b.n)}; PUSH(notes, *count, k); }
+    free(b.s);
+    /* @name: text;  or  @name("text"); Apalache drops, with a warning, a
+       text that does not end with ; or holds a character its
+       AnnotationLexer does not take. */
+    int kept = 0;
+    for (int k = 0; k < *count; k++) {
+        char *s = notes[k].text, *p = s + 1;
+        while (isalnum((unsigned char)*p) || *p == '_') p++;
+        notes[k].name = intern_n(s + 1, (int)(p - s - 1));
+        if (*p == ':') {
+            char *end = s + strlen(s);
+            if (end == p + 1 || end[-1] != ';' || p[strspn(p + 1, INLINE_CHARS) + 1] != ';') continue;
+            end--;
+            memmove(s, p + 1, (size_t)(end - p - 1));
+            s[end - p - 1] = 0;
+        } else if (*p == '(' && strchr(p, '"') && strchr(strchr(p, '"') + 1, '"')) {
+            char *q = strchr(p, '"') + 1, *e = strchr(q, '"');
+            memmove(s, q, (size_t)(e - q));
+            s[e - q] = 0;
+        } else {
+            s[0] = 0;
+        }
+        notes[kept++] = notes[k];
+    }
+    *count = kept;
+    return notes;
+}
+
+/* ---------------------------------------------------------------- the checker */
+
+/* An instance a definition is typed in: its substitutions are typed in the parent's. */
+typedef struct TInst TInst;
+struct TInst { Def *def; TInst *parent; };
+
+/* What a name stands for, in an instance: a value of a type, an
+   operator of a type quantified over vars, or another definition (to, in
+   frame to_frame) that it gives way to. */
+enum { TE_VALUE, TE_OPER, TE_ALIAS };
+typedef struct { TInst *frame; Def *def; int kind; Type *t; int *q; int nq; Def *to; TInst *to_frame; } TEntry;
+
+static TEntry *tc_entries;   /* a hash table, by frame and definition */
+static int tc_nentries, tc_capentries;
+
+static unsigned tc_hash(TInst *f, Def *d) { return (unsigned)(((uintptr_t)f * 31 + (uintptr_t)d) * 2654435761u); }
+
+static TEntry *tc_find(TInst *f, Def *d) {
+    if (!tc_capentries) return NULL;
+    for (unsigned h = tc_hash(f, d) & (unsigned)(tc_capentries - 1);; h = (h + 1) & (unsigned)(tc_capentries - 1)) {
+        if (!tc_entries[h].def) return NULL;
+        if (tc_entries[h].def == d && tc_entries[h].frame == f) return &tc_entries[h];
+    }
+}
+
+static TEntry *tc_put(TInst *f, Def *d) {
+    TEntry *e = tc_find(f, d);
+    if (e) return e;
+    if (2 * (tc_nentries + 1) > tc_capentries) {
+        TEntry *old = tc_entries;
+        int cap = tc_capentries;
+        tc_capentries = cap ? cap * 2 : 256;
+        tc_entries = xcalloc((size_t)tc_capentries, sizeof *tc_entries);
+        tc_nentries = 0;
+        for (int i = 0; i < cap; i++) if (old[i].def) *tc_put(old[i].frame, old[i].def) = old[i];
+        free(old);
+    }
+    unsigned h = tc_hash(f, d) & (unsigned)(tc_capentries - 1);
+    while (tc_entries[h].def) h = (h + 1) & (unsigned)(tc_capentries - 1);
+    tc_nentries++;
+    tc_entries[h].frame = f;
+    tc_entries[h].def = d;
+    return &tc_entries[h];
+}
+
+static TInst **tc_frames;
+static int tc_nframes;
+
+static TInst *tc_frame_of(Def *def, TInst *parent) {
+    for (int i = 0; i < tc_nframes; i++) if (tc_frames[i]->def == def && tc_frames[i]->parent == parent) return tc_frames[i];
+    TInst *f = NEW(TInst);
+    f->def = def;
+    f->parent = parent;
+    PUSH(tc_frames, tc_nframes, f);
+    return f;
+}
+
+/* A constraint, as Apalache's TClause: var equals term, or one of alts.
+   why says what its failure means, at at. */
+enum { CL_PLAIN, CL_SET, CL_DEF, CL_ARGS, CL_SIG };   /* why */
+enum { EX_NONE, EX_EQ, EX_CALL, EX_APPLY };          /* how an application's failure is explained */
+typedef struct {
+    Type *var, *term;
+    Type **alts;
+    int nalts;
+    int why, expl;
+    Expr *at;
+    Type **args;      /* an application's arguments' types */
+    int nargs;
+    int name;         /* the operator's; the definition's */
+} TClause;
+
+typedef struct { TClause *c; int n; } TSolver;
+
+static TSolver *tc_solver;
+static TInst *tc_frame;
+static Type **tc_env;   /* the types of the names bound around: their variables are not quantified */
+static int tc_nenv;
+
+static Type *tc(Expr *e);
+
+static const char *tc_source(Expr *e) {
+    static char *cached;
+    static const char *cached_path;
+    if (!e || !e->mod || !e->mod->path) return NULL;
+    if (cached_path != e->mod->path) {
+        free(cached);
+        cached = read_file(e->mod->path);
+        if (!cached) {
+            for (int i = 0; standard_modules[i].name; i++) if (!strcmp(standard_modules[i].name, S(e->mod->name))) cached = strdup(standard_modules[i].text);
+        }
+        cached_path = e->mod->path;
+    }
+    if (!cached) return NULL;
+    const char *p = cached;
+    for (int l = 1; l < e->l1 && *p; l++) { p = strchr(p, '\n'); if (!p) return NULL; p++; }
+    const char *q = p;
+    int len = 0;
+    for (int l = e->l1, c = 1; *q; q++) {
+        if (l == e->l1 && c == e->c1) p = q;
+        if (l == e->l2 && c == e->c2) { len = (int)(q - p) + 1; break; }
+        if (*q == '\n') l++, c = 1; else c++;
+    }
+    if (len <= 0) return NULL;
+    char *s = strndup(p, (size_t)len);
+    for (char *x = s; *x; x++) if (*x == '\n' || *x == '\t') *x = ' ';
+    return s;
+}
+
+static const char *tc_where(Expr *e) {
+    char *s = xmalloc(512);
+    const char *path = e && e->mod && e->mod->path ? e->mod->path : "?";
+    const char *base = strrchr(path, '/');
+    snprintf(s, 512, "%s:%d:%d-%d:%d", base ? base + 1 : path, e ? e->l1 : 0, e ? e->c1 : 0, e ? e->l2 : 0, e ? e->c2 : 0);
+    return s;
+}
+
+static __attribute__((format(printf, 2, 3))) void tc_error(Expr *at, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    printf("[%s]: ", tc_where(at));
+    vprintf(fmt, ap);
+    printf("\n");
+    va_end(ap);
+}
+
+static __attribute__((noreturn)) void tc_stop(void) {
+    tc_status = 120;
+    longjmp(*tc_unwind, 1);
+}
+
+static void tc_add(TClause c) {
+    tc_solver->c = grow(tc_solver->c, tc_solver->n, sizeof *tc_solver->c);
+    tc_solver->c[tc_solver->n++] = c;
+}
+
+static void tc_eq(Type *var, Type *term, int why, Expr *at) { tc_add((TClause){var, term, NULL, 0, why, 0, at, NULL, 0, 0}); }
+
+static const char *types_text(Type **ts, int n, const char *sep) {
+    Buf b = {0};
+    for (int i = 0; i < n; i++) { if (i) buf_puts(&b, sep); ty_print(&b, ts[i]); }
+    char *s = strdup(b.s ? b.s : "");
+    free(b.s);
+    return s;
+}
+
+/* What Apalache says of a clause that has no solution. */
+static void tc_explain(TClause *c) {
+    if (c->why == CL_PLAIN) return;
+    if (c->why == CL_SET) { tc_error(c->at, "Expected a set. Found: %s", ty_text(c->term)); return; }
+    if (c->why == CL_DEF) { tc_error(c->at, "Expected %s in %s. Found: %s", ty_text(c->var), S(c->name), ty_text(c->term)); return; }
+    const char *text = tc_source(c->at), *args = types_text(c->args, c->nargs, " and ");
+    const char *plural = c->nargs == 1 ? "argument" : "arguments";
+    if (!text) text = "";
+    if (c->expl == EX_EQ)
+        tc_error(c->at, "Arguments to %s should have the same type. For arguments with types %s, in expression %s",
+                 S(c->name), types_text(c->args, c->nargs, ", "), text);
+    else if (c->expl == EX_APPLY) tc_error(c->at, "Cannot apply the function to its argument in %s.", text);
+    else if (c->expl == EX_CALL && !c->alts && c->why == CL_SIG && c->term->kind == TY_OPER)
+        tc_error(c->at, "The operator %s of type %s is applied to arguments of incompatible types in %s", S(c->name), ty_text(c->term), text);
+    else if (c->alts)
+        tc_error(c->at, "Annotation required. Found %d matching operator signatures %s for %s %s", c->nalts,
+                 types_text(c->alts, c->nalts, " or "), plural, args);
+    else
+        tc_error(c->at, "An operator with the signature %s cannot be applied to the provided %s of type %s",
+                 ty_text(c->why == CL_ARGS ? c->var : c->term), plural, args);
+}
+
+/* Apalache's solvePartially: equations at once, a choice once only one of its alternatives fits. */
+static int tc_solve_partially(TSolver *s) {
+    for (int progress = 1; s->n && progress;) {
+        progress = 0;
+        int kept = 0;
+        for (int i = 0; i < s->n; i++) {
+            TClause *c = &s->c[i];
+            if (!c->alts) {
+                if (!ty_unify(c->var, c->term)) {
+                    tc_explain(c);
+                    s->n = 0;
+                    return 0;
+                }
+                progress = 1;
+                continue;
+            }
+            int fits = 0, which = -1;
+            for (int k = 0; k < c->nalts && fits < 2; k++) {
+                int mark = ty_ntrail;
+                if (ty_compute(c->var, c->alts[k])) fits++, which = k;
+                ty_undo(mark);
+            }
+            if (fits == 1) { ty_unify(c->var, c->alts[which]); progress = 1; }
+            else s->c[kept++] = *c;
+        }
+        s->n = kept;
+    }
+    return 1;
+}
+
+static int tc_solve(TSolver *s) {
+    if (!tc_solve_partially(s)) return 0;
+    if (!s->n) return 1;
+    for (int i = 0; i < s->n; i++) tc_explain(&s->c[i]);
+    s->n = 0;
+    return 0;
+}
+
+/* An application of an operator of one of sigs to arguments of types args: its result. */
+static Type *tc_app_why(Expr *at, int expl, int name, Type **sigs, int nsigs, Type **args, int n) {
+    Type *res = ty_fresh(), *oper = ty_fresh();
+    Type **kept = NEWN(Type *, n ? n : 1);
+    memcpy(kept, args, sizeof(Type *) * (size_t)n);
+    tc_add((TClause){oper, ty_oper(n, kept, res), NULL, 0, CL_ARGS, expl, at, kept, n, name});
+    if (nsigs == 1) tc_add((TClause){oper, sigs[0], NULL, 0, CL_SIG, expl, at, kept, n, name});
+    else {
+        Type **alts = NEWN(Type *, nsigs);
+        memcpy(alts, sigs, sizeof(Type *) * (size_t)nsigs);
+        tc_add((TClause){oper, NULL, alts, nsigs, CL_SIG, expl, at, kept, n, name});
+    }
+    return res;
+}
+
+static Type *tc_app(Expr *at, Type *sig, Type **args, int n) { return tc_app_why(at, 0, 0, &sig, 1, args, n); }
+
+/* (T, ..., T) => R for n parameters */
+static Type *sig_same(int n, Type *t, Type *res) {
+    Type **ps = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) ps[i] = t;
+    return ty_oper(n, ps, res);
+}
+
+static Type *sig1(Type *a, Type *res) { return ty_oper(1, &a, res); }
+static Type *sig2(Type *a, Type *b, Type *res) { Type *ps[2] = {a, b}; return ty_oper(2, ps, res); }
+
+/* The types of e's arguments, in order. */
+static Type **tc_args(Expr **args, int n) {
+    Type **ts = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) ts[i] = tc(args[i]);
+    return ts;
+}
+
+static Type *tc_op(Expr *e, Type *sig) { Type **ts = tc_args(e->args, e->n); return tc_app(e, sig, ts, e->n); }
+
+static int model_sort(int s);
+static Type *str_type(int s);
+
+/* mkFunLikeByArg: what f in f[x] may be, for each kind of x: function, argument and result types. */
+static int fun_like(Expr *x, Type **funs, Type **argts, Type **ress) {
+    Type *a = ty_fresh();
+    if (x && x->kind == X_NUM && x->num >= 0) {
+        Type *sparse = ty_new(TY_SPARSE, 1);
+        sparse->keys[0] = (int)x->num;
+        sparse->args[0] = a;
+        funs[0] = ty_fun(&ty_int, a), funs[1] = ty_of(TY_SEQ, a), funs[2] = sparse;
+        for (int i = 0; i < 3; i++) argts[i] = &ty_int, ress[i] = a;
+        return 3;
+    }
+    if (x && x->kind == X_STR) {
+        if (model_sort((int)x->num) >= 0) {
+            Type *c = str_type((int)x->num);
+            funs[0] = ty_fun(c, a), argts[0] = c, ress[0] = a;
+            return 1;
+        }
+        int field = (int)x->num;
+        funs[0] = ty_fun(&ty_str, a), argts[0] = &ty_str, ress[0] = a;
+        funs[1] = ty_of(TY_REC, ty_row(1, &field, &a, ty_fresh())), argts[1] = &ty_str, ress[1] = a;
+        return 2;
+    }
+    Type *b = ty_fresh();
+    funs[0] = ty_fun(a, b), argts[0] = a, ress[0] = b;
+    funs[1] = ty_of(TY_SEQ, a), argts[1] = &ty_int, ress[1] = a;
+    return 2;
+}
+
+/* A model value's type: NAME_OF_SORT, as Apalache's ModelValueHandler reads it, is of type SORT; -1 for a string. */
+static int model_sort(int s) {
+    const char *text = S(s);
+    for (const char *p = text; *p; p++) if (!isalnum((unsigned char)*p) && *p != '_') return -1;
+    for (const char *of = text + strlen(text) - 4; of > text; of--) {
+        if (strncmp(of, "_OF_", 4)) continue;
+        const char *sort = of + 4;
+        int ok = isupper((unsigned char)*sort) || *sort == '_';
+        for (const char *p = sort; ok && *p; p++) ok = isupper((unsigned char)*p) || isdigit((unsigned char)*p) || *p == '_';
+        if (ok) return intern(sort);
+    }
+    return -1;
+}
+
+static Type *str_type(int s) {
+    int sort = model_sort(s);
+    if (sort < 0) return &ty_str;
+    Type *c = ty_new(TY_CONST, 0);
+    c->var = sort;
+    return c;
+}
+
+static Type *tc_tuple(Expr *at, Expr **elems, int n) {
+    if (!n) return ty_of(TY_SEQ, ty_fresh());
+    Type **vars = NEWN(Type *, n), *sigs[2];
+    for (int i = 0; i < n; i++) vars[i] = ty_fresh();
+    sigs[0] = ty_oper(n, vars, ty_tup(n, vars));
+    sigs[1] = sig_same(n, vars[0], ty_of(TY_SEQ, vars[0]));
+    Type **ts = tc_args(elems, n);
+    return tc_app_why(at, 0, 0, sigs, 2, ts, n);
+}
+
+/* f[x]: f of type fun applied to arg x, of type argt. */
+static Type *tc_apply(Expr *at, Type *fun, Expr *x, Type *argt) {
+    Type *funs[3], *argts[3], *ress[3], *sigs[3];
+    int n = fun_like(x, funs, argts, ress);
+    for (int i = 0; i < n; i++) sigs[i] = sig2(funs[i], argts[i], ress[i]);
+    Type *ts[2] = {fun, argt};
+    return tc_app_why(at, EX_APPLY, 0, sigs, n, ts, 2);
+}
+
+/* Binds the names of bounds, as Apalache's translateBindings and translateBinders: their types in *elems. */
+static int tc_bind(Expr *at, Bound *bs, int nb, Type ***elems, Def ***defs) {
+    Type **sets = NULL;
+    Def **names = NULL;
+    int n = 0, nd = 0;
+    for (int i = 0; i < nb; i++) {
+        Bound *b = &bs[i];
+        if (b->tuple) {
+            for (int k = 0; k < b->n; k++) {
+                Type *set = tc(b->set);
+                Type **vars = NEWN(Type *, b->n);
+                for (int j = 0; j < b->n; j++) vars[j] = ty_fresh();
+                Type *tup = ty_tup(b->n, vars), *ts[2] = {tup, set};
+                PUSH(sets, n, tc_app(at, sig2(tup, ty_of(TY_SET, tup), ty_of(TY_SET, vars[k])), ts, 2));
+                PUSH(names, nd, b->defs[k]);
+            }
+            continue;
+        }
+        for (int k = 0; k < b->n; k++) {
+            PUSH(sets, n, b->set ? tc(b->set) : ty_of(TY_SET, ty_fresh()));
+            PUSH(names, nd, b->defs[k]);
+        }
+    }
+    Type **vars = NEWN(Type *, n ? n : 1), **es = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) vars[i] = ty_fresh();
+    for (int i = 0; i < n; i++) es[i] = ty_fresh();
+    for (int i = 0; i < n; i++) tc_eq(vars[i], ty_of(TY_SET, es[i]), CL_SET, at);
+    for (int i = 0; i < n; i++) tc_eq(vars[i], sets[i], CL_SET, at);
+    for (int i = 0; i < n; i++) {
+        TEntry *t = tc_put(tc_frame, names[i]);
+        t->kind = TE_VALUE;
+        t->t = es[i];
+        PUSH(tc_env, tc_nenv, es[i]);
+    }
+    *elems = es;
+    if (defs) *defs = names;
+    return n;
+}
+
+/* The domain of a function over bounds: each name's type, a tuple's for a tuple, and a tuple of several. */
+static Type *tc_domain(Bound *bs, int nb, Type **vars) {
+    int nparts = 0, k = 0, at = 0;
+    for (int i = 0; i < nb; i++) nparts += bs[i].tuple ? 1 : bs[i].n;
+    Type **parts = NEWN(Type *, nparts);
+    for (int i = 0; i < nb; i++) {
+        if (bs[i].tuple) { parts[k++] = ty_tup(bs[i].n, vars + at); at += bs[i].n; }
+        else for (int j = 0; j < bs[i].n; j++) parts[k++] = vars[at++];
+    }
+    return nparts == 1 ? parts[0] : ty_tup(nparts, parts);
+}
+
+/* A lambda over bounds: \A, \E, CHOOSE, { : }, [ |-> ]: the principal type given its bindings' types. */
+typedef Type *(*Principal)(Type **vars, int n, Bound *bs, int nb, Type *body, void *data);
+
+static Type *tc_lambda(Expr *at, Bound *bs, int nb, Expr *body, Principal principal, void *data) {
+    int env = tc_nenv;
+    Type **es;
+    int n = tc_bind(at, bs, nb, &es, NULL);
+    Type *bt = tc(body);
+    tc_nenv = env;
+    Type **vars = NEWN(Type *, n ? n : 1);
+    for (int i = 0; i < n; i++) vars[i] = ty_fresh();
+    Type *res = ty_fresh(), *sig = principal(vars, n, bs, nb, res, data);
+    Type *lambda = ty_oper(n, es, bt);
+    return tc_app(at, sig, &lambda, 1);
+}
+
+static Type *pr_bool(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
+    (void)bs, (void)nb, (void)res, (void)data;
+    return sig1(ty_oper(n, vars, &ty_bool), &ty_bool);
+}
+static Type *pr_choose(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
+    (void)bs, (void)nb, (void)res, (void)data;
+    return sig1(ty_oper(n, vars, &ty_bool), vars[0]);
+}
+static Type *pr_filter(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
+    (void)bs, (void)nb, (void)res, (void)data;
+    return sig1(ty_oper(n, vars, &ty_bool), ty_of(TY_SET, n == 1 ? vars[0] : ty_tup(n, vars)));
+}
+static Type *pr_map(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
+    (void)bs, (void)nb, (void)data;
+    return sig1(ty_oper(n, vars, res), ty_of(TY_SET, res));
+}
+static Type *pr_fcn(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
+    (void)data;
+    return sig1(ty_oper(n, vars, res), ty_fun(tc_domain(bs, nb, vars), res));
+}
+
+/* [x \in S |-> e] that names itself, f, in e: a recursive function. */
+static Type *tc_recfcn(Expr *at, Def *f, Bound *bs, int nb, Expr *body) {
+    int nnames = 0;
+    for (int i = 0; i < nb; i++) nnames += bs[i].n;
+    Type *res = ty_fresh(), **args = NEWN(Type *, nnames ? nnames : 1), **others = NEWN(Type *, nnames ? nnames : 1);
+    for (int i = 0; i < nnames; i++) args[i] = ty_fresh();
+    Type *fun = ty_fun(tc_domain(bs, nb, args), res);
+    Type *principal = sig1(sig1(fun, ty_oper(nnames, args, res)), fun);
+    for (int i = 0; i < nnames; i++) others[i] = ty_fresh();
+    Type *self_set = ty_of(TY_SET, ty_fun(tc_domain(bs, nb, others), ty_fresh()));
+    /* the outer lambda binds f to an element of self_set */
+    Type *set_var = ty_fresh(), *self = ty_fresh();
+    tc_eq(set_var, ty_of(TY_SET, self), CL_SET, at);
+    tc_eq(set_var, self_set, CL_SET, at);
+    TEntry *t = tc_put(tc_frame, f);
+    TEntry saved = *t;
+    t->kind = TE_VALUE;
+    t->t = self;
+    t->q = NULL;
+    t->nq = 0;
+    PUSH(tc_env, tc_nenv, self);
+    int env = tc_nenv;
+    Type **es;
+    int n = tc_bind(at, bs, nb, &es, NULL);
+    Type *bt = tc(body);
+    tc_nenv = env - 1;
+    *tc_put(tc_frame, f) = saved;
+    Type *inner = ty_oper(n, es, bt), *outer = sig1(self, inner);
+    return tc_app(at, principal, &outer, 1);
+}
+
+static Type *tc_except_tower(Expr *e, Path *p, int j, Expr *value) {
+    Expr *key = p->fields && p->fields[j] >= 0 ? NULL : p->keys[j];
+    Type *kt;
+    Expr lit;
+    if (!key) {
+        memset(&lit, 0, sizeof lit);
+        lit.kind = X_STR;
+        lit.num = p->fields[j];
+        key = &lit;
+        kt = &ty_str;
+    } else {
+        kt = tc(key);
+    }
+    Type *inner = j + 1 < p->n ? tc_except_tower(e, p, j + 1, value) : tc(value);
+    Type *funs[3], *argts[3], *ress[3], *sigs[3];
+    int n = fun_like(key, funs, argts, ress);
+    for (int i = 0; i < n; i++) sigs[i] = sig2(argts[i], ress[i], funs[i]);
+    Type *ts[2] = {kt, inner};
+    return tc_app_why(e, 0, 0, sigs, n, ts, 2);
+}
+
+/* @ in an EXCEPT: the function, applied along the path so far. */
+typedef struct { Expr *fun; Path *path; } TAt;
+static TAt tc_at;
+
+static Type *tc_old_value(Expr *at) {
+    Type *t = tc(tc_at.fun);
+    for (int j = 0; j < tc_at.path->n; j++) {
+        Expr *key = tc_at.path->fields && tc_at.path->fields[j] >= 0 ? NULL : tc_at.path->keys[j];
+        Expr lit;
+        if (!key) {
+            memset(&lit, 0, sizeof lit);
+            lit.kind = X_STR;
+            lit.num = tc_at.path->fields[j];
+            key = &lit;
+        }
+        t = tc_apply(at, t, key, key == &lit ? &ty_str : tc(key));
+    }
+    return t;
+}
+
+static Type *tc_letdef(Def *d);
+static Type *lib_type(Def *d, Expr *at);
+static Type *tc_decl(Def *d, Expr *at);
+
+/* An operator's type at a use: a fresh instance of its scheme. */
+static Type *tc_instance(TEntry *t) {
+    if (t->kind == TE_VALUE || !t->nq) return t->t;
+    Type **to = NEWN(Type *, t->nq);
+    for (int i = 0; i < t->nq; i++) to[i] = ty_fresh();
+    return ty_rename(ty_zonk(t->t), t->q, to, t->nq);
+}
+
+static TEntry *tc_lookup(Def *d) {
+    for (TInst *f = tc_frame;; f = f->parent) {
+        TEntry *t = tc_find(f, d);
+        if (t && t->kind == TE_ALIAS) {
+            TInst *saved = tc_frame;
+            tc_frame = t->to_frame;
+            t = tc_lookup(t->to);
+            tc_frame = saved;
+        }
+        if (t || !f) return t;
+    }
+}
+
+/* What name d stands for: a value's type, or an operator's, for a use at at. */
+static Type *tc_name(Def *d, Expr *at, int *oper) {
+    *oper = 1;
+    if (d->kind == D_CONST || d->kind == D_VAR) { *oper = d->arity > 0; return tc_decl(d, at); }
+    Type *lib = lib_type(d, at);
+    if (lib) return lib;
+    TEntry *t = tc_lookup(d);
+    if (!t) {
+        tc_error(at, "The operator %s is used before it is defined.", S(d->name));
+        tc_stop();
+    }
+    *oper = t->kind == TE_OPER;
+    return tc_instance(t);
+}
+
+/* A call of an operator of Variants, whose type is its tag's: NULL for another. */
+static Type *tc_variant(Expr *e, Def *d) {
+    if (!d->mod || strcmp(S(d->mod->name), "Variants") || d->kind != D_OP) return NULL;
+    const char *s = S(d->name);
+    int tagged = !strcmp(s, "Variant") || !strcmp(s, "VariantFilter") || !strcmp(s, "VariantGetUnsafe") || !strcmp(s, "VariantGetOrElse");
+    if (!tagged && strcmp(s, "VariantTag")) return NULL;
+    if (tagged && (e->n < 1 || e->args[0]->kind != X_STR)) {
+        const char *text = e->n ? tc_source(e->args[0]) : NULL;
+        tc_input_error("The first argument of %s must be a string, found: %s", s, text ? text : "?");
+    }
+    Type *a = ty_fresh(), *b = ty_fresh(), *sig;
+    int tag = tagged ? (int)e->args[0]->num : 0;
+    Type *variant = ty_of(TY_VARIANT, tagged ? ty_row(1, &tag, &a, b) : ty_row(0, NULL, NULL, a));
+    if (!strcmp(s, "Variant")) sig = sig2(&ty_str, a, variant);
+    else if (!strcmp(s, "VariantFilter")) sig = sig2(&ty_str, ty_of(TY_SET, variant), ty_of(TY_SET, a));
+    else if (!strcmp(s, "VariantTag")) sig = sig1(variant, &ty_str);
+    else if (!strcmp(s, "VariantGetUnsafe")) sig = sig2(&ty_str, variant, a);
+    else { Type *ps[3] = {&ty_str, variant, a}; sig = ty_oper(3, ps, a); }
+    return tc_op(e, sig);
+}
+
+/* An operator named as an argument, uncalled. */
+static Type *tc_opname(Def *d, Expr *at) {
+    int oper;
+    if (d->kind == D_PARAM) { TEntry *t = tc_lookup(d); return t ? t->t : ty_fresh(); }
+    return tc_name(d, at, &oper);
+}
+
+static Type *tc(Expr *e) {
+    Type *a, *b, **ts;
+    switch (e->kind) {
+    case X_NUM: return e->num < 0 ? &ty_real : &ty_int;
+    case X_STR: return str_type((int)e->num);
+    case X_BOOL: return &ty_bool;
+    case K_BOOLEAN: return ty_of(TY_SET, &ty_bool);
+    case K_STRINGSET: return ty_of(TY_SET, &ty_str);
+    case K_BOUND: {
+        TEntry *t = tc_lookup(e->def);
+        if (!t) { tc_error(e, "No annotation found for %s. Make sure that you've put one in front of %s.", S(e->def->name), S(e->def->name)); tc_stop(); }
+        return t->t;
+    }
+    case K_DECL: return tc_decl(e->def, e);
+    case K_CALL: case K_PARAMCALL: case K_INSTCALL: {
+        Def *d = e->def;
+        TInst *caller = tc_frame, *callee = tc_frame;
+        for (int i = 0; e->kind == K_INSTCALL && i < e->ndefs; i++) {
+            if (e->defs[i]->nparams) tc_input_error("Manyan does not type an instance with parameters: %s", S(e->defs[i]->name));
+            callee = tc_frame_of(e->defs[i], callee);
+        }
+        if (!e->n && (d->kind == D_PARAM || (d->kind == D_OP && d->nparams) || (d->kind == D_CONST && d->arity))) {
+            tc_frame = callee;   /* an operator, as an argument */
+            a = tc_opname(d, e);
+            tc_frame = caller;
+            return a;
+        }
+        if ((a = tc_variant(e, d))) return a;
+        ts = tc_args(e->args, e->n);
+        int oper;
+        tc_frame = callee;
+        a = tc_name(d, e, &oper);
+        tc_frame = caller;
+        return !oper && !e->n ? a : tc_app_why(e, EX_CALL, d->name, &a, 1, ts, e->n);
+    }
+    case X_OPREF: return tc_opname(e->def, e);
+    case X_LAMBDA: {
+        tc_letdef(e->def);
+        TEntry *t = tc_lookup(e->def);
+        return tc_instance(t);
+    }
+    case K_AND: case K_OR: return tc_op(e, sig_same(e->n, &ty_bool, &ty_bool));
+    case K_NOT: case K_ENABLED: case K_ALWAYS: case K_EVENTUALLY: return tc_op(e, sig1(&ty_bool, &ty_bool));
+    case K_IMPLIES: case K_EQUIV: case K_LEADSTO: case K_WHILE: case K_CDOT: return tc_op(e, sig2(&ty_bool, &ty_bool, &ty_bool));
+    case K_EQ: case K_NEQ:
+        a = ty_fresh();
+        ts = tc_args(e->args, e->n);
+        { Type *s = sig2(a, a, &ty_bool); return tc_app_why(e, EX_EQ, intern(e->kind == K_EQ ? "=" : "/="), &s, 1, ts, 2); }
+    case K_IN: case K_NOTIN: a = ty_fresh(); return tc_op(e, sig2(a, ty_of(TY_SET, a), &ty_bool));
+    case K_SUBSETEQ: a = ty_of(TY_SET, ty_fresh()); return tc_op(e, sig2(a, a, &ty_bool));
+    case K_CUP: case K_CAP: case K_SETMINUS: a = ty_of(TY_SET, ty_fresh()); return tc_op(e, sig2(a, a, a));
+    case K_SUBSET: a = ty_of(TY_SET, ty_fresh()); return tc_op(e, sig1(a, ty_of(TY_SET, a)));
+    case K_UNION: a = ty_of(TY_SET, ty_fresh()); return tc_op(e, sig1(ty_of(TY_SET, a), a));
+    case K_DOMAIN: {
+        Type *sigs[4];
+        Type *x = ty_fresh(), *y = ty_fresh(), *z = ty_fresh(), *w = ty_fresh();
+        (void)y;
+        sigs[0] = sig1(ty_fun(x, ty_fresh()), ty_of(TY_SET, x));
+        sigs[1] = sig1(ty_of(TY_SEQ, z), ty_of(TY_SET, &ty_int));
+        sigs[2] = sig1(ty_of(TY_REC, ty_row(0, NULL, NULL, w)), ty_of(TY_SET, &ty_str));
+        sigs[3] = sig1(ty_new(TY_SPARSE, 0), ty_of(TY_SET, &ty_int));
+        ts = tc_args(e->args, 1);
+        return tc_app_why(e, 0, 0, sigs, 4, ts, 1);
+    }
+    case K_PRIME: a = ty_fresh(); return tc_op(e, sig1(a, a));
+    case K_UNCHANGED:
+        if (e->args[0]->kind == X_TUPLE) {
+            Expr *t = e->args[0];
+            Type **vars = NEWN(Type *, t->n ? t->n : 1);
+            for (int i = 0; i < t->n; i++) vars[i] = ty_fresh();
+            Type *tup = ty_tup(t->n, vars);
+            ts = tc_args(t->args, t->n);
+            Type *tt = tc_app(t, ty_oper(t->n, vars, tup), ts, t->n);
+            return tc_app(e, sig1(tup, &ty_bool), &tt, 1);
+        }
+        return tc_op(e, sig1(ty_fresh(), &ty_bool));
+    case X_SQACT: case X_ANGLEACT: return tc_op(e, sig2(&ty_bool, ty_fresh(), &ty_bool));
+    case X_WF: case X_SF: {
+        ts = tc_args(e->args, e->n);
+        Type *ps[2] = {ty_fresh(), &ty_bool};
+        if (e->n == 1) return tc_app(e, sig1(&ty_bool, &ty_bool), ts, 1);
+        return tc_app(e, ty_oper(2, ps, &ty_bool), ts, 2);
+    }
+    case K_TIMES: {
+        Type **vars = NEWN(Type *, e->n), **sets = NEWN(Type *, e->n);
+        for (int i = 0; i < e->n; i++) vars[i] = ty_fresh(), sets[i] = ty_of(TY_SET, vars[i]);
+        return tc_op(e, ty_oper(e->n, sets, ty_of(TY_SET, ty_tup(e->n, vars))));
+    }
+    case X_SETENUM:
+        if (!e->n) return ty_of(TY_SET, ty_fresh());
+        a = ty_fresh();
+        return tc_op(e, sig_same(e->n, a, ty_of(TY_SET, a)));
+    case X_TUPLE: return tc_tuple(e, e->args, e->n);
+    case X_RECORD: case X_RCDSET: {
+        Type **vars = NEWN(Type *, e->n), **ps = NEWN(Type *, e->n);
+        int *keys = NEWN(int, e->n);
+        for (int i = 0; i < e->n; i++) vars[i] = ty_fresh(), keys[i] = e->segs[i].name;
+        for (int i = 0; i < e->n; i++) ps[i] = e->kind == X_RCDSET ? ty_of(TY_SET, vars[i]) : vars[i];
+        Type *rec = ty_of(TY_REC, ty_row(e->n, keys, vars, NULL));
+        return tc_op(e, ty_oper(e->n, ps, e->kind == X_RCDSET ? ty_of(TY_SET, rec) : rec));
+    }
+    case X_FCNSET:
+        a = ty_fresh(), b = ty_fresh();
+        return tc_op(e, sig2(ty_of(TY_SET, a), ty_of(TY_SET, b), ty_of(TY_SET, ty_fun(a, b))));
+    case X_FCN: return tc_lambda(e, e->bounds, e->nb, e->args[0], pr_fcn, NULL);
+    case X_APPLY: {
+        Type *f = tc(e->args[0]);
+        Type *x = e->n == 2 ? tc(e->args[1]) : tc_tuple(e, e->args + 1, e->n - 1);
+        return tc_apply(e, f, e->n == 2 ? e->args[1] : NULL, x);
+    }
+    case X_DOT: {
+        Type *f = tc(e->args[0]);
+        Expr lit;
+        memset(&lit, 0, sizeof lit);
+        lit.kind = X_STR;
+        lit.num = e->op;
+        return tc_apply(e, f, &lit, str_type(e->op));
+    }
+    case X_EXCEPT: {
+        a = ty_fresh();
+        Type **parts = NEWN(Type *, e->n);
+        parts[0] = tc(e->args[0]);
+        for (int i = 0; i < e->n - 1; i++) {
+            TAt saved = tc_at;
+            tc_at.fun = e->args[0];
+            tc_at.path = &e->paths[i];
+            parts[i + 1] = tc_except_tower(e, &e->paths[i], 0, e->args[i + 1]);
+            tc_at = saved;
+        }
+        return tc_app(e, sig_same(e->n, a, a), parts, e->n);
+    }
+    case X_AT:
+        if (!tc_at.fun) { tc_error(e, "@ outside an EXCEPT."); tc_stop(); }
+        {
+            TAt saved = tc_at;
+            Type *t = tc_old_value(e);
+            tc_at = saved;
+            return t;
+        }
+    case X_FORALL: case X_EXISTS: case X_TFORALL: case X_TEXISTS:
+        return tc_lambda(e, e->bounds, e->nb, e->args[0], pr_bool, NULL);
+    case X_CHOOSE: return tc_lambda(e, e->bounds, e->nb, e->args[0], pr_choose, NULL);
+    case X_FILTER: return tc_lambda(e, e->bounds, e->nb, e->args[0], pr_filter, NULL);
+    case X_MAP: return tc_lambda(e, e->bounds, e->nb, e->args[0], pr_map, NULL);
+    case X_IF: a = ty_fresh(); { Type *ps[3] = {&ty_bool, a, a}; return tc_op(e, ty_oper(3, ps, a)); }
+    case X_CASE: {
+        int pairs = e->n / 2, other = !e->args[e->n - 2];
+        int n = e->n - (other ? 1 : 0);
+        Type **ps = NEWN(Type *, n), **args = NEWN(Type *, n);
+        a = ty_fresh();
+        int k = 0;
+        if (other) { ps[k] = a; args[k++] = tc(e->args[e->n - 1]); }
+        for (int i = 0; i < pairs - other; i++) {
+            ps[k] = &ty_bool; args[k++] = tc(e->args[2 * i]);
+            ps[k] = a; args[k++] = tc(e->args[2 * i + 1]);
+        }
+        return tc_app(e, ty_oper(n, ps, a), args, n);
+    }
+    case X_LET: {
+        for (int i = 0; i < e->ndefs; i++) if (e->defs[i]->kind == D_OP || e->defs[i]->kind == D_FCN) tc_letdef(e->defs[i]);
+        Type *body = tc(e->args[0]);
+        a = ty_fresh();
+        return tc_app(e, sig1(a, a), &body, 1);
+    }
+    default:
+        tc_error(e, "Manyan does not type this expression.");
+        tc_stop();
+    }
+}
+
+/* The types of the standard modules' operators: Apalache's StandardLibrary,
+   and the annotations of the modules it rewires (src/tla/__rewire_*.tla). */
+static const char *const lib_types[][3] = {
+    {"Naturals", "Nat", "Set(Int)"}, {"Naturals", "+", "(Int, Int) => Int"}, {"Naturals", "-", "(Int, Int) => Int"},
+    {"Naturals", "*", "(Int, Int) => Int"}, {"Naturals", "^", "(Int, Int) => Int"}, {"Naturals", "%", "(Int, Int) => Int"},
+    {"Naturals", "\\div", "(Int, Int) => Int"}, {"Naturals", "<", "(Int, Int) => Bool"}, {"Naturals", ">", "(Int, Int) => Bool"},
+    {"Naturals", "\\leq", "(Int, Int) => Bool"}, {"Naturals", "\\geq", "(Int, Int) => Bool"}, {"Naturals", "..", "(Int, Int) => Set(Int)"},
+    {"Integers", "Int", "Set(Int)"}, {"Integers", "-.", "Int => Int"},
+    {"Reals", "Real", "Set(Real)"}, {"Reals", "/", "(Real, Real) => Real"}, {"Reals", "Infinity", "Real"},
+    {"Sequences", "Seq", "Set(a) => Set(Seq(a))"}, {"Sequences", "Len", "Seq(a) => Int"},
+    {"Sequences", "\\o", "(Seq(a), Seq(a)) => Seq(a)"}, {"Sequences", "Append", "(Seq(a), a) => Seq(a)"},
+    {"Sequences", "Head", "Seq(a) => a"}, {"Sequences", "Tail", "Seq(a) => Seq(a)"},
+    {"Sequences", "SubSeq", "(Seq(a), Int, Int) => Seq(a)"}, {"Sequences", "SelectSeq", "(Seq(a), a => Bool) => Seq(a)"},
+    {"FiniteSets", "IsFiniteSet", "Set(a) => Bool"}, {"FiniteSets", "Cardinality", "Set(a) => Int"},
+    {"Apalache", ":=", "(a, a) => Bool"}, {"Apalache", "Gen", "Int => a"}, {"Apalache", "Skolem", "Bool => Bool"},
+    {"Apalache", "Guess", "Set(a) => a"}, {"Apalache", "Expand", "a => a"}, {"Apalache", "ConstCardinality", "Bool => Bool"},
+    {"Apalache", "MkSeq", "(Int, (Int => a)) => Seq(a)"}, {"Apalache", "SetAsFun", "Set(<<a, b>>) => (a -> b)"},
+    {"Apalache", "ApaFoldSet", "((a, b) => a, a, Set(b)) => a"}, {"Apalache", "ApaFoldSeqLeft", "((a, b) => a, a, Seq(b)) => a"},
+    {"Apalache", "Repeat", "((a, Int) => a, Int, a) => a"}, {"Apalache", "FunAsSeq", "((Int -> a), Int, Int) => Seq(a)"},
+    {"TLC", ":>", "(a, b) => (a -> b)"}, {"TLC", "@@", "(a -> b, a -> b) => (a -> b)"}, {"TLC", "Print", "(a, b) => b"},
+    {"TLC", "PrintT", "a => Bool"}, {"TLC", "Assert", "(Bool, Str) => Bool"}, {"TLC", "JavaTime", "() => Int"},
+    {"TLC", "TLCGet", "b => a"}, {"TLC", "TLCSet", "(b, a) => Bool"}, {"TLC", "Permutations", "Set(a) => Set(a -> a)"},
+    {"TLC", "SortSeq", "(Seq(a), (a, a) => Bool) => (Int -> a)"}, {"TLC", "RandomElement", "Set(a) => a"},
+    {"TLC", "Any", "() => a"}, {"TLC", "ToString", "a => Str"}, {"TLC", "TLCEval", "a => a"},
+    {"Bags", "IsABag", "(a -> Int) => Bool"}, {"Bags", "BagToSet", "(a -> Int) => Set(a)"},
+    {"Bags", "SetToBag", "(Set(a)) => a -> Int"}, {"Bags", "BagIn", "(a, a -> Int) => Bool"}, {"Bags", "EmptyBag", "() => a -> Int"},
+    {"Bags", "(+)", "(a -> Int, a -> Int) => a -> Int"}, {"Bags", "(-)", "(a -> Int, a -> Int) => a -> Int"},
+    {"Bags", "BagUnion", "(Set(a -> Int)) => a -> Int"}, {"Bags", "\\sqsubseteq", "(a -> Int, a -> Int) => Bool"},
+    {"Bags", "SubBag", "(a -> Int) => Set(a -> Int)"}, {"Bags", "BagOfAll", "((a) => b, a -> Int) => b -> Int"},
+    {"Bags", "BagCardinality", "(a -> Int) => Int"}, {"Bags", "CopiesIn", "(a, a -> Int) => Int"},
+    {"BagsExt", "BagAdd", "(a -> Int, a) => (a -> Int)"}, {"BagsExt", "BagRemove", "(a -> Int, a) => (a -> Int)"},
+    {"BagsExt", "BagRemoveAll", "(a -> Int, a) => (a -> Int)"},
+    {"BagsExt", "MapThenFoldBag", "((a, b) => b, b, a => b, Set(a) => a, a -> Int) => b"},
+    {"BagsExt", "FoldBag", "((a, b) => b, b, a -> Int) => (a -> Int)"}, {"BagsExt", "SumBag", "(Int -> Int) => Int"},
+    {"BagsExt", "ProductBag", "(Int -> Int) => Int"},
+    {"Functions", "Restrict", "(a -> b, Set(a)) => (a -> b)"}, {"Functions", "Range", "(a -> b) => Set(b)"},
+    {"Functions", "Inverse", "(a -> b, Set(a), Set(b)) => (b -> a)"}, {"Functions", "AntiFunction", "(a -> b) => (b -> a)"},
+    {"Functions", "IsInjective", "(a -> b) => Bool"}, {"Functions", "Injection", "(Set(a), Set(b)) => Set(a -> b)"},
+    {"Functions", "IsSurjective", "(Set(a), Set(b), a -> b) => Bool"}, {"Functions", "Surjection", "(Set(a), Set(b)) => Set(a -> b)"},
+    {"Functions", "Bijection", "(Set(a), Set(b)) => Set(a -> b)"}, {"Functions", "ExistsInjection", "(Set(a), Set(b)) => Bool"},
+    {"Functions", "ExistsSurjection", "(Set(a), Set(b)) => Bool"}, {"Functions", "ExistsBijection", "(Set(a), Set(b)) => Bool"},
+    {"Functions", "FoldFunction", "((b, c) => c, c, a -> b) => c"},
+    {"Functions", "FoldFunctionOnSet", "((b, c) => c, c, a -> b, Set(a)) => c"},
+    {"FiniteSetsExt", "FoldSet", "((a, b) => b, b, Set(a)) => b"}, {"FiniteSetsExt", "SumSet", "Set(Int) => Int"},
+    {"FiniteSetsExt", "ProductSet", "Set(Int) => Int"}, {"FiniteSetsExt", "ReduceSet", "((a, b) => b, Set(a), b) => b"},
+    {"FiniteSetsExt", "FlattenSet", "Set(Set(a)) => Set(a)"}, {"FiniteSetsExt", "SymDiff", "(Set(a), Set(a)) => Set(a)"},
+    {"FiniteSetsExt", "Quantify", "(Set(a), (a => Bool)) => Int"}, {"FiniteSetsExt", "kSubset", "(Int, Set(a)) => Set(Set(a))"},
+    {"FiniteSetsExt", "Max", "Set(Int) => Int"}, {"FiniteSetsExt", "Min", "Set(Int) => Int"},
+    {"FiniteSetsExt", "Choices", "Set(Set(a)) => Set(Set(a))"}, {"FiniteSetsExt", "ChooseUnique", "(Set(a), (a => Bool)) => a"},
+    {"SequencesExt", "ToSet", "Seq(a) => Set(a)"}, {"SequencesExt", "SetToSeq", "Set(a) => Seq(a)"},
+    {"SequencesExt", "SetToSortSeq", "(Set(a), (a, a) => Bool) => Seq(a)"}, {"SequencesExt", "TupleOf", "(Set(a), Int) => (Int -> Set(a))"},
+    {"SequencesExt", "SeqOf", "(Set(a), Int) => Set(Seq(a))"}, {"SequencesExt", "BoundedSeq", "(Set(a), Int) => Set(Seq(a))"},
+    {"SequencesExt", "Contains", "(Seq(a), a) => Bool"}, {"SequencesExt", "Reverse", "Seq(a) => Seq(a)"},
+    {"SequencesExt", "Remove", "(Seq(a), a) => Seq(a)"}, {"SequencesExt", "ReplaceAll", "(Seq(a), a, a) => Seq(a)"},
+    {"SequencesExt", "InsertAt", "(Seq(a), Int, a) => Seq(a)"}, {"SequencesExt", "ReplaceAt", "(Seq(a), Int, a) => Seq(a)"},
+    {"SequencesExt", "RemoveAt", "(Seq(a), Int) => Seq(a)"}, {"SequencesExt", "Cons", "(a, Seq(a)) => Seq(a)"},
+    {"SequencesExt", "Front", "Seq(a) => Seq(a)"}, {"SequencesExt", "Last", "Seq(a) => a"},
+    {"SequencesExt", "IsPrefix", "(Seq(a), Seq(a)) => Bool"}, {"SequencesExt", "IsStrictPrefix", "(Seq(a), Seq(a)) => Bool"},
+    {"SequencesExt", "IsSuffix", "(Seq(a), Seq(a)) => Bool"}, {"SequencesExt", "IsStrictSuffix", "(Seq(a), Seq(a)) => Bool"},
+    {"SequencesExt", "Prefixes", "Seq(a) => Set(Seq(a))"}, {"SequencesExt", "CommonPrefixes", "Set(Seq(a)) => Set(Seq(a))"},
+    {"SequencesExt", "LongestCommonPrefix", "Set(Seq(a)) => Seq(a)"}, {"SequencesExt", "SeqMod", "(Int, Int) => Int"},
+    {"SequencesExt", "FoldSeq", "((a, b) => b, b, Seq(a)) => b"}, {"SequencesExt", "FoldLeft", "((b, a) => b, b, Seq(a)) => b"},
+    {"SequencesExt", "FoldRight", "((a, b) => b, Seq(a), b) => b"}, {"SequencesExt", "FlattenSeq", "Seq(Seq(a)) => Seq(a)"},
+    {"SequencesExt", "Zip", "(Seq(a), Seq(b)) => Seq(<<a, b>>)"}, {"SequencesExt", "SubSeqs", "Seq(a) => Set(Seq(a))"},
+    {"SequencesExt", "IndexFirstSubSeq", "(Seq(a), Seq(a)) => Int"},
+    {"SequencesExt", "ReplaceSubSeqAt", "(Int, Seq(a), Seq(a), Seq(a)) => Seq(a)"},
+    {"SequencesExt", "ReplaceFirstSubSeq", "(Seq(a), Seq(a), Seq(a)) => Seq(a)"},
+    {"Folds", "MapThenFoldSet", "((a, b) => b, b, c => a, Set(c) => c, Set(c)) => b"},
+    {"__apalache_folds", "__ApalacheFoldSet", "((a, b) => a, a, Set(b)) => a"},
+    {"__apalache_folds", "__ApalacheFoldSeq", "((a, b) => a, a, Seq(b)) => a"},
+    {"__apalache_folds", "__ApalacheMkSeq", "(Int, (Int => a)) => Seq(a)"},
+    {"__apalache_internal", "__NotSupportedByModelChecker", "Str => a"},
+    {"__apalache_internal", "__ApalacheSeqCapacity", "Seq(a) => Int"},
+    {NULL, NULL, NULL}};
+
+static Type *lib_parsed[sizeof lib_types / sizeof *lib_types];
+
+/* Whether module m's operators are all Apalache's library: none is typed from its body. */
+static int lib_module(Module *m) {
+    static const char *const names[] = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache", NULL};
+    for (int i = 0; names[i]; i++) if (!strcmp(S(m->name), names[i])) return 1;
+    return m->standard;
+}
+
+static int lib_index(Def *d) {
+    if (!d->mod) return -1;
+    const char *m = S(d->mod->name), *n = S(d->name);
+    if (!strcmp(n, "<=")) n = "\\leq";
+    if (!strcmp(n, ">=")) n = "\\geq";
+    for (int i = 0; lib_types[i][0]; i++) if (!strcmp(lib_types[i][0], m) && !strcmp(lib_types[i][1], n)) return i;
+    return -1;
+}
+
+static Type *lib_type(Def *d, Expr *at) {
+    int i = lib_index(d);
+    if (i < 0) {
+        if (d->mod && lib_module(d->mod) && (d->kind == D_OP || d->kind == D_FCN)) {
+            tc_error(at, "Manyan has no type for %s of module %s.", S(d->name), S(d->mod->name));
+            tc_stop();
+        }
+        return NULL;
+    }
+    if (!lib_parsed[i]) {
+        int name;
+        const char *error;
+        lib_parsed[i] = tp_parse(lib_types[i][2], 0, &name, &error);
+    }
+    Type *t = ty_named(lib_parsed[i]);
+    return t->kind == TY_OPER ? t : ty_oper(0, NULL, t);
+}
+
+/* ---------------------------------------------------------------- annotations of declarations */
+
+/* A declaration of the module typed, in order: definitions, constants and variables, in their instances. */
+typedef struct { TInst *frame; Def *def; Expr *assume; Type *annot; int has_annot; } TDecl;
+
+static TDecl *tc_decls;
+static int tc_ndecls;
+static int *tc_alias_names;
+static Type **tc_alias_types;
+static int tc_naliases;
+
+/* Whether d is substituted in frame f's instances. */
+static int tc_substituted(TInst *f, Def *d) {
+    for (; f; f = f->parent) if (subst_index(f->def, d) >= 0) return 1;
+    return 0;
+}
+
+static void tc_walk(Module *m, TInst *frame, Module ***seen, int *nseen, Module *from);
+
+/* The definition named name in m or the modules it extends, or NULL. */
+static Def *own_def(Module *m, int name, int depth) {
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 0 && (u->def->kind == D_OP || u->def->kind == D_FCN) && u->def->name == name) return u->def;
+    }
+    for (int i = 0; i < m->nextends && depth < 32; i++) {
+        Def *d = own_def(load_module(m->extends[i], m), name, depth + 1);
+        if (d) return d;
+    }
+    return NULL;
+}
+
+static void tc_walk_instance(Def *inst, TInst *frame, Module *from) {
+    Module **seen = NULL;
+    int nseen = 0;
+    tc_walk(inst->target, tc_frame_of(inst, frame), &seen, &nseen, inst->name ? NULL : from);
+}
+
+/* The declarations of m, its extended modules' first, as Apalache flattens
+   a module. Of a module instantiated without a name in from, a definition
+   from defines by its name gives way to that one, as Apalache keeps one
+   definition of a name. */
+static void tc_walk(Module *m, TInst *frame, Module ***seen, int *nseen, Module *from) {
+    for (int i = 0; i < *nseen; i++) if ((*seen)[i] == m) return;
+    PUSH(*seen, *nseen, m);
+    if (lib_module(m)) return;
+    for (int i = 0; i < m->nextends; i++) tc_walk(load_module(m->extends[i], m), frame, seen, nseen, from);
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 1 || (u->kind == 0 && u->def->kind == D_INST)) {
+            if (!u->def->nparams && !lib_module(u->def->target)) tc_walk_instance(u->def, frame, m);
+            continue;
+        }
+        Def *outer = from && u->kind == 0 && (u->def->kind == D_OP || u->def->kind == D_FCN) ? own_def(from, u->def->name, 0) : NULL;
+        if (outer) {
+            TEntry *t = tc_put(frame, u->def);
+            t->kind = TE_ALIAS;
+            t->to = outer;
+            t->to_frame = frame->parent;
+            continue;
+        }
+        if (u->kind == 2) {
+            /* An instance brings its definitions, not its assumptions. */
+            if (!frame) { TDecl d = {frame, u->def, u->expr, NULL, 0}; PUSH(tc_decls, tc_ndecls, d); }
+            continue;
+        }
+        if (u->kind != 0) continue;
+        Def *d = u->def;
+        if (d->kind == D_CONST || d->kind == D_VAR) { if (tc_substituted(frame, d)) continue; }
+        else if (d->kind != D_OP && d->kind != D_FCN) continue;
+        else if (lib_index(d) >= 0) continue;
+        if (!strcmp(S(m->name), "Variants") && d->kind == D_OP && d->nparams) continue;
+        TDecl x = {frame, d, NULL, NULL, 0};
+        PUSH(tc_decls, tc_ndecls, x);
+    }
+}
+
+/* Apalache's ensureTypeSystem12: old records are not types of Type System 1.2. */
+static int ts12(Type *t) {
+    if (t->kind == TY_OLDREC) return 0;
+    int n = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    for (int i = 0; i < n && t->args; i++) if (!ts12(t->args[i])) return 0;
+    return 1;
+}
+
+static void tc_ensure_ts12(Type *t) {
+    if (!ts12(t))
+        tc_input_error("Found imprecise record types, while Type System 1.2 is enabled. "
+                       "Either update the annotations, or use --features=no-rows.");
+}
+
+/* t with the aliases substituted; changed set if any was. */
+static Type *tc_unalias(Type *t, int *changed) {
+    if (t->kind == TY_CONST) {
+        for (int i = 0; i < tc_naliases; i++) if (tc_alias_names[i] == t->var) { *changed = 1; return tc_alias_types[i]; }
+        if (S(t->var)[0] == '$') tc_input_error("Missing @typeAlias: %s = <type>;", S(t->var) + 1);
+        return t;
+    }
+    int n = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    if (!n || !t->args) return t;
+    Type *c = NEW(Type);
+    *c = *t;
+    c->args = NEWN(Type *, n + 1);
+    for (int i = 0; i < n; i++) c->args[i] = tc_unalias(t->args[i], changed);
+    return c;
+}
+
+static const char *decl_name(Def *d) { return d ? S(d->name) : "ASSUME"; }
+
+/* The annotations of the declarations: aliases, then types, as Apalache's TypeCheckerTool reads them. */
+static void tc_annotations(void) {
+    for (int i = 0; i < tc_ndecls; i++) {
+        int n;
+        Note *notes = read_notes(tc_decls[i].def ? tc_decls[i].def->notes : NULL, &n);
+        for (int k = 0; k < n; k++) {
+            if (strcmp(S(notes[k].name), "typeAlias")) continue;
+            int name;
+            const char *error;
+            Type *t = tp_parse(notes[k].text, 1, &name, &error);
+            if (!t) {
+                printf("Parsing error in the alias annotation: %s\n", notes[k].text);
+                tc_input_error("Parser error in type alias of %s: %s", decl_name(tc_decls[i].def), error);
+            }
+            tc_ensure_ts12(t);
+            PUSH(tc_alias_names, tc_naliases, name);
+            tc_naliases--;
+            PUSH(tc_alias_types, tc_naliases, t);
+        }
+    }
+    for (int tries = 100; tries > 0; tries--) {   /* the aliases' closure */
+        int changed = 0;
+        for (int i = 0; i < tc_naliases; i++) tc_alias_types[i] = tc_unalias(tc_alias_types[i], &changed);
+        if (!changed) break;
+    }
+    for (int i = 0; i < tc_ndecls; i++) {
+        int n, found = 0;
+        Def *d = tc_decls[i].def;
+        Note *notes = read_notes(d ? d->notes : NULL, &n);
+        for (int k = 0; k < n; k++) {
+            if (strcmp(S(notes[k].name), "type")) continue;
+            if (found++) {
+                int count = 0;
+                for (int j = 0; j < n; j++) count += !strcmp(S(notes[j].name), "type");
+                tc_input_error("Found %d @type annotations in front of %s", count, decl_name(d));
+            }
+            int name;
+            const char *error;
+            Type *t = tp_parse(notes[k].text, 0, &name, &error);
+            if (!t) {
+                printf("Parsing error in the type annotation: %s\n", notes[k].text);
+                tc_input_error("Parser error in type annotation of %s: %s", decl_name(d), error);
+            }
+            tc_ensure_ts12(t);
+            tc_decls[i].annot = t;
+            tc_decls[i].has_annot = 1;
+        }
+    }
+    for (int i = tc_ndecls - 1; i >= 0; i--) {   /* as Apalache translates them, from the last */
+        Def *d = tc_decls[i].def;
+        if (d && (d->kind == D_CONST || d->kind == D_VAR) && !tc_decls[i].has_annot)
+            tc_input_error("Expected a type annotation for %s %s", d->kind == D_CONST ? "CONSTANT" : "VARIABLE", S(d->name));
+        if (tc_decls[i].has_annot) {
+            int changed = 0;
+            for (int k = 0; k < 100; k++) {
+                changed = 0;
+                tc_decls[i].annot = tc_unalias(tc_decls[i].annot, &changed);
+                if (!changed) break;
+            }
+        }
+    }
+}
+
+/* ---------------------------------------------------------------- typing declarations */
+
+static TDecl *tc_cur_decl;
+
+static Type *tc_annotation(Def *d) {
+    for (int i = 0; i < tc_ndecls; i++)
+        if (tc_decls[i].def == d && tc_decls[i].frame == tc_frame) return tc_decls[i].has_annot ? ty_named(tc_decls[i].annot) : NULL;
+    if (!d->notes) return NULL;
+    int n;
+    Note *notes = read_notes(d->notes, &n);   /* a LET definition's */
+    Type *t = NULL;
+    for (int k = 0; k < n; k++) {
+        if (strcmp(S(notes[k].name), "type")) continue;
+        if (t) tc_input_error("Found 2 @type annotations in front of %s", S(d->name));
+        int name;
+        const char *error;
+        t = tp_parse(notes[k].text, 0, &name, &error);
+        if (!t) {
+            printf("Parsing error in the type annotation: %s\n", notes[k].text);
+            tc_input_error("Parser error in type annotation of %s: %s", S(d->name), error);
+        }
+        tc_ensure_ts12(t);
+        int changed = 0;
+        for (int i = 0; i < 100; i++) { changed = 0; t = tc_unalias(t, &changed); if (!changed) break; }
+    }
+    return t ? ty_named(t) : NULL;
+}
+
+/* A constant's or variable's type, or its substitute's. */
+static Type *tc_decl(Def *d, Expr *at) {
+    for (TInst *f = tc_frame; f; f = f->parent) {
+        int i = subst_index(f->def, d);
+        if (i < 0) continue;
+        TInst *saved = tc_frame;
+        int env = tc_nenv;
+        tc_frame = f->parent;
+        Expr *x = f->def->subst_expr[i];
+        Type *t = x->kind == X_OPREF || ((x->kind == K_CALL || x->kind == K_PARAMCALL || x->kind == K_INSTCALL) && !x->n && d->arity)
+                ? tc_opname(x->def, x) : tc(x);
+        tc_frame = saved;
+        tc_nenv = env;
+        return t;
+    }
+    TEntry *t = tc_find(NULL, d);
+    if (!t) {
+        tc_error(at, "No annotation found for %s. Make sure that you've put one in front of %s.", S(d->name), S(d->name));
+        tc_stop();
+    }
+    return tc_instance(t);
+}
+
+/* Types definition d as Apalache types LET d IN ...: in a solver of its own,
+   then quantified over the variables the names around leave free. */
+static Type *tc_letdef(Def *d) {
+    if (!tc_solve_partially(tc_solver)) tc_stop();
+    Type *annot = tc_annotation(d);
+    if (annot && d->nparams == 0 && annot->kind != TY_OPER) annot = ty_oper(0, NULL, annot);
+    TSolver inner = {NULL, 0}, *outer = tc_solver;
+    tc_solver = &inner;
+    int np = d->nparams;
+    Type *scheme;
+    if (annot) scheme = annot;
+    else {
+        Type **ps = NEWN(Type *, np ? np : 1);
+        for (int i = 0; i < np; i++) ps[i] = ty_fresh();
+        scheme = ty_oper(np, ps, ty_fresh());
+    }
+    char *mark = xcalloc((size_t)ty_nvars + 1, 1);
+    int *q = NULL, nq = 0;
+    ty_vars(scheme, mark, &q, &nq);
+    free(mark);
+    TEntry *self = tc_put(tc_frame, d);
+    self->kind = TE_OPER;
+    self->t = scheme;
+    self->q = q;
+    self->nq = nq;
+    int env = tc_nenv;
+    Type **params = NEWN(Type *, np ? np : 1), **sets = NEWN(Type *, np ? np : 1);
+    for (int i = 0; i < np; i++) {   /* each parameter: of a fresh type, an operator's for an operator */
+        Def *p = d->params[i];
+        if (p->arity) {
+            Type **as = NEWN(Type *, p->arity);
+            for (int k = 0; k < p->arity; k++) as[k] = ty_fresh();
+            sets[i] = ty_of(TY_SET, ty_oper(p->arity, as, ty_fresh()));
+        } else sets[i] = ty_of(TY_SET, ty_fresh());
+    }
+    Type **vars = NEWN(Type *, np ? np : 1);
+    for (int i = 0; i < np; i++) vars[i] = ty_fresh();
+    for (int i = 0; i < np; i++) params[i] = ty_fresh();
+    for (int i = 0; i < np; i++) tc_eq(vars[i], ty_of(TY_SET, params[i]), CL_SET, d->where);
+    for (int i = 0; i < np; i++) tc_eq(vars[i], sets[i], CL_SET, d->where);
+    for (int i = 0; i < np; i++) {
+        TEntry *t = tc_put(tc_frame, d->params[i]);
+        t->kind = TE_VALUE;
+        t->t = params[i];
+        PUSH(tc_env, tc_nenv, params[i]);
+    }
+    if (scheme->kind == TY_OPER)
+        for (int i = 0; i < np && i < scheme->n; i++) tc_eq(params[i], scheme->args[i], CL_PLAIN, d->where);
+    Type *oper = ty_fresh();
+    tc_add((TClause){oper, scheme, NULL, 0, CL_DEF, 0, d->where, NULL, 0, d->name});
+    Type *body;
+    if (d->kind == D_FCN)
+        body = d->self ? tc_recfcn(d->where, d, d->bounds, d->nb, d->body) : tc_lambda(d->where, d->bounds, d->nb, d->body, pr_fcn, NULL);
+    else body = tc(d->body);
+    Type *def = ty_oper(np, params, body);
+    tc_add((TClause){oper, def, NULL, 0, CL_DEF, 0, d->where, NULL, 0, d->name});
+    if (!tc_solve(&inner)) {
+        tc_error(d->where, "Error when computing the type of %s", S(d->name));
+        tc_stop();
+    }
+    tc_solver = outer;
+    tc_nenv = env;
+    Type *principal = ty_zonk(def);
+    /* quantified: the variables no name around has */
+    mark = xcalloc((size_t)ty_nvars + 1, 1);
+    int *around = NULL, naround = 0;
+    for (int i = 0; i < tc_nenv; i++) ty_vars(ty_zonk(tc_env[i]), mark, &around, &naround);
+    int *free_vars = NULL, nfree = 0;
+    ty_vars(principal, mark, &free_vars, &nfree);
+    free(mark);
+    if (annot) {   /* Apalache warns of an annotation more general than the type found */
+        int mark2 = ty_ntrail;
+        Type *u = ty_unify(ty_freshen(principal), ty_freshen(annot));
+        if (u) {
+            char *m1 = xcalloc((size_t)ty_nvars + 1, 1), *m2 = xcalloc((size_t)ty_nvars + 1, 1);
+            int *v1 = NULL, n1 = 0, *v2 = NULL, n2 = 0;
+            ty_vars(ty_zonk(u), m1, &v1, &n1);
+            ty_vars(annot, m2, &v2, &n2);
+            if (n1 < n2) printf(" > %s: %s's type annotation %s is too general, inferred: %s\n", tc_where(d->where), S(d->name), ty_text(annot), ty_text(principal));
+            free(m1), free(m2);
+        }
+        ty_undo(mark2);
+    }
+    self = tc_put(tc_frame, d);
+    self->kind = TE_OPER;
+    self->t = principal;
+    self->q = free_vars;
+    self->nq = nfree;
+    return principal;
+}
+
+/* -typecheck: the root module's declarations, as Apalache's TypeCheckerTool checks them. */
+static int typecheck(Module *m) {
+    printf("Type checking %s.tla\n", S(m->name));
+    jmp_buf here;
+    tc_unwind = &here;
+    tc_status = 0;
+    arena = &perm_arena;
+    TSolver root_solver = {NULL, 0};
+    tc_solver = &root_solver;
+    tc_frame = NULL;
+    if (!setjmp(here)) {
+        Module **seen = NULL;
+        int nseen = 0;
+        tc_walk(m, NULL, &seen, &nseen, NULL);
+        tc_annotations();
+        for (int i = 0; i < tc_ndecls; i++) {
+            TDecl *x = &tc_decls[i];
+            tc_cur_decl = x;
+            tc_frame = x->frame;
+            Def *d = x->def;
+            if (x->assume) {   /* a definition of no parameters: (Bool) => Bool applied to it */
+                TSolver inner = {NULL, 0}, *outer = tc_solver;
+                if (!tc_solve_partially(tc_solver)) tc_stop();
+                tc_solver = &inner;
+                Type *body = tc(x->assume);
+                tc_app(x->assume, sig1(&ty_bool, &ty_bool), &body, 1);
+                if (!tc_solve(&inner)) { tc_error(x->assume, "Error when computing the type of %s", decl_name(d)); tc_stop(); }
+                tc_solver = outer;
+                continue;
+            }
+            if (d->kind == D_CONST || d->kind == D_VAR) {
+                TEntry *t = tc_put(NULL, d);
+                t->kind = TE_VALUE;
+                t->t = ty_named(x->annot);
+                char *mark = xcalloc((size_t)ty_nvars + 1, 1);
+                int *q = NULL, nq = 0;
+                ty_vars(t->t, mark, &q, &nq);
+                free(mark);
+                if (nq) t->kind = TE_OPER, t->q = q, t->nq = nq;   /* a polymorphic constant: each use an instance */
+                if (d->arity) t->kind = TE_OPER;
+                continue;
+            }
+            tc_letdef(d);
+        }
+        tc_frame = NULL;
+        if (!tc_solve(&root_solver)) { printf("Error when computing the type of the top expression\n"); tc_status = 120; }
+    }
+    tc_unwind = NULL;
+    if (tc_status == MANYAN_ERROR) return MANYAN_ERROR;
+    if (tc_status) {
+        printf(" > Snowcat asks you to fix the types. Meow.\n");
+        printf("Type checker [FAILED]\n");
+        return 120;
+    }
+    printf(" > Your types are purrfect!\n");
+    printf("Type checker [OK]\n");
+    return MANYAN_OK;
+}
+
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
     stack_limit = o->stack > 0 ? o->stack : 0;
@@ -16485,7 +18832,7 @@ int manyan_check(const ManyanOptions *o) {
         strcpy(config_path, path);
         strcpy(config_path + strlen(config_path) - 4, ".cfg");
     }
-    config_text = read_file(config_path);
+    config_text = o->typecheck ? strdup("") : read_file(config_path);
     if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
     read_config(config_text, 1);
     char *text = read_file(path);
@@ -16536,6 +18883,7 @@ int manyan_check(const ManyanOptions *o) {
     finish_module(root);
     resolve_module(root);
     if (lint.n) printf("%s", lint.s);
+    if (o->typecheck) return typecheck(root);
     for (int i = 0; i < nfinished; i++) {
         Expr *e = finished[i]->outer ? NULL : odd_literal(finished[i]);
         if (e && e->num < 0) config_error("TLC can't handle real numbers.\n%s", S(e->op));
@@ -16649,6 +18997,7 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
         else if (strcmp(argv[i], "-symbolic") == 0) o.symbolic = 1;
+        else if (strcmp(argv[i], "-typecheck") == 0) o.typecheck = 1;
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }

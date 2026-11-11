@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench full-bench-symbolic install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench full-bench-symbolic install clean
 
 all: manyan
 
@@ -80,7 +80,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-symbolic
+test: test-spec test-symbolic test-typecheck
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -103,6 +103,16 @@ test-symbolic-oracle: manyan $(APALACHE)
 
 bless-symbolic: $(APALACHE)
 	python3 tests/symbolic_runner.py ./manyan --oracle "$(APALACHE_RUN)" --bless $(if $(ONLY),--only $(ONLY))
+
+# -typecheck against Apalache: the outcome of each test in tests/typecheck.
+test-typecheck: manyan
+	python3 tests/typecheck_runner.py ./manyan --strict
+
+test-typecheck-oracle: manyan $(APALACHE)
+	python3 tests/typecheck_runner.py ./manyan --strict --oracle "$(APALACHE_RUN)"
+
+bless-typecheck: $(APALACHE)
+	python3 tests/typecheck_runner.py ./manyan --oracle "$(APALACHE_RUN)" --bless $(if $(ONLY),--only $(ONLY))
 
 $(APALACHE):
 	mkdir -p $(OBJDIR)

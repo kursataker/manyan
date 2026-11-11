@@ -60,12 +60,17 @@ Manyan may check a specification Apalache rejects.
 
 | command | tests | |
 |---|---:|---|
-| `typecheck` | 75 | Snowcat, Apalache's type checker: `@type` annotations, inference, records, variants, rows |
+| `typecheck` | 75 | `-typecheck`: all give Apalache's outcome (`tests/typecheck/apalache`) |
 | `parse` | 17 | Apalache's own parser and its outputs (JSON, TLA+) |
 | `simulate` | 2 | random symbolic runs |
 | `test`, `server`, `version`, `help` | 6 | |
 
-None is implemented.
+Only `typecheck` is implemented. On the 62 annotated modules of
+tlaplus/Examples, `-typecheck` gives Apalache's outcome on 58. Of the
+others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
+(SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
+Apalache names the last in SANY's hash table, Manyan the last declared.
+`-symbolic` does not yet use the types, so `Gen` stays unsupported.
 
 ## Output
 

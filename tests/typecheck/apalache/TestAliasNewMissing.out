@@ -1,0 +1,2 @@
+Typing input error: Missing @typeAlias: newAlias = <type>;
+exit 255

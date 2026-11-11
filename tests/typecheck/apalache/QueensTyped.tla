@@ -1,0 +1,119 @@
+------------------------ MODULE QueensTyped -------------------------------
+\* THIS IS A TYPED VERSION OF Queens.
+\*
+\* This example demonstrates use of the operator FunAsSeq in Apalache.
+\*
+\* The original is avaiable at: 
+\* https://github.com/tlaplus/Examples/tree/master/specifications/N-Queens
+
+
+EXTENDS Naturals, Sequences, Apalache
+(***************************************************************************)
+(* Formulation of the N-queens problem and an iterative algorithm to solve *)
+(* the problem in TLA+. Since there must be exactly one queen in every row *)
+(* we represent placements of queens as functions of the form              *)
+(*    queens \in [ 1..N -> 1..N ]                                          *)
+(* where queens[i] gives the column of the queen in row i. Note that such  *)
+(* a function is just a sequence of length N.                              *)
+(* We will also consider partial solutions, also represented as sequences  *)
+(* of length \leq N.                                                       *)
+(***************************************************************************)
+
+\* ANCHOR: constants
+CONSTANT
+    \* @type: Int;
+    N              \** number of queens and size of the board
+\* ANCHOR_END: constants
+ASSUME N \in Nat \ {0}
+
+(* The following predicate determines if queens i and j attack each other
+   in a placement of queens (represented by a sequence as above). *)
+\* ANCHOR: Attacks
+\* @type: (Seq(Int), Int, Int) => Bool;
+Attacks(queens,i,j) ==
+\* ANCHOR_END: Attacks
+  \/ queens[i] = queens[j]                 \** same column
+  \/ queens[i] - queens[j] = i - j         \** first diagonal
+  \/ queens[j] - queens[i] = i - j         \** second diagonal
+
+(* A placement represents a (partial) solution if no two different queens
+   attack each other in it. *)
+\* ANCHOR: IsSolution
+\* @type: Seq(Int) => Bool;
+IsSolution(queens) ==
+\* ANCHOR_END: IsSolution
+  \A i \in 1 .. Len(queens)-1 : \A j \in i+1 .. Len(queens) : 
+       ~ Attacks(queens,i,j) 
+
+(* Compute the set of solutions of the N-queens problem. *)
+\* This is an interesting case, as a function is interpreted as a sequence.
+\* We apply Apalache!FunAsSeq to convert a function to a sequence.
+Solutions ==
+    LET Queens == { queens \in [1..N -> 1..N] :
+                    IsSolution(FunAsSeq(queens, N, N)) } IN
+    \* We have to apply FunAsSeq twice, as queens is used as a sequence twice.
+    \* A better approach would be to refactor the spec, to call FunAsSeq once.
+    { FunAsSeq(queens, N, N): queens \in Queens }
+
+(***************************************************************************)
+(* We now describe an algorithm that iteratively computes the set of       *)
+(* solutions of the N-queens problem by successively placing queens.       *)
+(* The current state of the algorithm is given by two variables:           *)
+(* - todo contains a set of partial solutions,                             *)
+(* - sols contains the set of full solutions found so far.                 *)
+(* At every step, the algorithm picks some partial solution and computes   *)
+(* all possible extensions by the next queen. If N queens have been placed *)
+(* these extensions are in fact full solutions, otherwise they are added   *)
+(* to the set todo.                                                        *)
+(***************************************************************************)
+
+\* ANCHOR: variables
+VARIABLES
+    \* @type: Set(Seq(Int));
+    todo,
+    \* @type: Set(Seq(Int));
+    sols
+\* ANCHOR_END: variables
+
+Init == /\ todo = { << >> }   \** << >> is a partial (but not full) solution
+        /\ sols = {}          \** no full solution found so far
+
+PlaceQueen == \E queens \in todo :
+  \** extend some partial solution by placing the next queen
+  LET nxtQ == Len(queens) + 1   \** number of queen to place
+      cols == \** set of columns on which queen can be placed without any
+              \** conflict with some queen already placed
+              { c \in 1..N : ~ \E i \in 1 .. Len(queens) :
+                                  Attacks( Append(queens, c), i, nxtQ ) }
+      exts == { Append(queens, c) : c \in cols }  \** possible extensions
+  IN  IF nxtQ = N  \** completed solution
+      THEN /\ todo' = todo \ {queens}
+           /\ sols' = sols \union exts
+      ELSE /\ todo' = (todo \ {queens}) \union exts
+           /\ sols' = sols
+
+\* ANCHOR: vars
+\* @type: <<Set(Seq(Int)), Set(Seq(Int))>>;
+vars == <<todo,sols>>
+\* ANCHOR_END: vars
+Spec == Init /\ [][PlaceQueen]_vars /\ WF_vars(PlaceQueen)
+
+TypeInvariant ==
+  /\ todo \in SUBSET Seq(1 .. N) /\ \A s \in todo : Len(s) < N
+  /\ sols \in SUBSET Seq(1 .. N) /\ \A s \in sols : Len(s) = N
+
+(* The set of sols contains only solutions, and contains all solutions
+   when todo is empty. *)
+Invariant ==
+  /\ sols \subseteq Solutions
+  /\ todo = {} => Solutions \subseteq sols
+
+Termination == <>(todo = {})
+
+(* Assert that no solutions are ever computed so that TLC displays one *)
+NoSolutions == sols = {}
+
+=============================================================================
+\* Modification History
+\* Last modified Sat Dec 11 09:58:48 CET 2010 by merz
+\* Created Sat Dec 11 08:50:24 CET 2010 by merz

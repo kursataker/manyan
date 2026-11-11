@@ -1,3 +1,12 @@
+unreleased:
+
+- experimental: `-typecheck` checks a module's types as Apalache's
+  `apalache-mc typecheck` (Snowcat) does: `@type` and `@typeAlias`
+  annotations, inference with records, variants and rows, Apalache's
+  messages and exit statuses. All 75 of Apalache 0.63.0's type checking
+  tests give its outcome (tests/typecheck/apalache, ported by
+  tests/apalache_port.py)
+
 2026-11-12 0.10.0:
 
 - experimental: `-symbolic` checks invariants and deadlock on behaviors of
