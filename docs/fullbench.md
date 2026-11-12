@@ -16,11 +16,13 @@ Of Examples' 243 models, it checks the 174 that TLC searches exhaustively
 in a recorded 10 minutes or less, and the 6 that simulate or generate
 behaviors, fixed by `-seed 1` and `num=`; the rest are Apalache's
 (symbolic, 46), or longer or not timed (17). Where TLC is killed, there is
-nothing to compare. One differs for a feature Manyan lacks: the ALIAS of
-ewd687a/EWD687a_anim lays out its graph with SVG's
-`NodesOfDirectedMultiGraph`, which TLC computes with jungrapht's Sugiyama
-layout and Manyan from its definition, a `CHOOSE` it cannot enumerate. Three differ for reasons Manyan keeps:
+nothing to compare. Four differ, for reasons Manyan keeps:
 
+- ewd687a/EWD687a_anim: its ALIAS lays out its graph with SVG's
+  `NodesOfDirectedMultiGraph`, which TLC computes with jungrapht's
+  Sugiyama layout, a Java library's heuristics, and Manyan from its
+  definition, a `CHOOSE` it cannot enumerate. Copying a layout library
+  for one animation is not planned.
 - SpanningTree/SpanTreeRandom draws its graph with `RandomElement` in a
   constant, which TLC draws anew each run, so its output is TLC's of one run.
 - FiniteMonotonic/MCDistributedReplicatedLog: the same property is violated,
