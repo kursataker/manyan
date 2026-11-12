@@ -85,8 +85,8 @@ others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
 (SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
 Apalache names the last in SANY's hash table, Manyan the last declared.
 `-symbolic` uses the types for `Gen` and for refusing what Apalache
-refuses. It makes a `Gen` only where a call has one type: not in an
-operator whose parameters leave it open.
+refuses. A `Gen` in an operator whose parameters leave its type open has
+the type each call instantiates.
 
 ## Output
 

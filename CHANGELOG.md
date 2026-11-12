@@ -29,6 +29,8 @@ unreleased:
   an initial state violates as TLC does
 - `-symbolic` makes `Gen` of strings, uninterpreted types and variants,
   as Apalache does: a string the specification has or a fresh one
+- `-symbolic` makes `Gen` in an operator whose parameters leave its type
+  open, of the type each call instantiates
 - TLCExt's `PickSuccessor` asks on standard input whether to take a step,
   as TLC does
 - `-symbolic -run-dir DIR` writes each counterexample in Apalache's ITF,

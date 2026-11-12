@@ -15472,6 +15472,10 @@ struct SEnv {
     SEnv *next;
 };
 
+/* A call of a polymorphic operator a Gen depends on: a mark in the
+   context of its body, back to the caller's (sym_typed). */
+static SEnv *sym_typed(Expr *call, SCtx caller, SEnv *s);
+
 static SVal **sym_cur;     /* the state being read */
 static SVal **sym_next;    /* the next state as far as assigned */
 static int sym_primed;     /* reading the next state */
@@ -15759,6 +15763,7 @@ static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, 
     if (forced) return forced;
     if (d->kind == D_FCN) return sym_fcndef(d, inner);
     if (d->kind != D_OP && d->kind != D_RECURSIVE) fail_at(call, "Symbolic checking cannot evaluate %s.", S(d->name));
+    inner.s = sym_typed(call, sc, inner.s);
     inner = sym_bind_args(d, args, n, sc, inner);
     deeper();
     SVal *v = sym(d->body, inner, pol);
@@ -16595,6 +16600,7 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
             if (!b && !cb) break;
             inner = b ? b->ctx : (SCtx){{cb->ctx_env, cb->ctx_inst}, NULL};
         }
+        inner.s = sym_typed(e, sc, inner.s);
         inner = sym_bind_args(d, e->args, e->n, sc, inner);
         deeper();
         act(d->body, inner, in, out);
@@ -18876,10 +18882,14 @@ static Type *lib_type(Def *d, Expr *at);
 static Type *tc_decl(Def *d, Expr *at);
 
 /* An operator's type at a use: a fresh instance of its scheme. */
+/* The last instance tc_instance made: its variables q, and to what. */
+static struct { int *q, nq; Type **to; } tc_made;
+
 static Type *tc_instance(TEntry *t) {
     if (t->kind == TE_VALUE || !t->nq) return t->t;
     Type **to = NEWN(Type *, t->nq);
     for (int i = 0; i < t->nq; i++) to[i] = ty_fresh();
+    tc_made.q = t->q, tc_made.nq = t->nq, tc_made.to = to;
     return ty_rename(ty_zonk(t->t), t->q, to, t->nq);
 }
 
@@ -18943,9 +18953,14 @@ static Type *tc_opname(Def *d, Expr *at) {
     return tc_name(d, at, &oper);
 }
 
-/* The type of each call of Apalache's Gen. */
+/* The type of each call of Apalache's Gen, generic in a polymorphic
+   operator; and each call of one, how its type's variables were
+   instantiated there, which tells the Gen of a call. */
 static struct { Expr *e; Type *t; } *gen_types;
 static int ngen_types;
+typedef struct { Expr *e; int *q, nq; Type **to; } CallInst;
+static CallInst *call_insts;
+static int ncall_insts;
 
 /* For symbolic checking: the type of each expression typed, generic in
    a polymorphic operator, which Apalache checks once inlined. */
@@ -18992,7 +19007,9 @@ static Type *tc_expr(Expr *e) {
         ts = tc_args(e->args, e->n);
         int oper;
         tc_frame = callee;
+        tc_made.nq = 0;
         a = tc_name(d, e, &oper);
+        if (tc_made.nq && tc_quiet) { CallInst ci = {e, tc_made.q, tc_made.nq, tc_made.to}; PUSH(call_insts, ncall_insts, ci); }
         tc_frame = caller;
         a = !oper && !e->n ? a : tc_app_why(e, EX_CALL, d->name, &a, 1, ts, e->n);
         if (is_gen(d)) {   /* for symbolic checking to make its value */
@@ -19840,6 +19857,42 @@ static Def *sym_misvalued(void) {
 
 /* The types of the specification, for symbolic checking: as -typecheck
    checks them, printing only what is wrong. */
+static int sym_open_gens;   /* whether a Gen's type is generic, for sym_typed */
+static Def typed_mark;
+
+static int ty_open(Type *t) {
+    if (t->kind == TY_VAR) return 1;
+    if (t->kind == TY_ROW && t->tail && ty_open(t->tail)) return 1;
+    int k = t->kind == TY_SET || t->kind == TY_SEQ || t->kind == TY_REC || t->kind == TY_VARIANT ? 1
+          : t->kind == TY_FUN ? 2 : t->kind == TY_OPER ? t->n + 1 : t->n;
+    for (int i = 0; i < k && t->args; i++) if (ty_open(t->args[i])) return 1;
+    return 0;
+}
+
+static int call_inst_order(const void *a, const void *b) {
+    const Expr *x = ((const CallInst *)a)->e, *y = ((const CallInst *)b)->e;
+    return x < y ? -1 : x > y;
+}
+
+static CallInst *call_inst(Expr *call) {
+    CallInst key = {call, NULL, 0, NULL};
+    return ncall_insts ? bsearch(&key, call_insts, (size_t)ncall_insts, sizeof key, call_inst_order) : NULL;
+}
+
+static SEnv *sym_typed(Expr *call, SCtx caller, SEnv *s) {
+    return sym_open_gens && call && call_inst(call) ? senv_bind(&typed_mark, NULL, call, caller, s) : s;
+}
+
+/* t, generic, as the calls in s and their callers instantiate it. */
+static Type *gen_type(Type *t, SEnv *s) {
+    for (; s && ty_open(t); s = s->next) {
+        if (s->def != &typed_mark) continue;
+        CallInst *ci = call_inst(s->e);
+        return gen_type(ty_zonk(ty_rename(t, ci->q, ci->to, ci->nq)), s->ctx.s);
+    }
+    return t;
+}
+
 static int sym_types(void) {
     Arena *saved = arena;
     tc_quiet = 1;
@@ -19859,6 +19912,8 @@ static int sym_types(void) {
         printf("Error: %s: Expected a non-polymorphic type, found: %s. You may need to annotate an empty collection.\n", tc_where(open), ty_text(ty_zonk(x->t)));
         status = MANYAN_ERROR;
     }
+    for (int i = 0; i < ngen_types && !sym_open_gens; i++) sym_open_gens = ty_open(ty_zonk(gen_types[i].t));
+    qsort(call_insts, (size_t)ncall_insts, sizeof *call_insts, call_inst_order);
     arena = saved;
     return status;
 }
@@ -20078,6 +20133,7 @@ static SVal *sym_gen(Expr *e, SCtx sc) {
     Type *t = NULL;
     for (int i = 0; i < ngen_types && !t; i++) if (gen_types[i].e == e) t = gen_types[i].t;
     if (!t) fail_at(e, "Symbolic checking cannot tell the type of this Gen.");
+    t = gen_type(ty_zonk(t), sc.s);
     SVal *v = gen_of(t, (int)size->value->u.i, e);
     sym_gens = xrealloc(sym_gens, sizeof *sym_gens * (size_t)(nsym_gens + 1));
     sym_gens[nsym_gens].e = e, sym_gens[nsym_gens].step = sym_gen_step, sym_gens[nsym_gens++].v = v;
