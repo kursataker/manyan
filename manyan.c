@@ -20015,6 +20015,20 @@ static Expr *mono_walk(Expr *e, Def ***seen, int *nseen) {
     return bad;
 }
 
+/* A LET definition in e named as a constant or variable of the root
+   module: Apalache, flattening the modules, refuses the two. */
+static Def *let_clash(Expr *e) {
+    if (!e) return NULL;
+    Def *bad = NULL;
+    for (int i = 0; e->kind == X_LET && !bad && i < e->ndefs; i++) {
+        Sym *s = root_sym(e->defs[i]->name);
+        bad = s && (s->def->kind == D_VAR || s->def->kind == D_CONST) ? e->defs[i] : let_clash(e->defs[i]->body);
+    }
+    for (int i = 0; !bad && i < e->n; i++) bad = let_clash(e->args[i]);
+    for (int i = 0; !bad && i < e->nb; i++) bad = let_clash(e->bounds[i].set);
+    return bad;
+}
+
 /* The expression Apalache refuses, of those the specification uses. */
 static Expr *sym_refused(void) {
     qsort(tc_seen, (size_t)ntc_seen, sizeof *tc_seen, tc_seen_order);
@@ -20111,6 +20125,13 @@ static int sym_types(void) {
     Def *misvalued = status ? NULL : sym_misvalued();
     if (misvalued) {
         printf("Error: The configuration gives constant %s a value not of its type, %s.\n", S(misvalued->name), ty_text(tc_find(NULL, misvalued)->t));
+        status = MANYAN_ERROR;
+    }
+    for (int i = 0; !status && i < root->nsyms; i++) {
+        Def *d = root->syms[i].def, *bad = d->kind == D_OP ? let_clash(d->body) : NULL;
+        if (!bad) continue;
+        printf("Error: The specification is malformed: Found two different declarations with the same name [%s]: [%s %s] and [%s == ...].\n",
+               S(bad->name), root_sym(bad->name)->def->kind == D_VAR ? "VARIABLE" : "CONSTANT", S(bad->name), S(bad->name));
         status = MANYAN_ERROR;
     }
     Expr *open = status ? NULL : sym_refused();
