@@ -13435,9 +13435,9 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
     cannot_handle(e, NULL);
 }
 
-/* A tableau node: the literals that hold now, the formulas that must hold
-   from the next state on, and the eventualities it defers. */
-typedef struct { TF **lits; int nlits; TF **next; int nnext; uint64_t pending; int *succ; int nsucc; int expanded; } TNode;
+/* A tableau node: the literals that hold now and the formulas that must
+   hold from the next state on, among them the eventualities <>A it defers. */
+typedef struct { TF **lits; int nlits; TF **next; int nnext; int *succ; int nsucc; int expanded; } TNode;
 
 static TNode *tnodes;
 static int ntnodes;
@@ -13462,46 +13462,51 @@ static int tfl_same(TF **a, int na, TF **b, int nb) {
     return 1;
 }
 
-static int tnode_add(TFList lits, TFList next, uint64_t pending) {
+static int tnode_add(TFList lits, TFList next) {
     for (int i = 0; i < lits.n; i++)
         for (int j = 0; j < lits.n; j++)
             if (lits.v[i]->atom == lits.v[j]->atom && lits.v[i]->c.env == lits.v[j]->c.env && lits.v[i]->neg != lits.v[j]->neg) return -1;
     for (int i = 0; i < ntnodes; i++)
-        if (tnodes[i].pending == pending && tfl_same(tnodes[i].lits, tnodes[i].nlits, lits.v, lits.n) &&
+        if (tfl_same(tnodes[i].lits, tnodes[i].nlits, lits.v, lits.n) &&
             tfl_same(tnodes[i].next, tnodes[i].nnext, next.v, next.n)) return i;
     tnodes = xrealloc(tnodes, sizeof(TNode) * (size_t)(ntnodes + 1));
     TNode *t = &tnodes[ntnodes];
     memset(t, 0, sizeof *t);
-    t->lits = lits.v; t->nlits = lits.n; t->next = next.v; t->nnext = next.n; t->pending = pending;
+    t->lits = lits.v; t->nlits = lits.n; t->next = next.v; t->nnext = next.n;
     return ntnodes++;
 }
 
 /* Expands the formulas in todo into tableau nodes, adding their indices to out. */
-static void expand(TFList todo, TFList lits, TFList next, uint64_t pending, List *out) {
+static void expand(TFList todo, TFList lits, TFList next, List *out) {
     if (todo.n == 0) {
-        int i = tnode_add(lits, next, pending);
+        int i = tnode_add(lits, next);
         if (i >= 0) list_add(out, mk_int(i));
         return;
     }
     TF *f = todo.v[todo.n - 1];
     TFList rest = {todo.v, todo.n - 1};
     switch (f->op) {
-    case TF_TRUE: expand(rest, lits, next, pending, out); return;
+    case TF_TRUE: expand(rest, lits, next, out); return;
     case TF_FALSE: return;
-    case TF_ATOM: { TFList l = lits; tfl_add(&l, f); expand(rest, l, next, pending, out); return; }
-    case TF_AND: { TFList r = rest; tfl_add(&r, f->a); tfl_add(&r, f->b); expand(r, lits, next, pending, out); return; }
+    case TF_ATOM: { TFList l = lits; tfl_add(&l, f); expand(rest, l, next, out); return; }
+    case TF_AND: { TFList r = rest; tfl_add(&r, f->a); tfl_add(&r, f->b); expand(r, lits, next, out); return; }
     case TF_OR: {
-        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, pending, out);
-        TFList r2 = rest; tfl_add(&r2, f->b); expand(r2, lits, next, pending, out);
+        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, out);
+        TFList r2 = rest; tfl_add(&r2, f->b); expand(r2, lits, next, out);
         return;
     }
-    case TF_ALWAYS: { TFList r = rest; tfl_add(&r, f->a); TFList n = next; tfl_add(&n, f); expand(r, lits, n, pending, out); return; }
+    case TF_ALWAYS: { TFList r = rest; tfl_add(&r, f->a); TFList n = next; tfl_add(&n, f); expand(r, lits, n, out); return; }
     case TF_EVENTUALLY: {
-        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, pending, out);
-        TFList n = next; tfl_add(&n, f); expand(rest, lits, n, pending | (1ULL << (f->index & 63)), out);
+        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, out);
+        TFList n = next; tfl_add(&n, f); expand(rest, lits, n, out);
         return;
     }
     }
+}
+
+static int tnode_defers(int t, int e) {
+    for (int i = 0; i < tnodes[t].nnext; i++) if (tnodes[t].next[i] == eventualities[e]) return 1;
+    return 0;
 }
 
 static void tnode_expand(int i) {
@@ -13509,7 +13514,7 @@ static void tnode_expand(int i) {
     tnodes[i].expanded = 1;
     List out = {0};
     TFList todo = {tnodes[i].next, tnodes[i].nnext}, none = {0};
-    expand(todo, none, none, 0, &out);
+    expand(todo, none, none, &out);
     tnodes[i].succ = NEWN(int, out.n);
     for (int k = 0; k < out.n; k++) tnodes[i].succ[k] = (int)out.v[k]->u.i;
     tnodes[i].nsucc = out.n;
@@ -13965,7 +13970,7 @@ static int accept_component(int *nodes, int n) {
     if (!internal) return -1;
     for (int e = 0; e < neventualities; e++) {
         int ok = 0;
-        for (int i = 0; i < n && !ok; i++) ok = !(tnodes[pnodes[nodes[i]].tnode].pending & (1ULL << (e & 63)));
+        for (int i = 0; i < n && !ok; i++) ok = !tnode_defers(pnodes[nodes[i]].tnode, e);
         if (!ok) return -1;
     }
     for (int f = 0; f < nfairs; f++) {
@@ -14117,7 +14122,7 @@ static void print_violated(Value ***ls, int n, int cyc) {
 static int eventuality_met(int e, int p) {
     TF *a = eventualities[e]->a;
     if (a->op == TF_ATOM && a->action) return 0;   /* met on an edge: eventuality_step */
-    return !(tnodes[pnodes[p].tnode].pending & (1ULL << (e & 63))) ||
+    return !tnode_defers(pnodes[p].tnode, e) ||
            (!tf_tableau(live_negated) && a->op == TF_ATOM && !a->action && atom_holds_on(a, pnodes[p].state, NULL));
 }
 
@@ -14362,7 +14367,7 @@ static int live_roots(TF *negated, int **roots) {
     List init = {0};
     TFList todo = {0}, empty = {0};
     tfl_add(&todo, negated);
-    expand(todo, empty, empty, 0, &init);
+    expand(todo, empty, empty, &init);
     int n = 0;
     *roots = NULL;
     for (int s = 0; s < nstates; s++) {
@@ -14514,7 +14519,7 @@ static void live_init_lits(void) {
         List init = {0};
         TFList todo = {0}, empty = {0};
         tfl_add(&todo, neg);
-        expand(todo, empty, empty, 0, &init);
+        expand(todo, empty, empty, &init);
         for (int i = 0; i < init.n; i++) {
             TNode *n = &tnodes[init.v[i]->u.i];
             add_init_lits(n->lits, n->nlits);
