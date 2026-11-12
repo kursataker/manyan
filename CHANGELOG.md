@@ -37,6 +37,9 @@ unreleased:
   open, of the type each call instantiates
 - a temporal property's actions are evaluated once for each edge of the
   state graph: Examples' AllocatorImplementation 1.34 → 0.99 s
+- an initial state's invariants keep the values of operator arguments, as
+  every other state's do: a recursive operator with an accumulator, in an
+  invariant of 5552 initial states, 24.5 → 0.6 s
 - `-workers N` evaluates a temporal property's actions on the edges in
   parallel before its check: AllocatorImplementation 0.75 → 0.52 s with 4
 - `-workers N` computes the initial states in parallel too, merged in

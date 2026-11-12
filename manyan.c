@@ -5104,10 +5104,11 @@ static int nvars;
 static Def **vars;              /* the state variables, in TLC's order */
 static Value **cur_state;       /* the state being read */
 static Value **next_state;      /* the next state an action assigns; NULL entries unassigned */
+static Value **gen_target;      /* the state being assigned */
 static int primed;              /* reading the next state */
 static int gen_init;            /* assigning unprimed variables: an initial predicate */
 static long state_reads;        /* incremented by each read of a variable */
-static long moving_reads;       /* by each read of one that may change: primed, or in Init */
+static long moving_reads;       /* by each read of one that may change: primed, or of the initial state being found */
 static Value *at_value;         /* @ in an EXCEPT */
 static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to apply it (§6.6) */
 static int64_t cur_level;       /* TLCGet("level") */
@@ -5542,7 +5543,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
         state_reads++;
-        if (primed || gen_init) moving_reads++;
+        if (primed || (gen_init && cur_state == gen_target)) moving_reads++;
         if (primed) {
             if (!next_state || !next_state[d->var_index])
                 fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
@@ -8126,7 +8127,6 @@ static int rng_prime(void) {
    continuation. */
 typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont;   /* unchanged: the conjunct is UNCHANGED e */
 
-static Value **gen_target;      /* the state being assigned */
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 static long generated;          /* states generated, as TLC counts them */
 
@@ -10156,8 +10156,9 @@ static _Noreturn void not_boolean_check(Check *c) {
 /* The first of the checks that st, a step after the state at cur_level
    (Init's 0), fails, or -1. */
 static int check_list(Check *list, int n, Value **st) {
-    Value **saved = cur_state;
+    Value **saved = cur_state, **target = gen_target;
     cur_state = st;
+    gen_target = NULL;   /* st is complete */
     cur_level++;
     int bad = -1;
     for (int i = 0; i < n && bad < 0; i++) {
@@ -10171,6 +10172,7 @@ static int check_list(Check *list, int n, Value **st) {
         Value *v = eval(list[i].expr, list[i].ctx);
         if (v->kind != V_BOOL) {
             cur_state = saved;
+            gen_target = target;
             cur_level--;
             not_boolean_check(&list[i]);
         }
@@ -10179,6 +10181,7 @@ static int check_list(Check *list, int n, Value **st) {
     error_check = NULL;
     error_state = NULL;
     cur_state = saved;
+    gen_target = target;
     cur_level--;
     return bad;
 }

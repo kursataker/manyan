@@ -58,6 +58,7 @@ In the order they were made.
 | A temporal property's action atoms are kept for each edge of the state graph, not evaluated again for each tableau node and each pass over the product | Examples' AllocatorImplementation 1.34 → 0.99 (1 worker), 1.11 → 0.76 (4); its atoms were evaluated 32 times an edge |
 | With workers, a property's action atoms are evaluated on every edge in parallel before its check; one that fails, prints or draws is left to the check. Not for a property of state atoms alone: forking and decoding each state costs more than the check spends on them | Examples' AllocatorImplementation 0.75 → 0.52 (4 workers), 0.85 → 0.69 (2), and 0.65 (4) before an atom `~A` shared `A`'s value, which it evaluated twice; the quick bench's liveness, ten properties of state atoms, 0.16 → 0.24 before that exception |
 | The scratch arena takes regions through the whole search, and a filter's test is one; a region keeps one chunk it drops for the next | Examples' MCInnerSerial: over 4 GB → 0.47 GB, 310 s (TLC 354 s); closure 0.51 → 0.53 s (plain -O2), the rest flat |
+| An argument's value is kept while an initial state's invariants are checked, as for any other state: only a read of the initial state being found changes | tests/tla/MCInitSlices with 5552 initial states (a recursive operator passing its accumulator) 24.5 → 0.61; each `force` evaluated its thunk again, and that its argument's, down the recursion |
 
 ## Tried and dropped
 
