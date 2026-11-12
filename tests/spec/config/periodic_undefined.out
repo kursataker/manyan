@@ -1,0 +1,3 @@
+Error: The periodic Nope specified in the configuration file
+is not defined in the specification.
+exit 151

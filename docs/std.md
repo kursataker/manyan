@@ -14,7 +14,8 @@ TLCExt, `TLCFP` stops the check: it needs TLC's fingerprints.
 `PickSuccessor(e)` asks on standard input, as TLC does, whether to take
 each step to a state not yet seen where `e` is false: yes (or an empty
 line), no, explored (taken, but not expanded), or print the two states or
-what changes.
+what changes. At the end of the input Manyan stops, where TLC asks
+again while it reports the error.
 
 ## CommunityModules
 

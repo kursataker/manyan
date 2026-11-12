@@ -31,6 +31,9 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- the configuration's `_PERIODIC`, evaluated as TLC does at a
+  simulation's last progress report, and `_RL_REWARD`, checked and, as TLC
+  does without its reinforcement learning, ignored
 - the configuration's `_POSSIBLE`, as TLC 1.8.0 checks it: each state
   or action predicate it names must hold in some state or step of the
   model, or the run fails after the search with the counts TLC prints

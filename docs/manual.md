@@ -340,12 +340,32 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 
 ## Limitations
 
-Not supported: the proof language (parsed and skipped); TLC's
-`-terse`, `-maxSetSize` (Manyan does not bound the sets it builds, where TLC
-fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
-`-generateSpecTE`, the configuration's `_PERIODIC` and `_RL_REWARD`
-(and `_POSSIBLE` with `-symbolic`), TLCExt's `TLCFP`, checkpoints (`-checkpoint`, `-recover`) and
-distributed checking. `Trace` is the behavior to the state evaluated; to
+Not supported, by decision, each for the reason given:
+
+- the proof language: parsed and skipped, as TLC does.
+- `-terse`: TLC prints a value as it builds it, an operator's body
+  through SANY's own printing; Manyan builds its values first.
+- `-maxSetSize`: Manyan does not bound the sets it builds, where TLC
+  fails past 10^6 elements, an artifact of its Java arrays.
+- `-dfid`: TLC's iterative deepening searches depth-first to a bound it
+  raises, and finds a longer trace than breadth-first, which finds the
+  shortest and checks the whole state space without a bound.
+- `-coverage` and `-tool`: their output is TLC's cost model and its
+  Toolbox's message codes, made for the Toolbox's views.
+- `-generateSpecTE`, and the `_TTrace` module TLC writes at an error,
+  which reads the trace from a `.bin` in Java's serialization.
+- checkpoints (`-checkpoint`, `-recover`) and distributed checking: TLC's
+  files are its JVM's; models Manyan checks seldom run for the hours that
+  call for them.
+- the configuration's `_PERIODIC` is evaluated, as TLC does, at a
+  simulation's last progress report; TLC evaluates it at its report each
+  minute too, which Manyan does not print. `_RL_REWARD` is read only by
+  TLC's reinforcement learning simulation, which a Java property turns
+  on and which learns by TLC's fingerprints. `_POSSIBLE` is not read
+  with `-symbolic`.
+- TLCExt's `TLCFP`: its value is TLC's fingerprint.
+
+`Trace` is the behavior to the state evaluated; to
 rebuild it TLC evaluates `Init` again, and with more than one initial
 state may give a shorter one. In a simulation
 that stops at an error before its last behavior, TLC's worker goes on

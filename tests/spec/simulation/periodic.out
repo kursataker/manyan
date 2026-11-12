@@ -1,0 +1,5 @@
+Finished computing initial states: 1 distinct state generated.
+<<"post", 7>>
+<<"periodic", 7>>
+Error: Assumption line 11, col 13 to line 11, col 70 of module periodic is false.
+exit 0

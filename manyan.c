@@ -9225,6 +9225,7 @@ static Ctx root_ctx;
 static Check *invariants, *implied_inits, *constraints, *action_constraints, *action_props, *temporal_props;
 static int ninvariants, nimplied_inits, nconstraints, naction_constraints, naction_props, ntemporal_props;
 static Expr *view_expr;
+static Expr *periodic_expr;   /* _PERIODIC: TLC evaluates it at its progress reports */
 static Value **symmetry;     /* permutations of model values */
 static int nsymmetry;
 static int check_deadlock = 1;
@@ -11619,6 +11620,13 @@ static int simulate(const ManyanOptions *o) {
     handler = NULL;
     int post = check_posts(0);
     printf("Progress: %ld states checked.\n", generated);
+    Value *periodic = periodic_expr ? eval(periodic_expr, root_ctx) : NULL;
+    if (periodic && periodic->kind == V_BOOL && !periodic->u.i) {
+        Buf b = {0};
+        loc_text(&b, periodic_expr->def->body);
+        printf("Error: Assumption %s is false.\n", b.s);   /* TLC's stops the simulation, not its exit status */
+        free(b.s);
+    }
     return post;
 }
 
@@ -12831,7 +12839,9 @@ static int setup_model(void) {
             posts[nposts++] = it->name;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
-        } else if (strcmp(k, "_POSSIBLE") == 0 && !symbolic_mode) {
+        } else if (strcmp(k, "_PERIODIC") == 0) periodic_expr = config_call(it->name, "periodic", 'r');
+        else if (strcmp(k, "_RL_REWARD") == 0) config_call(it->name, "rlreward", 'r');   /* only TLC's reinforcement learning simulation reads it */
+        else if (strcmp(k, "_POSSIBLE") == 0 && !symbolic_mode) {
             Sym *s = root_sym(it->name);
             if (s && s->def->kind != D_OP && s->def->kind != D_FCN) config_error("The possible %s cannot be a constant.", S(it->name));
             e = config_call(it->name, "possible", 'r');
