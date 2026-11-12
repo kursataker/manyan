@@ -6349,6 +6349,13 @@ static int apalache_op(Def *d, const char *name) {
     return d->mod && d->mod->name == apalache && d->kind == D_OP && !strcmp(S(d->name), name);
 }
 
+/* Apalache's ApaFoldSet, or the same fold of its rewired community modules. */
+static int is_fold_set(Def *d) {
+    static int folds;
+    if (!folds) folds = intern("__apalache_folds");
+    return apalache_op(d, "ApaFoldSet") || (d->mod && d->mod->name == folds && !strcmp(S(d->name), "__ApalacheFoldSet"));
+}
+
 static int is_gen(Def *d) {
     static int gen;
     if (!gen) gen = intern("Gen");
@@ -15905,17 +15912,36 @@ static SVal *sym_oper(Value *v, Expr **args, int n, SCtx sc, Expr *call, int pol
     return sym_call(od, args, n, sc, oc, call, pol);
 }
 
-/* The operator argument op, written in sc, applied to x. */
-static SVal *sym_apply_op(Expr *op, SCtx sc, SVal *x, Expr *call) {
-    Def *d = NEW(Def);
-    d->kind = D_BOUND;
-    Expr *arg = NEW(Expr);
-    arg->kind = K_BOUND;
-    arg->def = d;
-    SCtx at = {sc.c, senv_bind(d, x, NULL, sc, sc.s)};
-    if (op->kind == X_LAMBDA) return sym_call(op->def, &arg, 1, at, sc, call, P_BOTH);
+/* The operator argument op, written in sc, applied to the n values xs. */
+static SVal *sym_apply_op(Expr *op, SCtx sc, SVal **xs, int n, Expr *call) {
+    Expr **args = NEWN(Expr *, n);
+    SCtx at = sc;
+    for (int i = 0; i < n; i++) {
+        Def *d = NEW(Def);
+        d->kind = D_BOUND;
+        args[i] = NEW(Expr);
+        args[i]->kind = K_BOUND;
+        args[i]->def = d;
+        at.s = senv_bind(d, xs[i], NULL, sc, at.s);
+    }
+    if (op->kind == X_LAMBDA) return sym_call(op->def, args, n, at, sc, call, P_BOTH);
     if (!sym_plain(op, sc)) fail_at(call, "Symbolic checking cannot apply this operator argument.");
-    return sym_oper(eval_operator_arg(op, sc.c), &arg, 1, at, call, P_BOTH);
+    return sym_oper(eval_operator_arg(op, sc.c), args, n, at, call, P_BOTH);
+}
+
+/* Apalache's ApaFoldSet(Op, v, S) on a set not yet known: Op folds in
+   each element present and not the same as one present before it. */
+static SVal *sym_fold_set(Expr **args, SCtx sc, Expr *call) {
+    SVal *acc = sym(args[1], sc, P_BOTH), *s = sv_enum(sym(args[2], sc, P_BOTH));
+    for (int i = 0; i < s->n; i++) {
+        int c = s->u.set.guards[i];
+        for (int j = 0; j < i && c != L_FALSE; j++)
+            c = g_and(c, g_and(s->u.set.guards[j], sv_eq(s->u.set.elems[j], s->u.set.elems[i])) ^ 1);
+        if (c == L_FALSE) continue;
+        SVal *xs[2] = {acc, s->u.set.elems[i]};
+        acc = sv_ite(c, sym_apply_op(args[0], sc, xs, 2, call), acc);
+    }
+    return acc;
 }
 
 /* The context a definition's body is evaluated in, before its parameters:
@@ -15937,6 +15963,7 @@ static SVal *sym_call(Def *d, Expr **args, int n, SCtx sc, SCtx at, Expr *call, 
     if (d->replacement) d = d->replacement;
     if (d->native) return sym_native(d, args, n, sc, call);
     if (d->kind == D_PARAM) return sym_param_call(d, args, n, sc, at, call, pol);
+    if (is_fold_set(d) && !sym_plain(args[2], sc)) return sym_fold_set(args, sc, call);
     SVal *forced;
     SCtx inner = def_ctx(d, at, call, &forced, pol);
     if (forced) return forced;
@@ -16440,7 +16467,7 @@ static SVal *seq_select(SVal *s, Expr *test, SCtx sc, Expr *call) {
     int *keep = NEWN(int, m + 1), **before = NEWN(int *, m + 1);
     before[0] = bv_const(0);
     for (int i = 0; i < m; i++) {
-        keep[i] = g_and(g[i], sv_lit(sym_apply_op(test, sc, v[i], call), call));
+        keep[i] = g_and(g[i], sv_lit(sym_apply_op(test, sc, &v[i], 1, call), call));
         int *one = bv_const(0);
         one[0] = keep[i];
         before[i + 1] = bv_add(before[i], one);

@@ -13,9 +13,9 @@ in TLC's format, with TLC's exit statuses.
 
 | | checks | |
 |---|---:|---|
-| ported, giving Apalache's verdict | 190 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
+| ported, giving Apalache's verdict | 191 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
 | ported, refused as Apalache refuses them | 35 | below |
-| skipped | 6 | below |
+| skipped | 5 | below |
 | not ported | 14 | 12 repeat a check ported but for options that do not change the outcome, such as `--out-dir` and `--tuning-options`; 2 check Quint's JSON, not TLA+ |
 
 ### Skipped
@@ -31,7 +31,6 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
   evaluator every counterexample is replayed through has 64-bit integers
   (TLC 32-bit), and bignums there would slow every model checked.
 - TestFunctions: Apalache itself runs out of 4 GB.
-- FoldSetInInit: `ApaFoldSet` over `SUBSET (1..10)` takes more than 1 GB.
 
 ### Specifications Apalache refuses
 
