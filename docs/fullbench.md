@@ -40,9 +40,16 @@ A model leaves this list when it gets a row in the results.
 | runtime not recorded | 10 | Run each once under the 15-minute cap, and keep the ones that finish |
 | TLC over 15 minutes | 4 | A longer cap for TLC, run once; its results stay cached |
 | recorded over 10 minutes | 7 | A run with a larger `MAX_RUNTIME`, hours long |
-| more than one worker | 174 | Run the checked models again with `-workers 4` |
+| more than one worker | 7 | Run those recorded over a minute with `-workers 4` too |
 | symbolic | 46 | None: these are Apalache's models, not TLC's |
 
+- More than one worker: the 167 models recorded to run in a minute or
+  less were run once with `-workers 4` (by an engine wrapping
+  `manyan -workers 4`): 160 print what TLC prints, as with one worker,
+  and the four that differ with one worker differ alike; the run found
+  TLCSailfish1's parse failure, since fixed. SlushMedium and
+  MCBoulanger went past the 4 GB guard, which sums the resident memory
+  of the worker processes, pages they share counted in each.
 - Runtime not recorded: CarTalkPuzzle Model_3, SpanTreeTest5Nodes,
   TestMCReachability, BPConProof, c1cs, TLCSailfish2, MC_HDiskSynod,
   EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC.
