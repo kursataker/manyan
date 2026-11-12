@@ -13264,6 +13264,8 @@ static TF *tf_atom(Expr *e, Ctx c, int neg) {
     t->atom = e; t->c = c; t->neg = neg;
     t->action = level_in(e, c) >= 2;
     t->index = natoms;
+    for (int i = 0; i < natoms; i++)   /* ~A has A's slot */
+        if (atoms[i]->atom == e && atoms[i]->c.env == c.env && atoms[i]->c.inst == c.inst) { t->index = atoms[i]->index; break; }
     atoms = xrealloc(atoms, sizeof(TF *) * (size_t)(natoms + 1));
     atoms[natoms++] = t;
     return t;
@@ -13597,7 +13599,7 @@ static void worker_atoms(int lo, int hi) {
         for (int e = 0; e <= r->nedges; e++) {
             Value **next = e < r->nedges ? decode_state(r->edges[2 * e]) : cur;
             for (int i = 0; i < natoms; i++)
-                if (atoms[i]->action) atom_fill(step_atom(atoms[i], s, e), atoms[i], cur, next);
+                if (atoms[i]->action && atoms[i]->index == i) atom_fill(step_atom(atoms[i], s, e), atoms[i], cur, next);
         }
         arena_reset(&scratch_arena);
     }
