@@ -363,7 +363,13 @@ Not supported, by decision, each for the reason given:
   TLC's reinforcement learning simulation, which a Java property turns
   on and which learns by TLC's fingerprints. `_POSSIBLE` is not read
   with `-symbolic`.
-- TLCExt's `TLCFP`: its value is TLC's fingerprint.
+- TLC's fingerprints, and so TLCExt's `TLCFP` and the draws of
+  `RandomElement`, `RandomSubset` and `RandomSetOfSubsets` in `Init` and
+  `Next` when model checking, which TLC seeds with the state's
+  fingerprint: TLC picks its fingerprint's polynomial at random on each
+  run (`-fp` fixes it), so they change from run to run, and it
+  fingerprints a model value by its index in SANY's table of names.
+  Manyan's `TLCFP` stops the check, and it draws other values there.
 
 `Trace` is the behavior to the state evaluated; to
 rebuild it TLC evaluates `Init` again, and with more than one initial
@@ -379,6 +385,4 @@ compares or fingerprints it, which it does as it goes. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
 check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
-and constants when model checking. In `Init` and `Next`, TLC seeds each
-state's draws with its fingerprint, which Manyan computes differently, so
-Manyan draws other values there.
+and constants when model checking.

@@ -16,11 +16,10 @@ from TLC.
   against TLC (`make full-bench`), and publish how many give identical
   output ([full benchmark](fullbench.md)). Each spec that differs becomes a test in
   `tests/spec` and then a fix. The goal is all of them.
-- Close the gaps the [manual](manual.md#limitations) lists, beyond those
-  left by decision:
-  - the random draws in `Init` and `Next`, which need TLC's state
-    fingerprints;
-  - the order of `Print` output in a simulation that stops early.
+- The gaps the [manual](manual.md#limitations) lists are left by
+  decision, each for the reason it gives; one is reopened when a
+  specification needs it. The order of `Print` output in a simulation
+  that stops early is TLC's threads' timing.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
 - Model more of Manyan's algorithms in `tests/tla`, such as the parallel
