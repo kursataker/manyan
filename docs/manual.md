@@ -152,7 +152,9 @@ each step; an operator of one parameter is a trace invariant, checked of
 each behavior so far, given as a sequence of records of the variables),
 `PROPERTY` and `CONSTANT`. In `Init`, `x'` is `x`. `-cinit C` lets the operator `C` choose the
 constants the configuration leaves, as `Init` chooses the variables, and
-the assumptions then constrain that choice. A constant `Init` or
+the assumptions then constrain that choice. As Apalache's, a definition
+`OVERRIDE_X` stands for the constant or operator `X` the configuration
+gives none, and a cycle such definitions make is refused. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
@@ -239,8 +241,9 @@ types it gives the standard and community modules are built in.
 
 `make test-typecheck` runs Apalache 0.63.0's 75 type checking tests, each
 with Apalache's outcome (`tests/typecheck/apalache`). Where several
-`CONSTANT`s or `VARIABLE`s lack an annotation, Manyan names the last one
-declared; Apalache names the last in SANY's hash table.
+`CONSTANT`s or `VARIABLE`s lack an annotation, Manyan names the one
+Apalache names: a variable before a constant, the last in the order of
+SANY's table of the root module's names.
 
 ## Exit statuses
 

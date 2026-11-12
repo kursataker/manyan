@@ -33,6 +33,9 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- `-symbolic` reads Apalache's `OVERRIDE_X` definitions, for a constant or
+  operator `X` the configuration gives none, and refuses a cycle they
+  make, as Apalache does (its ConfigUnsorted test)
 - `-symbolic` keeps an `\E` of more than 64 bindings in `Next` as one
   action, as Apalache does, where it split it into an action for each
   binding as TLC does: Apalache's factorization test, an `\E` over

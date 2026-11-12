@@ -12713,6 +12713,56 @@ static int root_table_cap(void) {
     return cap;
 }
 
+/* The root module's definitions and constants e names, once each. */
+static void sym_calls(Expr *e, Def ***defs, int *n) {
+    if (!e) return;
+    if (e->kind == K_CALL || e->kind == X_OPREF || e->kind == K_DECL) {
+        Sym *s = root_sym(e->def->name);
+        int i = 0;
+        while (i < *n && (*defs)[i] != e->def) i++;
+        if (s && s->def == e->def && i == *n) PUSH(*defs, *n, e->def);
+    }
+    for (int i = 0; i < e->n; i++) sym_calls(e->args[i], defs, n);
+    for (int i = 0; i < e->nb; i++) sym_calls(e->bounds[i].set, defs, n);
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) sym_calls(e->defs[i]->body, defs, n);
+    if (e->kind == X_LAMBDA) sym_calls(e->def->body, defs, n);
+}
+
+/* Apalache's OVERRIDE_X == e, a definition for X, a constant or an
+   operator the configuration gives none: as X <- OVERRIDE_X. Apalache
+   refuses a cycle they make among the definitions. */
+static void sym_overrides(void) {
+    for (int i = 0; i < root->nsyms; i++) {
+        Def *o = root->syms[i].def;
+        const char *name = S(o->name);
+        if (o->kind != D_OP || strncmp(name, "OVERRIDE_", 9)) continue;
+        Sym *t = root_sym(intern(name + 9));
+        if (t && (t->def->kind == D_CONST || t->def->kind == D_OP) && !t->def->value && !t->def->replacement) t->def->replacement = o;
+    }
+    for (int i = 0; i < root->nsyms; i++) {
+        Def *start = root->syms[i].def;
+        if (!start->replacement) continue;
+        Def **reached = NULL;   /* what start reaches, as replaced */
+        int n = 0;
+        PUSH(reached, n, start);
+        for (int k = 0; k < n; k++) {
+            Def *d = reached[k]->replacement ? reached[k]->replacement : reached[k], **calls = NULL;
+            int ncalls = 0;
+            sym_calls(d->body, &calls, &ncalls);
+            for (int j = 0; j < ncalls; j++) {
+                int m = 0;
+                while (m < n && reached[m] != calls[j]) m++;
+                if (m < n && calls[j] != start) continue;
+                if (m == n) { PUSH(reached, n, calls[j]); continue; }
+                Buf b = {0};
+                for (m = 0; m < n; m++) buf_printf(&b, "%s%s", m ? ", " : "", S(reached[m]->name));
+                printf("Configuration error (see the manual): Found a cyclic dependency among operators: %s\n", b.s);
+                exit(MANYAN_ERROR_CONFIG);
+            }
+        }
+    }
+}
+
 static Def **tlc_constants(int *n) {
     int cap = root_table_cap();
     Def **c = NEWN(Def *, root->ndecls);
@@ -12789,6 +12839,7 @@ static int setup_model(void) {
         }
         if (next) next_expr = next;
     }
+    if (pass == 1 && symbolic_mode) sym_overrides();
     if (pass == 1) {
         int n;
         Def **c = tlc_constants(&n);

@@ -48,7 +48,6 @@ SKIP = {
     "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",
     "Selections": "Apalache's syntactic analysis of what each disjunct assigns",
     "Bug593": "a LET name clashing with a variable, once Apalache flattens the instances",
-    "ConfigUnsorted": "a cycle the configuration's substitutions make among the definitions",
 }
 
 
