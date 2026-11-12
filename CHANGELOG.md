@@ -37,6 +37,9 @@ unreleased:
   open, of the type each call instantiates
 - a temporal property's actions are evaluated once for each edge of the
   state graph: Examples' AllocatorImplementation 1.34 → 0.99 s
+- tests/tla/InitSlices.tla models how workers slice Init: every Init of
+  choices three deep gives its states in one process's order, sliced to
+  each depth, one slice or two at a time
 - an initial state's invariants keep the values of operator arguments, as
   every other state's do: a recursive operator with an accumulator, in an
   invariant of 5552 initial states, 24.5 → 0.6 s

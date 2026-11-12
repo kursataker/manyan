@@ -22,9 +22,9 @@ from TLC.
   that stops early is TLC's threads' timing.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
-- Model more of Manyan's algorithms in `tests/tla`, such as the parallel
-  search, liveness checking and symmetry, and fuzz what the models cannot
-  reach.
+- Model more of Manyan's algorithms in `tests/tla`, such as liveness
+  checking and symmetry, and fuzz what the models cannot reach. The
+  parallel search and the slicing of Init have models.
 
 ## 2. Fast where TLC is slow
 
