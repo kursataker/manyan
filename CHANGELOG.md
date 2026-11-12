@@ -35,6 +35,12 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- `-workers N` computes the initial states in parallel too, merged in
+  the order one process finds them: Examples' MCBakery, 655200 initial
+  states, 1.33 → 0.73 s with 4 workers
+- `-symbolic` folds `ApaFoldSet` over a set not yet known as Apalache
+  encodes it, where its definition's recursion did not end: Apalache's
+  FoldSetInInit test runs (191 give its verdict)
 - `-symbolic` reads Apalache's `OVERRIDE_X` definitions, for a constant or
   operator `X` the configuration gives none, and refuses a cycle they
   make, as Apalache does (its ConfigUnsorted test)

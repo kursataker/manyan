@@ -7618,6 +7618,7 @@ static void draw_restart(Value **from) {
 }
 
 static JRandom *draws(void) {
+    if (in_worker && !draw_from) worker_cannot();   /* Init's draws go on in order */
     if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? fingerprint(draw_from) : 0));
     draw_due = 0;
     return drawing;
@@ -8158,6 +8159,33 @@ static int gen_cont(Cont *k) {
     return gen_emit();
 }
 
+/* Init sliced among the workers. Each alternative of the first
+   slice_depth choices of a path (an element of x \in S, a disjunct, a
+   binding of \E) is numbered in the order one process takes them, and the
+   states found under one are its slice. A process takes the alternatives
+   of the slice_depth-th choice, and keeps the states, only of the slices
+   in [slice_lo, slice_hi). Counting, it takes them all, but stops at the
+   choice after, noting that there is one. */
+static int slicing, slice_counting, slice_deeper, slice_depth, choice_depth;
+static long slice_seq, slice_lo, slice_hi;
+
+static int slice_owned(void) { return slice_seq >= slice_lo && slice_seq < slice_hi; }
+
+/* Entering a choice: 0 if counting stops at it. */
+static int choice_begin(void) {
+    if (slice_counting && choice_depth == slice_depth) { slice_deeper = 1; return 0; }
+    choice_depth++;
+    return 1;
+}
+
+/* Whether to take the next alternative of the choice entered last. */
+static int choice_take(void) {
+    int d = choice_depth - 1;
+    if (d >= slice_depth) return 1;
+    slice_seq++;
+    return d < slice_depth - 1 || slice_counting || slice_owned();
+}
+
 static Cont *mk_cont(Expr *e, Ctx c, Cont *next) {
     Cont *k = NEW(Cont);
     k->e = e; k->c = c; k->next = next;
@@ -8401,6 +8429,7 @@ typedef struct { Expr *body; Cont *k; } GenData;
 
 static int gen_bound_fn(Ctx c, void *data) {
     GenData *g = data;
+    if (slicing && !choice_take()) return 0;
     return gen(g->body, c, g->k);
 }
 
@@ -8580,7 +8609,10 @@ static Middles cdot_first(Expr *a, Ctx c, Value **t, Cont *k) {
     gen_target = next_state = t;
     gen_emit = middle_emit;
     cdot_middle = &m;
+    int saved_slicing = slicing;
+    slicing = 0;
     gen(a, c, k);
+    slicing = saved_slicing;
     cdot_middle = saved_middle;
     gen_target = saved_target;
     next_state = saved_next;
@@ -8666,15 +8698,19 @@ static int gen_member(int var, Value *s, Expr *e, Cont *k) {
         }
         return 0;
     }
+    int r = 0;
+    if (slicing && !choice_begin()) return 0;
     if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
         Value *base = filter_base(s);
-        for (int i = 0; i < base->n; i++)
-            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && gen_assign(var, base->u.set.elems[i], k)) return 1;
-        return 0;
+        for (int i = 0; i < base->n && !r; i++)
+            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && (!slicing || choice_take()))
+                r = gen_assign(var, base->u.set.elems[i], k);
+    } else {
+        s = elements(s);
+        for (int i = 0; i < s->n && !r; i++) if (!slicing || choice_take()) r = gen_assign(var, s->u.set.elems[i], k);
     }
-    s = elements(s);
-    for (int i = 0; i < s->n; i++) if (gen_assign(var, s->u.set.elems[i], k)) return 1;
-    return 0;
+    if (slicing) choice_depth--;
+    return r;
 }
 
 static int gen_untracked(Expr *e, Ctx c, Cont *k) {
@@ -8695,12 +8731,22 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
             }
             return 0;
         }
+        if (slicing) {
+            if (!choice_begin()) return 0;
+            int r = 0;
+            for (int i = 0; i < e->n && !r; i++) if (choice_take()) r = gen(e->args[i], c, k);
+            choice_depth--;
+            return r;
+        }
         for (int i = 0; i < e->n; i++) if (gen(e->args[i], c, k)) return 1;
         return 0;
     case X_EXISTS: {
         if (choosing()) return gen_exists_random(e, c, k);
         GenData g = {e->args[0], k};
-        return for_bindings(e->bounds, e->nb, c, gen_bound_fn, &g);
+        if (slicing && !choice_begin()) return 0;
+        int r = for_bindings(e->bounds, e->nb, c, gen_bound_fn, &g);
+        if (slicing) choice_depth--;
+        return r;
     }
     case X_FORALL: {
         /* As TLC: the conjunction of the body for each binding, the
@@ -8889,7 +8935,10 @@ static int enabled(Expr *a, Ctx c) {
     mark->def = &enabled_mark;
     mark->parent = c.inst;
     c.inst = mark;
+    int saved_slicing = slicing;
+    slicing = 0;
     gen(a, c, NULL);
+    slicing = saved_slicing;
     nenabled_names = saved_names;
     int found = enabled_found;
     gen_target = saved_target;
@@ -10660,7 +10709,9 @@ enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants uncheck
 
 typedef struct {
     atomic_int next;          /* the next batch to take */
-    int lo, hi, nbatches;     /* the level */
+    int lo, hi, nbatches;     /* the level, or Init's slices */
+    int init, per;            /* slicing Init: the slices of a batch */
+    atomic_int starved;       /* a worker found the claim table full */
     FpSlot *fp_table;         /* the fingerprint set as the level starts */
     int fp_size;
     size_t nclaims;           /* the claim table's size, a power of two */
@@ -10757,7 +10808,8 @@ static void settle(Claim *c) {
     sigjmp_buf here;
     handler = &here;
     volatile int ok = 0;
-    if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0) {
+    if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0 &&
+        (!gen_init || check_list(implied_inits, nimplied_inits, succ) < 0)) {
         w_bytes.n = 0;
         for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
         ok = w_encoded + w_bytes.n <= encodings_size;   /* else the search keeps it */
@@ -10772,23 +10824,45 @@ static void settle(Claim *c) {
     atomic_store(&c->state, ok ? SETTLED : FAILED);
 }
 
+static long w_slice;     /* slicing Init: the slice whose states are being written */
+static size_t w_head;    /* where its header goes */
+
+static void slice_write(void) {
+    if (!w_clean) { w_n = w_head + 2 * sizeof(int); w_found = 0; }
+    int header[2] = {w_clean, w_found};
+    memcpy(results[w_id] + w_head, header, sizeof header);
+}
+
+static void slice_next(void) {
+    w_slice++;
+    w_head = w_n;
+    w_n += 2 * sizeof(int);
+    w_found = 0;
+}
+
+/* The initial states, or the successors of a state, a worker finds. */
 static int worker_emit(void) {
+    if (gen_init) {
+        if (!slice_owned()) return 0;
+        while (w_slice < slice_seq) { slice_write(); slice_next(); }
+    }
     succ_count++;
     for (int i = 0; i < nvars; i++) if (!succ[i]) { w_clean = 0; return 1; }
     Found f = {0, cur_action, CONSTRAINED, 0};
     if (check_list(constraints, nconstraints, succ) < 0 &&
-        check_actions(action_constraints, naction_constraints, cur_state, succ) < 0) {
+        (gen_init || check_actions(action_constraints, naction_constraints, cur_state, succ) < 0)) {
         f.fp = fingerprint(succ);
-        if (check_actions(action_props, naction_props, cur_state, succ) >= 0) { w_clean = 0; return 1; }
+        if (!gen_init && check_actions(action_props, naction_props, cur_state, succ) >= 0) { w_clean = 0; return 1; }
         f.seen = fp_find(f.fp);
         if (f.seen == NEW) {
             int made = 0;
             Claim *c = claim(f.fp, 1, &made);
-            if (!c) { w_clean = 0; return 1; }
+            if (!c) { atomic_store(&control->starved, 1); w_clean = 0; return 1; }
             if (made) settle(c);
             f.claim = (uint32_t)(c - claims);
         }
-    } else if (check_list(invariants, ninvariants, succ) >= 0 || check_actions(action_props, naction_props, cur_state, succ) >= 0) {
+    } else if (check_list(invariants, ninvariants, succ) >= 0 ||
+               (gen_init ? check_list(implied_inits, nimplied_inits, succ) : check_actions(action_props, naction_props, cur_state, succ)) >= 0) {
         w_clean = 0;   /* outside the model: the search reports it */
         return 1;
     }
@@ -10830,6 +10904,34 @@ static void worker_expand(int idx) {
     arena_reset(&scratch_arena);
 }
 
+/* Init's slices [lo, hi): a header for each, then its states. */
+static void worker_init(int lo, int hi) {
+    w_slice = lo - 1;
+    slice_next();
+    w_clean = 1;
+    EvalState saved = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        w_clean = 0;
+    } else {
+        memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+        gen_target = cur_state = succ;
+        next_state = NULL;
+        gen_init = 1;
+        cur_action = -1;
+        slicing = 1, slice_counting = 0, slice_seq = -1, choice_depth = 0;
+        slice_lo = lo, slice_hi = hi;
+        gen(init_expr, root_ctx, NULL);
+    }
+    eval_restore(saved);
+    slicing = 0;
+    int clean = w_clean;
+    slice_write();
+    while (w_slice < hi - 1) { slice_next(); w_clean = clean; slice_write(); }   /* not reached if it stopped */
+    arena_reset(&scratch_arena);
+}
+
 /* Expands the next batch of the level, if any is left and there is room
    for its results; else gives it back to the search. */
 static int expand_batch(void) {
@@ -10842,8 +10944,10 @@ static int expand_batch(void) {
     }
     batches[b].worker = w_id;
     batches[b].off = w_n;
-    int lo = control->lo + b * BATCH, hi = lo + BATCH < control->hi ? lo + BATCH : control->hi;
-    for (int idx = lo; idx < hi; idx++) worker_expand(idx);
+    int per = control->init ? control->per : BATCH;
+    int lo = control->lo + b * per, hi = lo + per < control->hi ? lo + per : control->hi;
+    if (control->init) worker_init(lo, hi);
+    else for (int idx = lo; idx < hi; idx++) worker_expand(idx);
     atomic_store(&batches[b].done, 1);
     return 1;
 }
@@ -10856,6 +10960,7 @@ static _Noreturn void worker_main(int id) {
     while (read(to_worker[id][0], &c, 1) == 1) {
         fp_table = control->fp_table;
         fp_size = control->fp_size;
+        gen_init = 0;   /* forked as Init was computed */
         w_n = w_encoded = w_budget = 0;
         while (expand_batch()) {}
         fflush(stdout);
@@ -10907,9 +11012,9 @@ static int mergeable(const Found *f, int nfound) {
     return 1;
 }
 
-static void merge_state(int idx, const Found *f, int nfound) {
-    expanding = idx;
-    expanded = idx + 1;
+/* The states a worker found from the state parent, or initial ones if it
+   is -1, in order. */
+static void merge_found(int parent, const Found *f, int nfound) {
     for (int k = 0; k < nfound; k++) {
         generated++;
         if (f[k].seen == CONSTRAINED) continue;
@@ -10919,33 +11024,43 @@ static void merge_state(int idx, const Found *f, int nfound) {
         if (found == NEW && (found = c->merged - 1) < 0 && (found = fp_find(f[k].fp)) < 0) {
             size_t off = store.n;
             store_add(encodings[c->loc >> 40] + (c->loc & (((uint64_t)1 << 40) - 1)), (size_t)c->len);
-            int depth = states[idx].depth + 1;
-            found = add_record(off, f[k].fp, idx, f[k].action, depth);
+            int depth = parent < 0 ? 1 : states[parent].depth + 1;
+            found = add_record(off, f[k].fp, parent, f[k].action, depth);
             if (depth > max_depth) max_depth = depth;
         }
         if (f[k].seen == NEW) c->merged = found + 1;
-        if (ntemporal_props) add_edge(idx, found, f[k].action);
+        if (ntemporal_props && parent >= 0) add_edge(parent, found, f[k].action);
     }
+}
+
+static void merge_state(int idx, const Found *f, int nfound) {
+    expanding = idx;
+    expanded = idx + 1;
+    merge_found(idx, f, nfound);
     note_expanded(idx);
 }
 
 static int merge_level(int lo, int hi);
+static int merge_init(int lo, int hi);
 
-static int expand_level(int lo, int hi) {
+/* The workers take [lo, hi), states of a level or Init's slices, in
+   batches of per, with room for n claims; the search merges them. */
+static int run_level(int lo, int hi, int per, size_t n, int init) {
     /* Workers know the strings there were when they started; states may
        now hold newer ones. */
     if (workers_running && nstrs != forked_strs) stop_workers();
     if (!workers_running) start_workers();
     control->lo = lo;
     control->hi = hi;
-    control->nbatches = (hi - lo + BATCH - 1) / BATCH;
+    control->init = init;
+    control->per = per;
+    control->nbatches = (hi - lo + per - 1) / per;
     control->fp_table = fp_table;
     control->fp_size = fp_size;
-    size_t want = (size_t)(4 * (hi - lo) * (growth > 1 ? growth : 1)), n = 4096;
-    while (n < want && n < max_claims) n *= 2;
     memset(claims, 0, sizeof(Claim) * n);
     control->nclaims = n;
     atomic_store(&control->claimed, 0);
+    atomic_store(&control->starved, 0);
     atomic_store(&control->next, 0);
     for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
@@ -10953,12 +11068,19 @@ static int expand_level(int lo, int hi) {
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
-    int status = merge_level(lo, hi);
+    int r = init ? merge_init(lo, hi) : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nworkers - 1; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
-    return status;
+    control->init = 0;
+    return r;
+}
+
+static int expand_level(int lo, int hi) {
+    size_t want = (size_t)(4 * (hi - lo) * (growth > 1 ? growth : 1)), n = 4096;
+    while (n < want && n < max_claims) n *= 2;
+    return run_level(lo, hi, BATCH, n, 0);
 }
 
 /* The search expands a batch as the workers do while it waits for one. */
@@ -10992,6 +11114,99 @@ static int merge_level(int lo, int hi) {
         }
     }
     return 0;
+}
+
+/* Merges Init's slices [lo, hi) in order: the first one the workers did
+   not compute cleanly, or hi. */
+static int merge_init(int lo, int hi) {
+    int per = control->per;
+    for (int b = 0; b < control->nbatches; b++) {
+        while (!atomic_load(&batches[b].done))
+            if (!steal_batch()) sched_yield();
+        int first = lo + b * per, end = first + per < hi ? first + per : hi;
+        if (batches[b].worker < 0) return first;
+        const char *p = results[batches[b].worker] + batches[b].off;
+        for (int s = first; s < end; s++) {
+            int header[2];
+            memcpy(header, p, sizeof header);
+            const Found *f = (const Found *)(p + sizeof header);
+            p += sizeof header + sizeof(Found) * (size_t)header[1];
+            if (!header[0] || !mergeable(f, header[1])) return s;
+            merge_found(-1, f, header[1]);
+        }
+    }
+    return hi;
+}
+
+/* Init's slices, numbered by the choices of a depth that gives the
+   workers enough of them; 0 if Init is better computed by one process:
+   too few, or evaluating it down to that depth fails, draws or prints. */
+#define INIT_SLICES 32   /* for each worker */
+static int count_shallow;
+static int count_emit(void) { return ++count_shallow > 4096; }   /* a state above the depth: past a few, too shallow */
+
+static int init_slices(void) {
+    EvalState saved = eval_save();
+    ErrorState er = error_save();
+    sigjmp_buf here;
+    handler = &here;
+    volatile long total = 0;
+    in_worker = 1;
+    gen_emit = count_emit;
+    for (slice_depth = 1; slice_depth <= 16; slice_depth++) {
+        if (sigsetjmp(here, 0)) { total = 0; break; }
+        memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+        slicing = slice_counting = 1;
+        slice_deeper = choice_depth = count_shallow = 0;
+        slice_seq = -1;
+        if (gen(init_expr, root_ctx, NULL)) { total = 0; break; }
+        total = slice_seq + 1;
+        if (total >= INIT_SLICES * nworkers || !slice_deeper) break;
+    }
+    if (slice_depth > 16) slice_depth = 16;
+    eval_restore(saved);
+    error_restore(&er);
+    in_worker = slicing = slice_counting = 0;
+    memset(succ, 0, sizeof(Value *) * (size_t)nvars);   /* an error leaves its assignments */
+    arena_reset(&scratch_arena);
+    return total >= 2 * nworkers && total < (1 << 30) ? (int)total : 0;
+}
+
+static int init_slice_emit(void) { return slice_owned() ? init_emit() : 0; }
+
+/* The search computes Init's slice s itself, as one process. */
+static void init_slice(int s) {
+    sigjmp_buf *outer = handler, here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) { slicing = 0; gen_emit = init_emit; handler = outer; siglongjmp(*outer, 1); }
+    memset(succ, 0, sizeof(Value *) * (size_t)nvars);
+    gen_emit = init_slice_emit;
+    slicing = 1, slice_counting = 0, slice_seq = -1, choice_depth = 0;
+    slice_lo = s, slice_hi = s + 1;
+    gen(init_expr, root_ctx, NULL);
+    slicing = 0;
+    gen_emit = init_emit;
+    handler = outer;
+}
+
+/* Init computed by the workers, its states merged in the order one
+   process finds them; 0 if left to the search. A slice they could not
+   compute cleanly (an error, a violation, output, a draw) the search
+   computes itself, in its turn. */
+static int init_parallel(void) {
+    if (nworkers < 2 || ntemporal_props) return 0;
+    int total = init_slices();
+    if (!total) return 0;
+    int per = total / (16 * nworkers) > 1 ? total / (16 * nworkers) : 1;
+    size_t n = (size_t)1 << 16 < max_claims ? (size_t)1 << 16 : max_claims;
+    for (int from = 0; from < total && !violation;) {
+        int stop = run_level(from, total, per, n, 1);
+        if (stop == total) break;
+        if (atomic_load(&control->starved) && n < max_claims) { n = 4 * n < max_claims ? 4 * n : max_claims; from = stop; continue; }
+        init_slice(stop);
+        from = stop + 1;
+    }
+    return 1;
 }
 
 /* Whether TLC, seeking an unfingerprintable successor again among the
@@ -11158,7 +11373,7 @@ static int search(void) {
     arena = &scratch_arena;
     init_draws = draw_model;
     draw_restart(NULL);
-    gen(init_expr, root_ctx, NULL);
+    if (!init_parallel()) gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");

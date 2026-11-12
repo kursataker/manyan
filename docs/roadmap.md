@@ -60,13 +60,12 @@ in [fullbench](fullbench.md).
    speeds up every spec, and it should win back the 1–3% that
    `assignable`'s search for names cost log, recursion and symmetry in
    0.6.1, and the 2–4% that the search's regions cost closure in 0.7.0.
-2. **The serial parts left with workers**
+2. **The serial part left with workers**
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
-   - compute the initial states in parallel, merged in the order one
-     process finds them (MCBakery);
-   - evaluate a property's actions and `ENABLED`s on the edges as the
-     workers expand states, not after the search in one process
-     (AllocatorImplementation).
+   evaluate a property's actions and `ENABLED`s on the edges as the
+   workers expand states, not after the search in one process
+   (AllocatorImplementation). The initial states are computed in parallel
+   already (MCBakery).
 
 ## What stays
 

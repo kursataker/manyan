@@ -54,6 +54,7 @@ In the order they were made.
 | Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do | Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB |
 | A declaration keeps the index of its substitution by the module last instantiated, not searching the instance's substitutions at each read | instructions: Examples' AllocatorImplementation −3.6%, MCPaxosSmall −1.8% |
 | A declaration read outside an instance skips the instance and ENABLED checks (a separate noinline function); a stored word under 64 writes one byte inline; `gen` does not expand a constant call | against 0.6.0's bench regressions: counters 2549 → 2510 M cycles, symmetry 621 → 606, log 173 → 165 |
+| Workers compute the initial states: `Init`'s first choices split it into slices, numbered as one process takes them; each worker computes a batch of slices, skipping the others' alternatives, and the search merges them in order through the claims a level uses | Examples' MCBakery (4 workers) 1.33 → 0.73, its initial states 1.06 → 0.42 |
 | The scratch arena takes regions through the whole search, and a filter's test is one; a region keeps one chunk it drops for the next | Examples' MCInnerSerial: over 4 GB → 0.47 GB, 310 s (TLC 354 s); closure 0.51 → 0.53 s (plain -O2), the rest flat |
 
 ## Tried and dropped
@@ -89,15 +90,6 @@ bound name, comparisons of integers) at resolve time.
 Examples' models where Manyan is least ahead of TLC (4 workers each) are
 ones with a large serial part, not a slow evaluator.
 
-- **MCBakery** (TLC 5.74 s, Manyan 2.29 s; Manyan 1.87 s user with one worker).
-  Its initial predicate is `TypeOK /\ IInv`: 1.68M candidates, filtered
-  to 655200 initial states, each checked against three invariants.
-  That is about 40% of the run, and Manyan computes it in one process
-  (`gen(init_expr, ...)` in `search`). Workers bring the rest down: 2.31
-  s real with one, 1.52 with two, 1.29 with four. The fix is to compute
-  the initial states in parallel: split the first quantifier or `\in`
-  of `Init` among the workers, and merge their states in the order one
-  process finds them, so the output and state numbers stay the same.
 - **AllocatorImplementation** (TLC 3.44 s, Manyan 1.38 s; Manyan 1.32 s with
   one worker). Its property `SchedAllocator` is checked on the state
   graph after the search, in one process: about half the samples are in

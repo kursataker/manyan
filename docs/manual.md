@@ -279,6 +279,14 @@ expansion reports anything (an error, a violation, a deadlock, output from
 violation is reported and its trace, is the same for every N. Levels
 smaller than 256 states are expanded by Manyan alone.
 
+The initial states are computed by the workers too, when `Init` chooses
+among enough alternatives (an element of `x \in S`, a disjunct, a
+binding of `\E`): its first choices split it into slices, at least 32 for
+each worker, which they compute and Manyan merges in order. An `Init`
+that, down to those choices, fails, prints or draws a random element,
+or a specification with temporal properties, is computed by Manyan alone;
+so is a slice whose states report anything, in its turn.
+
 ## Library
 
 `manyan.h` declares one entry point:
