@@ -153,7 +153,7 @@ invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
 0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-59 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+60 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -169,8 +169,8 @@ fair lasso, which may also stutter forever at its last state (`State N:
 Stuttering`), and is reported only if no invariant is violated and no
 state deadlocks in behaviors of up to `-length` steps; a deadlock is a
 state without a successor in any behavior. A state outside the
-constraints has its invariants checked, but no successors. `ENABLED A`
-in an invariant or a property is TLC's too: where the solver supposes
+constraints has its invariants checked, but no successors. `ENABLED A`,
+in an invariant, a property or an action, is TLC's too: where the solver supposes
 `A` disabled, it is asked again for a step of `A` from that state.
 
 `-max-error N` goes on past a violation, as Apalache's `--max-error`
@@ -203,7 +203,7 @@ string, or a value of an uninterpreted type `T`, is one the specification
 has or a fresh one, `FRESHk` or `FRESHk_OF_T`, as Apalache makes them; a
 variant is one of its tags.
 
-Not supported yet: `ENABLED` in an action; functions over an
+Not supported yet: functions over an
 infinite domain; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.
 

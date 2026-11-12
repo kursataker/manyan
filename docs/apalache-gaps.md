@@ -63,7 +63,7 @@ so Manyan may check a specification Apalache rejects.
   properties are checked, Manyan gives TLC's verdict: a fair lasso, which may also stutter forever,
   once no invariant is violated and no state deadlocks; a deadlock is a
   state without a successor, where Apalache's is one no behavior goes
-  on from. `ENABLED` in an invariant or a property is TLC's too.
+  on from. `ENABLED`, in an invariant, a property or an action, is TLC's too.
 - Apalache 0.63.0 reads `CONSTRAINT` and `ACTION_CONSTRAINT` and then
   ignores them: with `CONSTRAINT x < 2` it reports `x < 3` violated, a
   state TLC never reaches. Manyan gives TLC's verdict: a state outside

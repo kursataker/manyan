@@ -21,8 +21,8 @@ unreleased:
   one stuttering forever at its last state
 - `-symbolic` checks `CONSTRAINT` and `ACTION_CONSTRAINT` as TLC does:
   a state outside them has its invariants checked but is not expanded
-- `-symbolic` checks `ENABLED` in an invariant or a property as TLC
-  does; with a property under fairness, or constraints, a deadlock is TLC's, a state
+- `-symbolic` checks `ENABLED` in an invariant, a property or an action
+  as TLC does; with a property under fairness, or constraints, a deadlock is TLC's, a state
   without a successor in any behavior, and a property is reported only
   once no invariant is violated and no state deadlocks
 - `-symbolic` exits with TLC's 11 for a deadlock, and prints an invariant

@@ -16674,10 +16674,11 @@ static Branch *act_step(Expr *e, Ctx c, const char *what) {
 /* ENABLED A, as TLC checks it, where Apalache has none: a literal of its
    own, true only where some branch of A is, at the state read. That it
    is false where A is enabled is ruled out as the models show it, by
-   sym_enabled_refine. Only an invariant or a property may read it. */
-typedef struct { int lit; Expr *a; SCtx sc; SVal **at; Branches out; } SymEnabled;
+   sym_enabled_refine. One made for a query (an invariant, a property, a
+   deadlock) is refined for it; one of a step, for every query after. */
+typedef struct { int lit, query; Expr *a; SCtx sc; SVal **at; Branches out; } SymEnabled;
 static SymEnabled *sym_enableds;
-static int nsym_enableds, sym_enabled_ok;
+static int nsym_enableds, sym_enabled_query;
 
 static int sym_enabled_lit(Expr *a, SCtx sc) {
     SVal **next = sym_next;
@@ -16694,12 +16695,11 @@ static int sym_enabled_lit(Expr *a, SCtx sc) {
         if (nsym_enableds) memcpy(grown, sym_enableds, sizeof *grown * (size_t)nsym_enableds);
         sym_enableds = grown;
     }
-    sym_enableds[nsym_enableds++] = (SymEnabled){l, a, sc, sym_cur, out};
+    sym_enableds[nsym_enableds++] = (SymEnabled){l, sym_enabled_query, a, sc, sym_cur, out};
     return l;
 }
 
 static SVal *sym_enabled(Expr *e, SCtx sc) {
-    if (!sym_enabled_ok) fail_at(e, "Symbolic checking supports ENABLED only in invariants and properties.");
     return sv_bool(sym_enabled_lit(e->args[0], sc));
 }
 
@@ -16708,20 +16708,23 @@ static SVal *sym_enabled(Expr *e, SCtx sc) {
 static int sym_dead(SVal ***st, int depth, int kept) {
     sym_cur = st[depth];
     int some = L_FALSE;
+    sym_enabled_query = 1;
     for (int k = 0; k < nactions; k++) some = g_or(some, sym_enabled_lit(actions[k].e, (SCtx){actions[k].c, NULL}));
+    sym_enabled_query = 0;
     return g_and(kept, some ^ 1);
 }
 
-/* Whether each ENABLED made since the from'th that the model has false is: where the solver finds a
+/* Whether each ENABLED of a step, or of the query made since the from'th,
+   that the model has false is: where the solver finds a
    step of A from the model's state, with its bindings and constants,
    ENABLED A is tied to every state that step leaves from, and 0 is
    returned. The model is kept. */
 static int sym_enabled_refine(int from) {
     int n = 0, m = nsym_enableds, *pins = NEWN(int, m + 1);   /* -1 where the model has it true */
-    for (int i = from; i < m; i++) {
+    for (int i = 0; i < m; i++) {
         SymEnabled *x = &sym_enableds[i];
         pins[i] = -1;
-        if (lit_true(x->lit)) continue;
+        if ((i < from && x->query) || lit_true(x->lit)) continue;
         int pin = L_TRUE;
         for (int v = 0; v < nvars; v++) pin = g_and(pin, sv_eq(x->at[v], sv_const(sv_model(x->at[v]))));
         for (SEnv *b = x->sc.s; b; b = b->next) if (b->v) pin = g_and(pin, sv_eq(b->v, sv_const(sv_model(b->v))));
@@ -16732,7 +16735,7 @@ static int sym_enabled_refine(int from) {
     int kept = sat.nvars, fine = 1;
     unsigned char *model = NEWN(unsigned char, kept + 1);
     memcpy(model, sat.model, (size_t)kept);
-    for (int i = from; i < m; i++) {
+    for (int i = 0; i < m; i++) {
         SymEnabled *x = &sym_enableds[i];
         if (pins[i] < 0) continue;
         for (int k = 0; k < x->out.n; k++) {
@@ -16749,6 +16752,13 @@ static int sym_enabled_refine(int from) {
     }
     memcpy(sat.model, model, (size_t)kept);
     return fine;
+}
+
+/* Whether the clauses and the assumptions hold together, as sat_solve,
+   with each ENABLED as it is. */
+static int sym_solve(int *assume, int n) {
+    while (sat_solve(assume, n)) if (sym_enabled_refine(nsym_enableds)) return 1;
+    return 0;
 }
 
 /* ---------------------------------------------------------------- symbolic checking */
@@ -16895,9 +16905,9 @@ static int sym_violated(int i, SVal ***st, int depth) {
     sym_next = action ? st[depth] : NULL;
     SCtx sc = {c->ctx, NULL};
     if (p) sc = sym_bind(sc, p, sym_history(st, depth));
-    sym_enabled_ok = 1;
+    sym_enabled_query = 1;
     int l = sym_bool(c->expr, sc, P_NEG) ^ 1;
-    sym_enabled_ok = 0;
+    sym_enabled_query = 0;
     return l;
 }
 
@@ -17025,9 +17035,9 @@ static int sym_refine(Lasso ls) {
 static int sym_lasso_violated(int p, Lasso ls, int kept) {
     if (!ls.k) return 0;
     LassoMemo *memo = NULL;
-    sym_enabled_ok = 1;
+    sym_enabled_query = 1;
     int from = nsym_enableds, n = 0, l = g_and(g_and(kept, ls.back[ls.k - 1]), sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
-    sym_enabled_ok = 0;
+    sym_enabled_query = 0;
     free(memo);
     if (nfairness) l = g_and(l, sym_fair(ls));
     while (sat_solve(&l, 1)) if (sym_refine(ls) && sym_enabled_refine(from)) return 1;
@@ -17154,7 +17164,7 @@ static int symbolic(void) {
         sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
         for (int i = nfair_rest - 1; i >= 0; i--) sym_negated[p] = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), sym_negated[p]);
     }
-    int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sat_solve(NULL, 0), none = stuck, outside = 0;
+    int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sym_solve(NULL, 0), none = stuck, outside = 0;
     int found = 0;   /* the violations reported, before the last one */
     int as_tlc = (nfairness && ntemporal_props) || nconstraints || naction_constraints;   /* TLC's verdict, where Apalache has none */
     int dead = -1, violated = L_FALSE, from = 0;   /* the depth of a deadlock, as TLC finds it; the last violation's literal, and its first ENABLED */
@@ -17194,7 +17204,7 @@ static int symbolic(void) {
             lasso_depth = depth;
         }
         if (bad >= 0 || dead >= 0 || (prop >= 0 && !(as_tlc && (ninvariants || check_deadlock))) || depth == sym_length || !nactions) break;
-        if (!sat_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
+        if (!sym_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
         sat_unit(kept);
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
         enabled[depth] = NEWN(int, nactions);
@@ -17207,7 +17217,7 @@ static int symbolic(void) {
         sym_gen_step = -1;
         picks[depth] = one_hot(nenabled[depth]);
         Branch step = nenabled[depth] ? merge_branches(by, nenabled[depth], picks[depth]) : (Branch){L_FALSE, NULL};
-        if (!sat_solve(&step.guard, 1)) { stuck = 1; break; }
+        if (!sym_solve(&step.guard, 1)) { stuck = 1; break; }
         sat_unit(step.guard);
         st[depth + 1] = step.next;
     }
