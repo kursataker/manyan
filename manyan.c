@@ -16869,10 +16869,10 @@ static int sym_refine(Lasso ls) {
 
 /* Whether a model has the lasso violate property p, fairly; it is left
    as the solver's model. */
-static int sym_lasso_violated(int p, Lasso ls) {
+static int sym_lasso_violated(int p, Lasso ls, int kept) {
     if (!ls.k) return 0;
     LassoMemo *memo = NULL;
-    int n = 0, l = g_and(ls.back[ls.k - 1], sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
+    int n = 0, l = g_and(g_and(kept, ls.back[ls.k - 1]), sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
     free(memo);
     if (nfairness) l = g_and(l, sym_fair(ls));
     while (sat_solve(&l, 1)) if (sym_refine(ls)) return 1;
@@ -16915,6 +16915,23 @@ static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int
     return 1;
 }
 
+/* That st[depth] is in the model, as TLC keeps a state to go on from: it
+   satisfies the constraints, and the step into it the action constraints.
+   TLC checks the invariants of a state outside it, and finds its steps
+   for deadlock, but takes none of them. */
+static int sym_kept(SVal ***st, int depth) {
+    int l = L_TRUE;
+    for (int i = 0; i < nconstraints; i++) {
+        sym_cur = st[depth], sym_next = NULL;
+        l = g_and(l, sym_bool(constraints[i].expr, (SCtx){constraints[i].ctx, NULL}, P_BOTH));
+    }
+    for (int i = 0; depth && i < naction_constraints; i++) {
+        sym_cur = st[depth - 1], sym_next = st[depth];
+        l = g_and(l, sym_bool(action_constraints[i].expr, (SCtx){action_constraints[i].ctx, NULL}, P_BOTH));
+    }
+    return l;
+}
+
 /* That a behavior to st[depth] differs in its views from the one the
    solver found, as Apalache goes on past a violation: the views of each
    state, views[k], made before it was found. */
@@ -16933,8 +16950,8 @@ static int symbolic(void) {
                S(rec->name), loc_str(rec->where));
         return MANYAN_ERROR;
     }
-    if (naction_props || nconstraints || naction_constraints || nimplied_inits) {
-        printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has constraints.\n");
+    if (naction_props || nimplied_inits) {
+        printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has action properties.\n");
         return MANYAN_ERROR;
     }
     if (sym_max_error > 1 && (!view_expr || sym_cinit_name)) {
@@ -16981,7 +16998,7 @@ static int symbolic(void) {
         sym_negated[p] = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
         for (int i = nfair_rest - 1; i >= 0; i--) sym_negated[p] = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), sym_negated[p]);
     }
-    int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sat_solve(NULL, 0), none = stuck;
+    int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sat_solve(NULL, 0), none = stuck, outside = 0;
     int found = 0;   /* the violations reported, before the last one */
     SVal **views = NEWN(SVal *, sym_length + 1);
     for (; !stuck; depth++) {
@@ -17000,11 +17017,14 @@ static int symbolic(void) {
                 sat_unit(sym_other_views(views, depth));
             }
         }
+        int kept = sym_kept(st, depth), as_tlc = nfairness || nconstraints || naction_constraints;   /* TLC's verdict, where Apalache has none */
         for (int p = 0; p < ntemporal_props && bad < 0 && prop < 0; p++) {
-            if (sym_lasso_violated(p, sym_loop(st, depth))) prop = p;
-            else if (nfairness && sym_lasso_violated(p, sym_stutter(st, depth))) prop = p, stutter = 1;
+            if (sym_lasso_violated(p, sym_loop(st, depth), kept)) prop = p;
+            else if (as_tlc && sym_lasso_violated(p, sym_stutter(st, depth), kept)) prop = p, stutter = 1;
         }
         if (bad >= 0 || prop >= 0 || depth == sym_length || !nactions) break;
+        if (!sat_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
+        sat_unit(kept);
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
         enabled[depth] = NEWN(int, nactions);
         sym_gen_step = depth + 1;
@@ -17024,12 +17044,12 @@ static int symbolic(void) {
         handler = NULL;
         return MANYAN_VIOLATION_SAFETY;
     }
-    if (bad < 0 && prop < 0 && !(stuck && check_deadlock)) {
+    if (bad < 0 && prop < 0 && !(stuck && check_deadlock && !outside)) {
         handler = NULL;
         printf("Model checking completed. No error has been found");
         if (none) printf(". No state satisfies the initial predicate.\n");
-        else if (stuck) printf(". No behavior has more than %d steps.\n", depth);
-        else printf(" in behaviors of up to %ld steps.\n", sym_length);
+        else if (stuck && !outside) printf(". No behavior has more than %d steps.\n", depth);
+        else printf(" in behaviors of up to %ld steps.\n", outside ? depth : sym_length);   /* the model's every behavior */
         return MANYAN_OK;
     }
     if (none) {

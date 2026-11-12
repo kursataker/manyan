@@ -194,7 +194,8 @@ value not of its type: a model value is a string, but `p_OF_PROC` a
 up to `n` elements, as in Apalache: the specification is type checked
 first, as `-typecheck` checks it, and each call makes another value.
 
-Not supported yet: `ENABLED` in a property; constraints; functions over an
+Not supported yet: `ENABLED` in a property; action properties and implied
+initial predicates; functions over an
 infinite domain; `Gen` in an operator whose parameters leave its type
 open, and of strings or variants; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.

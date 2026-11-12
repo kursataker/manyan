@@ -61,10 +61,11 @@ so Manyan may check a specification Apalache rejects.
 - Apalache has no fairness: `WF` and `SF` are left for the user to write
   out, and `ENABLED` too. With fairness in the specification, Manyan
   gives TLC's verdict: a fair lasso, which may also stutter forever.
-- Constraints and action constraints are refused. Apalache 0.63.0 reads
-  `CONSTRAINT` and `ACTION_CONSTRAINT` and then ignores them: with
-  `CONSTRAINT x < 2` it reports `x < 3` violated, a state TLC never
-  reaches. Its verdict is not one to give, and TLC's is not yet encoded.
+- Apalache 0.63.0 reads `CONSTRAINT` and `ACTION_CONSTRAINT` and then
+  ignores them: with `CONSTRAINT x < 2` it reports `x < 3` violated, a
+  state TLC never reaches. Manyan gives TLC's verdict: a state outside
+  the constraints, or reached by a step outside the action constraints,
+  has its invariants checked but no successors, and is no deadlock.
 
 ## Other commands
 
