@@ -332,6 +332,16 @@ def sim(engine, tlc, runs, seed):
     return failed
 
 
+def nested(rng, atom, depth):
+    """A random temporal formula of state predicates."""
+    if depth == 0 or rng.random() < 0.25:
+        return f"({atom()})"
+    op = rng.choice(["[]", "<>", "/\\", "\\/", "~>", "=>"])
+    if op in ("[]", "<>"):
+        return op + nested(rng, atom, depth - 1)
+    return f"({nested(rng, atom, depth - 1)} {op} {nested(rng, atom, depth - 1)})"
+
+
 def live_model(rng):
     """A random state graph under random fairness, with a random property."""
     n = rng.randint(2, 5)
@@ -346,7 +356,7 @@ def live_model(rng):
     x, y = f"s \\in {sets(some(0.4))}", f"s \\in {sets(some(0.4))}"
     a = f"s' \\in {sets(some(0.4))}"
     prop = rng.choice([f"<>({x})", f"[]<>({x})", f"<>[]({x})", f"({x}) ~> ({y})", f"[]({x})",
-                       f"[]<><<{a}>>_s", f"<>[][{a}]_s"])
+                       f"[]<><<{a}>>_s", f"<>[][{a}]_s", nested(rng, lambda: f"s \\in {sets(some(0.4))}", 3)])
     return (f"---- MODULE L ----\nVARIABLE s\nSucc == <<{', '.join(sets(x) for x in succ)}>>\n"
             f"Init == s \\in {sets(some(0.5) or {1})}\nNext == s' \\in Succ[s]\n{actions}"
             f"Spec == {spec}\nP == {prop}\n====\n"

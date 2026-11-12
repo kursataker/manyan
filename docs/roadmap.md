@@ -24,12 +24,13 @@ from TLC.
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. Of 900 random graphs
   `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
-  the counterexample one TLC prints on 899. The rest: TLC prunes the
-  search by a property `<>[]P` it checks without a tableau, and places
-  the stuttering step among a state's successors by its fingerprints.
-- Model more of Manyan's algorithms in `tests/tla`, such as the tableau
-  and symmetry, and fuzz what the models cannot reach. The parallel
-  search, the slicing of Init and the search for a fair cycle have models.
+  the counterexample one TLC prints on 896. The rest: TLC checks the
+  conjuncts `[]<>P` and `<>[]P` of a negated property without its
+  tableau and prunes the search by them, and places the stuttering step
+  among a state's successors by its fingerprints.
+- Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
+  fuzz what the models cannot reach. The parallel search, the slicing of
+  Init, the search for a fair cycle and the tableau have models.
 
 ## 2. Fast where TLC is slow
 

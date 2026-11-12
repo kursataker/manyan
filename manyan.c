@@ -14237,8 +14237,9 @@ static void live_back(int from, int entry, List *cyc, List *acts) {
 }
 
 /* Drops each of the first n nodes whose state is the one before it, prev
-   before the first: as TLC, a state is printed once where the lasso only
-   moves between its tableau nodes. */
+   before the first, and the node before the last one of its state: as
+   TLC, a state is printed once where the lasso only moves between its
+   tableau nodes. */
 static void drop_repeats(List *nodes, List *acts, int n, int prev) {
     int k = 0;
     for (int i = 0; i < nodes->n; i++) {
@@ -14248,6 +14249,8 @@ static void drop_repeats(List *nodes, List *acts, int n, int prev) {
         nodes->v[k] = nodes->v[i];
         acts->v[k++] = acts->v[i];
     }
+    if (n < nodes->n && k > 1 && pnodes[nodes->v[k - 1]->u.i].state == pnodes[nodes->v[k - 2]->u.i].state)
+        nodes->v[k - 2] = nodes->v[k - 1], k--;   /* the last kept, with the step into its state */
     nodes->n = acts->n = k;
 }
 

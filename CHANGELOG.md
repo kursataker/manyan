@@ -42,7 +42,15 @@ unreleased:
   properties of random state graphs under weak and strong fairness
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
-  verdicts and 899 counterexamples are TLC's
+  verdicts and 899 counterexamples are TLC's (before nested properties)
+- a counterexample's cycle ends with the step into its first state, as
+  TLC's does; a move between that state's tableau nodes printed it twice,
+  the last labelled `<Initial predicate>`
+- `tests/fuzz.py live` checks nested temporal properties too; of 900 on
+  three seeds, 896 counterexamples are TLC's
+- `tests/tla/Tableau.tla` models the tableau: it accepts exactly the
+  lassos a formula holds on, for the formulas of depth three over two
+  predicates on every lasso of up to three states
 - `[][]A` is `[]A` and `<><>A` is `<>A` in a temporal property, as TLC
   simplifies them: the counterexample to `<>[][]P` went around its cycle
   twice
