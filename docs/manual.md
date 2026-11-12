@@ -313,6 +313,7 @@ make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
 make fuzz              # mutated tests/spec models under the sanitizer build
 make fuzz-oracle       # random expressions, printed by Manyan and by TLC
 make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
+make fuzz-live         # random temporal properties under fairness, by Manyan and by TLC
 make bench             # times Manyan against TLC; writes docs/benchmark.md
 make test-symbolic     # tests/symbolic with -symbolic
 make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
@@ -350,7 +351,9 @@ report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
 `make fuzz-oracle` writes random constant expressions as `ASSUME
 PrintT(e)` and checks that Manyan prints what TLC prints, narrowing a
 difference to one expression. `make fuzz-sim` simulates random tests'
-models with random seeds and depths, with Manyan and with TLC. All three take `RUNS=` (1000) and `SEED=` (1);
+models with random seeds and depths, with Manyan and with TLC. `make
+fuzz-live` checks a random temporal property of a random state graph
+under random weak and strong fairness, with Manyan and with TLC. All four take `RUNS=` (1000) and `SEED=` (1);
 a run with a seed is repeatable. A case any of them finds becomes a test in
 `tests/spec`.
 

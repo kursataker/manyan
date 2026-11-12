@@ -35,6 +35,12 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- a counterexample prints a state once where it moves only between the
+  property's tableau nodes, as TLC does; it printed the state again, as
+  an `<Initial predicate>` or a step to itself
+- `tests/fuzz.py live` (`make fuzz-live`) checks random temporal
+  properties of random state graphs under weak and strong fairness
+  against TLC: 100 of 100 verdicts and 93 counterexamples are TLC's
 - a counterexample under weak fairness whose action is never taken goes
   through a state where it is disabled, as TLC's does; it stuttered at a
   state where it was enabled, a behavior that is not fair

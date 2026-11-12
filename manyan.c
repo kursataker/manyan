@@ -14076,6 +14076,21 @@ static void cycle_to(List *cyc, List *cacts, int *cur, int target) {
     *cur = target;
 }
 
+/* Drops each of the first n nodes whose state is the one before it, prev
+   before the first: as TLC, a state is printed once where the lasso only
+   moves between its tableau nodes. */
+static void drop_repeats(List *nodes, List *acts, int n, int prev) {
+    int k = 0;
+    for (int i = 0; i < nodes->n; i++) {
+        int s = pnodes[nodes->v[i]->u.i].state;
+        if (i < n && s == prev) continue;
+        prev = s;
+        nodes->v[k] = nodes->v[i];
+        acts->v[k++] = acts->v[i];
+    }
+    nodes->n = acts->n = k;
+}
+
 /* Prints a lasso through the accepted component: the shortest path to it,
    then a cycle that meets each eventuality and fairness condition. */
 static void warn_stuttering(void);
@@ -14148,6 +14163,11 @@ static void print_counterexample(int *inits, int ninits) {
         }
     }
     if (!stutter_only) cycle_to(&cyc, &cacts, &cur, entry);
+    drop_repeats(&path, &acts, path.n, -1);
+    if (!stutter_only) {
+        drop_repeats(&cyc, &cacts, cyc.n - 1, pnodes[entry].state);
+        stutter_only = cyc.n == 1;
+    }
     int nlasso = path.n + (stutter_only ? 0 : cyc.n - 1);
     int *lasso = NEWN(int, nlasso + 1);
     for (int i = 0; i < nlasso; i++) lasso[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;

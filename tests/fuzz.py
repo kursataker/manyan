@@ -3,6 +3,7 @@
 usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py diff ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
+       fuzz.py live ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
 build) on each, half of them as random simulations (-simulate or
@@ -11,6 +12,10 @@ sanitizer report.
 
 sim: runs models of tests/spec as random simulations (-simulate or
 -generate), with random seeds and depths, with the engine and with TLC; they must print the same.
+
+live: checks a random temporal property of a random state graph under
+random weak and strong fairness with the engine and with TLC; they must
+print the same.
 
 diff: makes random constant expressions and checks ASSUME PrintT(e) with
 the engine and with TLC; they must print the same. A batch of expressions
@@ -28,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import spec_runner  # noqa: E402
 
+MEMORY = 3000   # MB, for TLC too
 STATUSES = {0, 10, 11, 12, 13, 14, 75, 76, 77, 150, 151, 255}
 STRINGS = ['"a"', '"b"', '"ab"', '""']
 TOKEN = re.compile(r"\\[A-Za-z]+|[A-Za-z_][A-Za-z0-9_]*|\d+|\"[^\"\n]*\"|<<|>>|\|->|==|/\\|\\/|[^\s\w]|\s+")
@@ -317,8 +323,8 @@ def sim(engine, tlc, runs, seed):
         path = rng.choice(models)
         options = [rng.choice(["-simulate", "-generate"]), f"num={rng.randint(1, 5)}", "-depth", str(rng.randint(1, 30)),
                    "-seed", str(rng.randint(0, 999))]
-        ours = spec_runner.run(engine + options, path)
-        theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path)
+        ours = spec_runner.run(engine + options, path, MEMORY)
+        theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
         if ours != theirs:
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
@@ -326,9 +332,45 @@ def sim(engine, tlc, runs, seed):
     return failed
 
 
+def live_model(rng):
+    """A random state graph under random fairness, with a random property."""
+    n = rng.randint(2, 5)
+    sets = lambda xs: "{" + ", ".join(map(str, sorted(xs))) + "}"
+    some = lambda p: {m for m in range(1, n + 1) if rng.random() < p}
+    succ = [some(0.4) for _ in range(n)]
+    actions, spec = "", "Init /\\ [][Next]_s"
+    for i in range(rng.randint(0, 2)):
+        steps = [{k for k in x if rng.random() < 0.5} for x in succ]
+        actions += f"A{i} == s' \\in <<{', '.join(sets(x) for x in steps)}>>[s]\n"
+        spec += f" /\\ {rng.choice('WS')}F_s(A{i})"
+    x, y = f"s \\in {sets(some(0.4))}", f"s \\in {sets(some(0.4))}"
+    prop = rng.choice([f"<>({x})", f"[]<>({x})", f"<>[]({x})", f"({x}) ~> ({y})", f"[]({x})"])
+    return (f"---- MODULE L ----\nVARIABLE s\nSucc == <<{', '.join(sets(x) for x in succ)}>>\n"
+            f"Init == s \\in {sets(some(0.5) or {1})}\nNext == s' \\in Succ[s]\n{actions}"
+            f"Spec == {spec}\nP == {prop}\n====\n"
+            "SPECIFICATION Spec\nPROPERTY P\nCHECK_DEADLOCK FALSE\n")
+
+
+def live(engine, tlc, runs, seed):
+    rng = random.Random(seed)
+    failed = 0
+    for _ in range(runs):
+        model = live_model(rng)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "L.tla"
+            path.write_text(model)
+            ours = spec_runner.run(engine, path, MEMORY)
+            theirs = spec_runner.run(spec_runner.oracle_command(tlc), path, MEMORY)
+        if ours != theirs:
+            failed += 1
+            print(f"DIFF\n{model}--- engine\n{ours}--- TLC\n{theirs}")
+    print(f"{runs - failed}/{runs} liveness checks printed what TLC prints")
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "diff", "sim"])
+    parser.add_argument("mode", choices=["crash", "diff", "sim", "live"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--runs", type=int, default=200)
@@ -339,7 +381,7 @@ def main():
         return 1 if crash(engine, args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
-    return 1 if (sim if args.mode == "sim" else diff)(engine, args.tlc, args.runs, args.seed) else 0
+    return 1 if {"sim": sim, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0
 
 
 if __name__ == "__main__":

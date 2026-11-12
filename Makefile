@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim bench full-bench full-bench-symbolic install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-live bench full-bench full-bench-symbolic install clean
 
 all: manyan
 
@@ -158,6 +158,9 @@ fuzz-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 
 fuzz-sim: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py sim ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
+
+fuzz-live: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fuzz.py live ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)
 
 bench: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 bench/compare.py ./manyan --tlc "$(TLC)"

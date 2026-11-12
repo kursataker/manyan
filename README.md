@@ -160,8 +160,9 @@ Java (they download tla2tools 1.8.0 themselves):
   Malloc on macOS, AddressSanitizer elsewhere).
 - `make fuzz` runs mutated models of the suite under the sanitizers, to
   find crashes; `make fuzz-oracle` compares what `manyan` and TLC print for
-  random expressions, and `make fuzz-sim` for random simulations of the
-  suite's models, to find differences. What they find becomes a test.
+  random expressions, `make fuzz-sim` for random simulations of the
+  suite's models, and `make fuzz-live` for random temporal properties
+  under fairness, to find differences. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
 - `tests/symbolic`: 253 models for `-symbolic`, 217 of them from Apalache's
