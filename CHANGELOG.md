@@ -27,6 +27,8 @@ unreleased:
   once no invariant is violated and no state deadlocks
 - `-symbolic` exits with TLC's 11 for a deadlock, and prints an invariant
   an initial state violates as TLC does
+- `-symbolic` makes `Gen` of strings, uninterpreted types and variants,
+  as Apalache does: a string the specification has or a fresh one
 - `-symbolic -run-dir DIR` writes each counterexample in Apalache's ITF,
   as Apalache's `--run-dir` does: `violation1.itf.json`, ... and
   `violation.itf.json`, each value by its type

@@ -153,7 +153,7 @@ invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
 0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-56 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+58 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -197,11 +197,14 @@ value not of its type: a model value is a string, but `p_OF_PROC` a
 
 `Gen(n)` is any value of its type, with sets, functions and sequences of
 up to `n` elements, as in Apalache: the specification is type checked
-first, as `-typecheck` checks it, and each call makes another value.
+first, as `-typecheck` checks it, and each call makes another value. A
+string, or a value of an uninterpreted type `T`, is one the specification
+has or a fresh one, `FRESHk` or `FRESHk_OF_T`, as Apalache makes them; a
+variant is one of its tags.
 
 Not supported yet: `ENABLED` in an action; functions over an
 infinite domain; `Gen` in an operator whose parameters leave its type
-open, and of strings or variants; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
+open; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.
 
 ## Type checking (experimental)

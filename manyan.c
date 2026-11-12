@@ -4466,6 +4466,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         return;
     case X_STR:
         e->num = intern_n(e->text, e->len);
+        mk_str(e->num);   /* a string the specification has, which Gen may make */
         return;
     case X_NAME:
         resolve_name(e, sc);
@@ -19585,6 +19586,25 @@ static int typecheck(Module *m) {
 
 /* ---------------------------------------------------------------- Gen */
 
+/* A string of sort (-1: Str) that Gen makes, as Apalache makes one: one
+   the specification has made, or a fresh one, FRESHk or FRESHk_OF_SORT. */
+static SVal *gen_atom(int sort) {
+    static int fresh;
+    char name[64];
+    snprintf(name, sizeof name, sort < 0 ? "FRESH%d" : "FRESH%d_OF_%s", ++fresh, sort < 0 ? "" : S(sort));
+    mk_str(intern(name));
+    SVal *r = NULL;
+    for (int i = nstrs - 1; i >= 0; i--) {   /* the fresh one last */
+        if ((!strs[i].value && !strs[i].model) || model_sort(i) != sort) continue;
+        for (int m = 0; m < 2; m++) {
+            if (!(m ? strs[i].model : strs[i].value)) continue;
+            SVal *v = sv_bits(SV_ATOM, bv_const(2 * (int64_t)i + m));
+            r = r ? sv_ite(2 * sat_var(), v, r) : v;
+        }
+    }
+    return r;
+}
+
 /* Apalache's Gen(n): any value of its type, with sets, functions and
    sequences of up to n elements, which the type checker tells. */
 static SVal *gen_of(Type *t, int n, Expr *at) {
@@ -19593,6 +19613,8 @@ static SVal *gen_of(Type *t, int n, Expr *at) {
     switch (t->kind) {
     case TY_BOOL: return sv_bool(2 * sat_var());
     case TY_INT: return sv_bits(SV_INT, bv_fresh());
+    case TY_STR: return gen_atom(-1);
+    case TY_CONST: return gen_atom(t->var);
     case TY_SET:
         r = sv_set(n);
         for (int i = 0; i < n; i++) set_add(r, gen_of(t->args[0], n, at), 2 * sat_var());
@@ -19622,6 +19644,14 @@ static SVal *gen_of(Type *t, int n, Expr *at) {
         if (row->kind != TY_ROW || (row->tail && ty_zonk(row->tail)->kind != TY_ROW)) break;
         r = sv_fcn(row->n, 1);
         for (int i = 0; i < row->n; i++) fcn_add(r, sv_const(mk_str(row->keys[i])), gen_of(row->args[i], n, at), L_TRUE);
+        return r;
+    }
+    case TY_VARIANT: {   /* a record of one of its tags */
+        Type *row = ty_zonk(t->args[0]);
+        if (row->kind != TY_ROW || row->tail || !row->n) break;
+        int *tag = one_hot(row->n);
+        r = sv_fcn(row->n, 1);
+        for (int i = 0; i < row->n; i++) fcn_add(r, sv_const(mk_str(row->keys[i])), gen_of(row->args[i], n, at), tag[i]);
         return r;
     }
     default: break;
