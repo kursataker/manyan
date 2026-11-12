@@ -101,6 +101,8 @@ the type each call instantiates.
 Manyan prints TLC's format and exit statuses: a deadlock exits with 11
 and a temporal property's violation with 13, where Apalache exits with
 12 for every violation. With `-run-dir`, Manyan writes the counterexamples in ITF as
-Apalache does, but not its `violation*.tla` and `violation*.json`, nor
-Apalache's own variables in a lasso, which ends with ITF's `loop`
-instead. `vars` is in declaration order, where Apalache's is its own.
+Apalache does. By decision it does not write Apalache's `violation*.tla`
+and `violation*.json`, the same trace again in Apalache's own TLA+ and
+JSON forms, nor Apalache's own variables in a lasso, those of its
+tableau, which ends with ITF's `loop` instead. `vars` is in declaration
+order, where Apalache's is its own.
