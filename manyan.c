@@ -1411,7 +1411,7 @@ static Value *enumerate_lazy(Value *s) {
         fp_enter(s->u.l.expr);
         for (int i = 0; i < s->u.l.a->n; i++) {
             Value *t = s->u.l.a->u.set.elems[i];
-            if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
+            if (!is_set(t) || user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
             t = enumerate(t);
             for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
         }
@@ -1495,7 +1495,7 @@ static Value *elements(Value *s) {
     fp_enter(s->u.l.expr);
     for (int i = 0; i < s->u.l.a->n; i++) {
         Value *t = s->u.l.a->u.set.elems[i];
-        if (user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
+        if (!is_set(t) || user_set(t)) fail("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
         t = elements(t);
         for (int j = 0; j < t->n; j++) list_add(&l, t->u.set.elems[j]);
     }
