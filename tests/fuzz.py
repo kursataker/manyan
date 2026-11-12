@@ -344,7 +344,9 @@ def live_model(rng):
         actions += f"A{i} == s' \\in <<{', '.join(sets(x) for x in steps)}>>[s]\n"
         spec += f" /\\ {rng.choice('WS')}F_s(A{i})"
     x, y = f"s \\in {sets(some(0.4))}", f"s \\in {sets(some(0.4))}"
-    prop = rng.choice([f"<>({x})", f"[]<>({x})", f"<>[]({x})", f"({x}) ~> ({y})", f"[]({x})"])
+    a = f"s' \\in {sets(some(0.4))}"
+    prop = rng.choice([f"<>({x})", f"[]<>({x})", f"<>[]({x})", f"({x}) ~> ({y})", f"[]({x})",
+                       f"[]<><<{a}>>_s", f"<>[][{a}]_s"])
     return (f"---- MODULE L ----\nVARIABLE s\nSucc == <<{', '.join(sets(x) for x in succ)}>>\n"
             f"Init == s \\in {sets(some(0.5) or {1})}\nNext == s' \\in Succ[s]\n{actions}"
             f"Spec == {spec}\nP == {prop}\n====\n"

@@ -14116,8 +14116,17 @@ static void print_violated(Value ***ls, int n, int cyc) {
    []<>P, P holds in its state. */
 static int eventuality_met(int e, int p) {
     TF *a = eventualities[e]->a;
+    if (a->op == TF_ATOM && a->action) return 0;   /* met on an edge: eventuality_step */
     return !(tnodes[pnodes[p].tnode].pending & (1ULL << (e & 63))) ||
            (!tf_tableau(live_negated) && a->op == TF_ATOM && !a->action && atom_holds_on(a, pnodes[p].state, NULL));
+}
+
+/* Whether the edge k of the node p meets the eventuality e of an action,
+   which TLC checks on the edges of the cycle, as []<>A. */
+static int eventuality_step(int e, int p, int k) {
+    TF *a = eventualities[e]->a;
+    int w = pnodes[p].succ[k];
+    return a->op == TF_ATOM && a->action && atom_holds_on(a, pnodes[p].state, state_values(pnodes[w].state));
 }
 
 /* The cycle as TLC's printTrace starts it (LiveWorker.dfsPostFix): a walk
@@ -14154,6 +14163,8 @@ static int live_walk(int entry, List *cyc, List *acts) {
                 int w = pnodes[cur].succ[k];
                 if (!where[w]) continue;
                 next = w, next_act = pnodes[cur].act[k];
+                for (int e = 0; e < neventualities; e++)
+                    if (!met[e] && eventuality_step(e, cur, k)) met[e] = 1, cnt--;
                 for (int f = 0; f < nfairs; f++)
                     if (!met[neventualities + f] && fair_edge(f, cur, k)) met[neventualities + f] = 1, cnt--;
                 if (cnt < cnt1) to = w, to_act = next_act, reset = 1;

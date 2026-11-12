@@ -43,6 +43,9 @@ unreleased:
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
   verdicts and 899 counterexamples are TLC's
+- the counterexample to `<>[][A]_v` takes a step that is not `A`, as
+  TLC's does; it could stutter, a behavior that satisfies the property,
+  and named no property violated
 - the counterexample to a property under strong fairness goes through a
   component TLC's search finds first: TLC checks SF_v(A) as A eventually
   never enabled, then as A taken infinitely often, so it stutters where A
