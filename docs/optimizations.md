@@ -56,6 +56,7 @@ In the order they were made.
 | A declaration read outside an instance skips the instance and ENABLED checks (a separate noinline function); a stored word under 64 writes one byte inline; `gen` does not expand a constant call | against 0.6.0's bench regressions: counters 2549 → 2510 M cycles, symmetry 621 → 606, log 173 → 165 |
 | Workers compute the initial states: `Init`'s first choices split it into slices, numbered as one process takes them; each worker computes a batch of slices, skipping the others' alternatives, and the search merges them in order through the claims a level uses | Examples' MCBakery (4 workers) 1.33 → 0.73, its initial states 1.06 → 0.42 |
 | A temporal property's action atoms are kept for each edge of the state graph, not evaluated again for each tableau node and each pass over the product | Examples' AllocatorImplementation 1.34 → 0.99 (1 worker), 1.11 → 0.76 (4); its atoms were evaluated 32 times an edge |
+| With workers, a property's action atoms are evaluated on every edge in parallel before its check; one that fails, prints or draws is left to the check. Not for a property of state atoms alone: forking and decoding each state costs more than the check spends on them | Examples' AllocatorImplementation 0.80 → 0.65 (4 workers); the quick bench's liveness, ten properties of state atoms, 0.16 → 0.24 before that exception |
 | The scratch arena takes regions through the whole search, and a filter's test is one; a region keeps one chunk it drops for the next | Examples' MCInnerSerial: over 4 GB → 0.47 GB, 310 s (TLC 354 s); closure 0.51 → 0.53 s (plain -O2), the rest flat |
 
 ## Tried and dropped
@@ -98,9 +99,7 @@ ones with a large serial part, not a slow evaluator.
   and the fairness `ENABLED`s of `Sched!Liveness` on each state. TLC
   evaluates these as each worker expands a state (`LiveCheck.addNextState`).
   Kept for each edge, the atoms are now evaluated once an edge, not 32
-  times (above): 0.76 s with 4 workers, about half of it still the check
-  after the search, one evaluation of `[Sched!Next]_vars` an edge and the
-  115 fairness conditions on each state and edge. The next step is to
-  have the workers evaluate them on the edges they generate and keep the
-  bits beside the edges; the SCC search then only reads them.
+  times (above), and the workers evaluate them before the check, each
+  on the edges of its states: 0.80 → 0.65 s with 4 workers. Left in one
+  process are the 115 fairness conditions on each state and edge.
   `subst_index` (above) took 3.6% off the evaluation itself.

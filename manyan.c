@@ -10704,13 +10704,14 @@ static int expand_state(int idx) {
 typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
 enum { NEW = -1, CONSTRAINED = -2 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
+enum { EXPAND, INIT, ATOMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms */
 typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
 enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
 typedef struct {
     atomic_int next;          /* the next batch to take */
-    int lo, hi, nbatches;     /* the level, or Init's slices */
-    int init, per;            /* slicing Init: the slices of a batch */
+    int lo, hi, nbatches;     /* the level, Init's slices or the states for liveness */
+    int job, per;             /* what of them a batch of per is */
     atomic_int starved;       /* a worker found the claim table full */
     FpSlot *fp_table;         /* the fingerprint set as the level starts */
     int fp_size;
@@ -10904,6 +10905,8 @@ static void worker_expand(int idx) {
     arena_reset(&scratch_arena);
 }
 
+static void worker_atoms(int lo, int hi);
+
 /* Init's slices [lo, hi): a header for each, then its states. */
 static void worker_init(int lo, int hi) {
     w_slice = lo - 1;
@@ -10944,9 +10947,9 @@ static int expand_batch(void) {
     }
     batches[b].worker = w_id;
     batches[b].off = w_n;
-    int per = control->init ? control->per : BATCH;
-    int lo = control->lo + b * per, hi = lo + per < control->hi ? lo + per : control->hi;
-    if (control->init) worker_init(lo, hi);
+    int lo = control->lo + b * control->per, hi = lo + control->per < control->hi ? lo + control->per : control->hi;
+    if (control->job == INIT) worker_init(lo, hi);
+    else if (control->job == ATOMS) worker_atoms(lo, hi);
     else for (int idx = lo; idx < hi; idx++) worker_expand(idx);
     atomic_store(&batches[b].done, 1);
     return 1;
@@ -11042,17 +11045,18 @@ static void merge_state(int idx, const Found *f, int nfound) {
 
 static int merge_level(int lo, int hi);
 static int merge_init(int lo, int hi);
+static int merge_atoms(void);
 
 /* The workers take [lo, hi), states of a level or Init's slices, in
    batches of per, with room for n claims; the search merges them. */
-static int run_level(int lo, int hi, int per, size_t n, int init) {
+static int run_level(int lo, int hi, int per, size_t n, int job) {
     /* Workers know the strings there were when they started; states may
        now hold newer ones. */
     if (workers_running && nstrs != forked_strs) stop_workers();
     if (!workers_running) start_workers();
     control->lo = lo;
     control->hi = hi;
-    control->init = init;
+    control->job = job;
     control->per = per;
     control->nbatches = (hi - lo + per - 1) / per;
     control->fp_table = fp_table;
@@ -11068,19 +11072,19 @@ static int run_level(int lo, int hi, int per, size_t n, int init) {
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
-    int r = init ? merge_init(lo, hi) : merge_level(lo, hi);
+    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nworkers - 1; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
-    control->init = 0;
+    control->job = EXPAND;
     return r;
 }
 
 static int expand_level(int lo, int hi) {
     size_t want = (size_t)(4 * (hi - lo) * (growth > 1 ? growth : 1)), n = 4096;
     while (n < want && n < max_claims) n *= 2;
-    return run_level(lo, hi, BATCH, n, 0);
+    return run_level(lo, hi, BATCH, n, EXPAND);
 }
 
 /* The search expands a batch as the workers do while it waits for one. */
@@ -11136,6 +11140,14 @@ static int merge_init(int lo, int hi) {
         }
     }
     return hi;
+}
+
+/* Waits for the workers to fill the atoms, filling some itself. */
+static int merge_atoms(void) {
+    for (int b = 0; b < control->nbatches; b++)
+        while (!atomic_load(&batches[b].done))
+            if (!steal_batch()) sched_yield();
+    return 0;
 }
 
 /* Init's slices, numbered by the choices of a depth that gives the
@@ -11200,7 +11212,7 @@ static int init_parallel(void) {
     int per = total / (16 * nworkers) > 1 ? total / (16 * nworkers) : 1;
     size_t n = (size_t)1 << 16 < max_claims ? (size_t)1 << 16 : max_claims;
     for (int from = 0; from < total && !violation;) {
-        int stop = run_level(from, total, per, n, 1);
+        int stop = run_level(from, total, per, n, INIT);
         if (stop == total) break;
         if (atomic_load(&control->starved) && n < max_claims) { n = 4 * n < max_claims ? 4 * n : max_claims; from = stop; continue; }
         init_slice(stop);
@@ -13498,8 +13510,11 @@ static void tnode_expand(int i) {
     tnodes[i].nsucc = out.n;
 }
 
-/* Cached values of atoms in states and on edges. */
-static signed char *state_atom_cache;   /* nstates * natoms: 0 unknown, 1 false, 2 true */
+/* The values of the atoms, 0 unknown, 1 false, 2 true: natoms for each
+   state, then from step_atoms[s] natoms for each step of the state graph
+   from s, its edges and s stuttering. Shared: workers fill it. */
+static signed char *atom_cache;
+static size_t atom_cache_size, *step_atoms;
 static Value ***decoded;
 
 static Value **state_values(int s) {
@@ -13540,16 +13555,12 @@ static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
 
 static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_values(to)); }
 
-/* An action atom on the state graph's step e of s, its edge or, past
-   them, s stuttering: per state, natoms for each step, 0 unknown, 1
-   false, 2 true. */
-static signed char **edge_atom_cache;
-static int edge_atom_states;
+static signed char *state_atom(TF *t, int s) { return &atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index]; }
+static signed char *step_atom(TF *t, int s, int e) { return &atom_cache[step_atoms[s] + (size_t)e * (size_t)natoms + (size_t)t->index]; }
 
+/* t on the state graph's step e of s, to the state `to`. */
 static int atom_holds_edge(TF *t, int s, int e, int to) {
-    signed char **row = &edge_atom_cache[s];
-    if (!*row) *row = xcalloc((size_t)(states[s].nedges + 1) * (size_t)natoms, 1);
-    signed char *slot = &(*row)[(size_t)e * (size_t)natoms + (size_t)t->index];
+    signed char *slot = step_atom(t, s, e);
     if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), state_values(to)) ? 2 : 1);
     return (*slot == 2) != t->neg;
 }
@@ -13557,13 +13568,40 @@ static int atom_holds_edge(TF *t, int s, int e, int to) {
 static int atom_holds_on(TF *t, int s, Value **next) {
     int v;
     if (!t->action) {
-        signed char *slot = &state_atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index];
+        signed char *slot = state_atom(t, s);
         if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), NULL) ? 2 : 1);
         v = *slot == 2;
     } else {
         v = holds_in(t->atom, t->c, state_values(s), next);
     }
     return v != t->neg;
+}
+
+static void atom_fill(signed char *slot, TF *t, Value **cur, Value **next) {
+    if (*slot) return;
+    EvalState saved = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) *slot = (signed char)(holds_in(t->atom, t->c, cur, next) ? 2 : 1);
+    eval_restore(saved);
+}
+
+/* A worker fills the cache with the action atoms of the steps from the states
+   [lo, hi); one that fails, prints or draws it leaves to the search. */
+static void worker_atoms(int lo, int hi) {
+    Arena *saved = arena;
+    arena = &scratch_arena;
+    for (int s = lo; s < hi; s++) {
+        StateRec *r = &states[s];
+        Value **cur = decode_state(s);
+        for (int e = 0; e <= r->nedges; e++) {
+            Value **next = e < r->nedges ? decode_state(r->edges[2 * e]) : cur;
+            for (int i = 0; i < natoms; i++)
+                if (atoms[i]->action) atom_fill(step_atom(atoms[i], s, e), atoms[i], cur, next);
+        }
+        arena_reset(&scratch_arena);
+    }
+    arena = saved;
 }
 
 /* Under symmetry or a view a state's successor is kept as the state found
@@ -14220,10 +14258,19 @@ static int live_roots(TF *negated, int **roots) {
     return n;
 }
 
+static int has_actions(void) {
+    for (int i = 0; i < natoms; i++) if (atoms[i]->action) return 1;
+    return 0;
+}
+
 static int check_property(TF *negated) {
     live_negated = negated;
     int *r, n = live_roots(negated, &r);
     if (sim_n && tf_tableau(negated)) sim_product();
+    else if (nworkers > 1 && !nsymmetry && !view_expr && has_actions()) {
+        stop_workers();   /* to fork with this property's atoms */
+        run_level(0, nstates, BATCH, 0, ATOMS);
+    }
     arena_reset(&search_arena);
     if (scc_search(r, n, 0) >= 0) {
         print_counterexample(r, n);
@@ -14424,11 +14471,12 @@ static TF *live_setup(int p) {
     pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
-    free(state_atom_cache);
-    state_atom_cache = xcalloc((size_t)nstates * (size_t)(natoms + 1), 1);
-    for (int s = 0; s < edge_atom_states; s++) free(edge_atom_cache[s]);
-    free(edge_atom_cache);
-    edge_atom_cache = xcalloc((size_t)(edge_atom_states = nstates), sizeof(signed char *));
+    size_t n = (size_t)nstates * (size_t)natoms;
+    free(step_atoms);
+    step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
+    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(states[s].nedges + 1) * (size_t)natoms; }
+    if (atom_cache) munmap(atom_cache, atom_cache_size);
+    atom_cache = shared(atom_cache_size = n + 1);
     return live_negated = neg;
 }
 

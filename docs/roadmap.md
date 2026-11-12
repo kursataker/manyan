@@ -62,10 +62,9 @@ in [fullbench](fullbench.md).
    0.6.1, and the 2–4% that the search's regions cost closure in 0.7.0.
 2. **The serial part left with workers**
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
-   evaluate a property's actions and `ENABLED`s on the edges as the
-   workers expand states, not after the search in one process
-   (AllocatorImplementation). The initial states are computed in parallel
-   already (MCBakery).
+   evaluate a property's fairness on the states and edges in parallel,
+   not in one process (AllocatorImplementation). The initial states and
+   a property's actions are computed in parallel already.
 
 ## What stays
 
