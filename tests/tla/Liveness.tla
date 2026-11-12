@@ -11,10 +11,10 @@
    goes on in the components of its nodes where the action is disabled.
 
    There is such a component exactly when the graph has a fair cycle that
-   fulfils the eventuality, and the cycle Manyan prints in one is fair: it
-   goes through a step of each action that has one in the component, and
-   through a node where the action is disabled for each weak fairness
-   condition that has none. *)
+   fulfils the eventuality, and the cycle Manyan prints in one is fair
+   (live_walk): it takes, for each weak fairness condition, a step of the
+   action or an edge from a node where it is disabled, and for each strong
+   one a step if the component has one. *)
 EXTENDS Integers, Sequences
 
 CONSTANT Graphs   \* [succ, init, done, fairs]: succ[n] are n's successors, done the
@@ -57,10 +57,8 @@ FairCycle(C) == /\ C # {}
                 /\ C \cap g.done # {}
                 /\ \A i \in 1..Len(g.fairs) : Met(C, g.fairs[i])
 
-(* What print_counterexample's cycle goes through in A for the condition f. *)
-Route(A, f) == IF Step(A, f) THEN "step"
-               ELSE IF ~f.strong /\ ~(A \subseteq f.enabled) THEN "disabled"
-               ELSE "nothing"
+(* What live_walk's cycle takes in A for the condition f. *)
+Route(A, f) == IF Step(A, f) \/ (~f.strong /\ ~(A \subseteq f.enabled)) THEN "edge" ELSE "nothing"
 
 Init == g \in Graphs
 Next == UNCHANGED vars
