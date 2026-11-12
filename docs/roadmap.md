@@ -22,11 +22,11 @@ from TLC.
   that stops early is TLC's threads' timing.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
-- Give TLC's counterexample to a temporal property. The verdict is TLC's
-  on every random graph `tests/fuzz.py live` makes, the counterexample
-  one TLC prints on 287 of 300. Of several fair lassos TLC prints the
-  first its search by possible error models completes, in an order its
-  random fingerprints set; Manyan does not follow that search yet.
+- Give TLC's counterexample to a temporal property. Of 900 random graphs
+  `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
+  the counterexample one TLC prints on 899. The rest: TLC prunes the
+  search by a property `<>[]P` it checks without a tableau, and places
+  the stuttering step among a state's successors by its fingerprints.
 - Model more of Manyan's algorithms in `tests/tla`, such as the tableau
   and symmetry, and fuzz what the models cannot reach. The parallel
   search, the slicing of Init and the search for a fair cycle have models.

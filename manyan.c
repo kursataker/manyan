@@ -13715,10 +13715,11 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
     static int *found, cap;   /* (successor, action) pairs */
     int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == states[s].edges;
     tnode_expand(t);
-    for (int e = 0; e < n + stutter; e++) {
+    for (int i = 0; i < n + stutter; i++) {
+        int e = stutter ? (i + n) % (n + 1) : i;   /* stuttering, edge n, first: TLC's order */
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, graph ? e : -1, target)) continue;
-        for (int k = 0; k < tnodes[t].nsucc; k++) {
+        for (int k = tnodes[t].nsucc - 1; k >= 0; k--) {   /* in TLC's order */
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
             if (2 * m + 2 > cap) found = xrealloc(found, sizeof(int) * (size_t)(cap = 2 * cap + 16));
@@ -13866,6 +13867,30 @@ static void grow_stacks(int **stack, int **cstack, int **cedge, int *cap) {
     *cedge = search_ints(*cap, *cedge, was);
 }
 
+/* TLC's possible error model the search is in, to choose the
+   counterexample (pem_search): for each strong fairness condition,
+   whether it is to hold as its action is eventually never enabled, else as
+   it is taken infinitely often; NULL in the search for the verdict. */
+static char *pem_off, *pem_blocked;   /* blocked: by node, 1 where such an action is enabled, 2 where none */
+static int npem_blocked;
+
+/* How many of v's successors the search follows: none where an action
+   the error model has never enabled is enabled. */
+static int pem_succs(int v) {
+    if (!pem_off) return pnodes[v].nsucc;
+    if (v >= npem_blocked) {
+        pem_blocked = xrealloc(pem_blocked, (size_t)npnodes);
+        memset(pem_blocked + npem_blocked, 0, (size_t)(npnodes - npem_blocked));
+        npem_blocked = npnodes;
+    }
+    if (!pem_blocked[v]) {
+        pem_blocked[v] = 2;
+        for (int f = 0; f < nfairs && pem_blocked[v] == 2; f++)
+            if (pem_off[f] && fair_enabled(&fairs[f], pnodes[v].state)) pem_blocked[v] = 1;
+    }
+    return pem_blocked[v] == 1 ? 0 : pnodes[v].nsucc;
+}
+
 static int scc_search(int *roots, int nroots, int mark) {
     int index = 0, found = -1, sp = 0, cap = 0;
     int *stack = NULL, *cstack = NULL, *cedge = NULL;
@@ -13882,8 +13907,9 @@ static int scc_search(int *roots, int nroots, int mark) {
             int v = cstack[cp - 1];
             if (!pnodes[v].succ) pnode_successors(v);
             grow_stacks(&stack, &cstack, &cedge, &cap);
-            if (cedge[cp - 1] < pnodes[v].nsucc) {
-                int w = pnodes[v].succ[cedge[cp - 1]++];
+            int ns = pem_succs(v);
+            if (cedge[cp - 1] < ns) {
+                int w = pnodes[v].succ[ns - 1 - cedge[cp - 1]++];   /* the last first, as TLC's stack */
                 if (pnodes[w].mark != mark) continue;
                 if (pnodes[w].index < 0) {
                     pnodes[w].index = pnodes[w].low = index++;
@@ -13921,11 +13947,21 @@ static int in_set(int *nodes, int n, int x) {
 static int *accepted;   /* the accepted component */
 static int naccepted;
 
+static int tf_tableau(TF *f);
+static TF *live_negated;   /* the negated property being checked */
+
+/* Whether the edge k of the node p meets the fairness condition f: a
+   step of its action, or for weak fairness one where it is disabled. */
+static int fair_edge(int f, int p, int k) {
+    int to = pnodes[p].act[k] == STUTTER ? STUTTER : pnodes[pnodes[p].succ[k]].state;
+    return fair_step(&fairs[f], pnodes[p].state, to) || (!fairs[f].strong && !fair_enabled(&fairs[f], pnodes[p].state));
+}
+
 static int accept_component(int *nodes, int n) {
     /* A component must have an edge inside it. */
     int internal = 0;
     for (int i = 0; i < n && !internal; i++)
-        for (int k = 0; k < pnodes[nodes[i]].nsucc && !internal; k++) internal = in_set(nodes, n, pnodes[nodes[i]].succ[k]);
+        for (int k = 0; k < pem_succs(nodes[i]) && !internal; k++) internal = in_set(nodes, n, pnodes[nodes[i]].succ[k]);
     if (!internal) return -1;
     for (int e = 0; e < neventualities; e++) {
         int ok = 0;
@@ -13934,6 +13970,14 @@ static int accept_component(int *nodes, int n) {
     }
     for (int f = 0; f < nfairs; f++) {
         Fair *fr = &fairs[f];
+        if (pem_off) {   /* in TLC's error model, met on an edge inside, unless left to its action never enabled */
+            int ok = pem_off[f];
+            for (int i = 0; i < n && !ok; i++)
+                for (int k = 0; k < pem_succs(nodes[i]) && !ok; k++)
+                    ok = in_set(nodes, n, pnodes[nodes[i]].succ[k]) && fair_edge(f, nodes[i], k);
+            if (!ok) return -1;
+            continue;
+        }
         int step = 0, disabled = 0, enabled_any = 0;
         for (int i = 0; i < n && !step; i++)
             for (int k = 0; k < pnodes[nodes[i]].nsucc && !step; k++)
@@ -14067,11 +14111,13 @@ static void print_violated(Value ***ls, int n, int cyc) {
     }
 }
 
-/* Whether the edge k of the node p meets the fairness condition f: a
-   step of its action, or for weak fairness one where it is disabled. */
-static int fair_edge(int f, int p, int k) {
-    int to = pnodes[p].act[k] == STUTTER ? STUTTER : pnodes[pnodes[p].succ[k]].state;
-    return fair_step(&fairs[f], pnodes[p].state, to) || (!fairs[f].strong && !fair_enabled(&fairs[f], pnodes[p].state));
+/* Whether the node p meets the eventuality e on the walk: its tableau node
+   has it met, or, where TLC checks the property without a tableau, as
+   []<>P, P holds in its state. */
+static int eventuality_met(int e, int p) {
+    TF *a = eventualities[e]->a;
+    return !(tnodes[pnodes[p].tnode].pending & (1ULL << (e & 63))) ||
+           (!tf_tableau(live_negated) && a->op == TF_ATOM && !a->action && atom_holds_on(a, pnodes[p].state, NULL));
 }
 
 /* The cycle as TLC's printTrace starts it (LiveWorker.dfsPostFix): a walk
@@ -14101,7 +14147,7 @@ static int live_walk(int entry, List *cyc, List *acts) {
         int cnt0 = cnt, to = -1, to_act = 0, reset = 0;
         while (to < 0) {
             for (int e = 0; e < neventualities; e++)
-                if (!met[e] && !(tnodes[pnodes[cur].tnode].pending & (1ULL << (e & 63)))) met[e] = 1, cnt--;
+                if (!met[e] && eventuality_met(e, cur)) met[e] = 1, cnt--;
             if (cnt <= 0) break;
             int next = -1, next_act = 0, unseen = -1, unseen_act = 0, cnt1 = cnt;
             for (int k = 0; k < pnodes[cur].nsucc && to < 0; k++) {
@@ -14193,26 +14239,7 @@ static void drop_repeats(List *nodes, List *acts, int n, int prev) {
 static void warn_stuttering(void);
 static void print_counterexample(int *inits, int ninits) {
     List path = {0}, acts = {0};
-    /* entry: the accepted node nearest an initial node */
-    int entry = -1;
-    {
-        int *prev = xmalloc(sizeof(int) * (size_t)npnodes);
-        int *queue = xmalloc(sizeof(int) * (size_t)npnodes);
-        for (int i = 0; i < npnodes; i++) prev[i] = -2;
-        int qh = 0, qt = 0;
-        for (int i = 0; i < ninits; i++) if (prev[inits[i]] == -2) { prev[inits[i]] = -1; queue[qt++] = inits[i]; }
-        while (qh < qt && entry < 0) {
-            int v = queue[qh++];
-            if (in_set(accepted, naccepted, v)) { entry = v; break; }
-            for (int k = 0; k < pnodes[v].nsucc; k++) {
-                int w = pnodes[v].succ[k];
-                if (prev[w] != -2) continue;
-                prev[w] = v;
-                queue[qt++] = w;
-            }
-        }
-        free(prev); free(queue);
-    }
+    int entry = accepted[0];   /* as TLC, the root of the component in the search */
     product_path(inits, ninits, entry, NULL, 0, &path, &acts);
     List cyc = {0}, cacts = {0};
     int cur = live_walk(entry, &cyc, &cacts);
@@ -14267,8 +14294,6 @@ static int tf_tableau(TF *f) {
     default: return 0;
     }
 }
-
-static TF *live_negated;   /* the negated property being checked */
 
 /* Whether f has a temporal operator, or else an action. */
 static int tf_has(TF *f, int temporal) {
@@ -14339,6 +14364,38 @@ static int live_roots(TF *negated, int **roots) {
     return n;
 }
 
+/* Chooses the component a counterexample goes through as TLC does when
+   there is strong fairness: TLC checks SF_v(A), <>[]~ENABLED <<A>>_v \/
+   []<><<A>>_v, as each of its disjuncts in turn, and prints a component
+   of the first of these error models that has one. */
+static void pem_search(int *roots, int nroots) {
+    int strong[10], k = 0;
+    for (int f = 0; f < nfairs; f++)
+        if (fairs[f].strong) {
+            if (k == 10) return;   /* 1024 error models: keep the verdict's */
+            strong[k++] = f;
+        }
+    if (!k) return;
+    for (int p = 0; p < npnodes; p++)
+        if (!pnodes[p].succ) pnode_successors(p);
+    int nall = nroots + npnodes, *all = xmalloc(sizeof(int) * (size_t)nall);
+    memcpy(all, roots, sizeof(int) * (size_t)nroots);
+    for (int p = 0; p < npnodes; p++) all[nroots + p] = p;
+    int *was = accepted, nwas = naccepted, found = -1;
+    pem_off = xcalloc((size_t)nfairs, 1);
+    for (int m = 0; m < 1 << k && found < 0; m++) {
+        for (int i = 0; i < k; i++) pem_off[strong[i]] = !(m >> (k - 1 - i) & 1);
+        for (int p = 0; p < npnodes; p++) pnodes[p].index = -1, pnodes[p].onstack = 0;
+        npem_blocked = 0;
+        arena_reset(&search_arena);
+        found = scc_search(all, nall, 0);
+    }
+    if (found < 0) accepted = was, naccepted = nwas;
+    else free(was);
+    free(pem_off); free(all);
+    pem_off = NULL;
+}
+
 static int has_actions(void) {
     for (int i = 0; i < natoms; i++) if (atoms[i]->action) return 1;
     return 0;
@@ -14354,6 +14411,7 @@ static int check_property(TF *negated) {
     }
     arena_reset(&search_arena);
     if (scc_search(r, n, 0) >= 0) {
+        pem_search(r, n);
         print_counterexample(r, n);
         return 1;
     }

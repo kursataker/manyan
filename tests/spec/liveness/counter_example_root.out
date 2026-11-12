@@ -1,0 +1,17 @@
+Finished computing initial states: 3 distinct states generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+s = 2
+
+State 2: <Next line 7, col 9 to line 7, col 22 of module counter_example_root>
+s = 1
+
+State 3: Stuttering
+Warning: The stuttering counterexample above may be caused by the absence of a fairness constraint in the behavior specification Spec defined at line 8, col 1 to line 8, col 26 of module counter_example_root. To rule out such counterexamples, conjoin a suitable fairness constraint to Spec (compare Chapter 8, page 87ff of Specifying Systems at https://lamport.azurewebsites.net/tla/book.html).
+(Use the -nowarning option to disable this warning.)
+9 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 13
