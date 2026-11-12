@@ -40,6 +40,10 @@ unreleased:
   state where it was enabled, a behavior that is not fair
 - a temporal property's actions are evaluated once for each edge of the
   state graph: Examples' AllocatorImplementation 1.34 → 0.99 s
+- tests/tla/Liveness.tla models the search for a fair cycle: on every
+  product graph of three nodes, under weak and strong fairness, it finds
+  a component exactly when there is a fair cycle, and the cycle it prints
+  is fair
 - tests/tla/InitSlices.tla models how workers slice Init: every Init of
   choices three deep gives its states in one process's order, sliced to
   each depth, one slice or two at a time
