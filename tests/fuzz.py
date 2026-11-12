@@ -299,11 +299,11 @@ def diff(engine, tlc, runs, seed):
     size = 25
     for b in range(0, runs, size):
         exprs = [Gen(rng).any() for _ in range(min(size, runs - b))]
-        meta = ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
+        meta = ["-metadir", spec_runner.metadir()]
         if batch_output(engine, exprs) == batch_output(tlc_cmd + meta, exprs):
             continue
         for e in exprs:
-            meta = ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
+            meta = ["-metadir", spec_runner.metadir()]
             mine, theirs = batch_output(engine, [e]), batch_output(tlc_cmd + meta, [e])
             if mine != theirs:
                 failed += 1

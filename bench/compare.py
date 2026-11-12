@@ -53,7 +53,7 @@ def main():
     for path in sorted((ROOT / "bench").glob("*.tla")):
         if args.only not in path.stem:
             continue
-        tlc = args.tlc.split() + ["-metadir", tempfile.mkdtemp(prefix="manyan-meta-"), "-workers"]
+        tlc = args.tlc.split() + ["-metadir", spec_runner.metadir(), "-workers"]
         tlc1, reference = measure(tlc + ["1"], path, args.runs)
         tlcn, _ = measure(tlc + [str(cores)], path, args.runs)
         ours1, ours1_out = measure([engine], path, args.runs)

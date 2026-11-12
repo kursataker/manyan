@@ -33,7 +33,7 @@ def check(command, name, directory):
 
 
 def tlc_command(tlc):
-    return tlc.split() + ["-workers", "1", "-metadir", tempfile.mkdtemp(prefix="manyan-meta-")]
+    return tlc.split() + ["-workers", "1", "-metadir", spec_runner.metadir()]
 
 
 def models(engine, tlc):

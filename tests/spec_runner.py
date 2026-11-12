@@ -22,6 +22,7 @@ Each run is killed past --memory MB resident (1000, or 3000 with an
 oracle), and only as many run at once as keep to half the machine's memory.
 """
 import argparse
+import atexit
 import os
 import re
 import shlex
@@ -210,9 +211,15 @@ def run(command, path, memory):
         return normalize(output, directory) + f"exit {code}\n" + dumped(directory)
 
 
-def oracle_command(tlc):
+def metadir():
+    """A fresh directory for TLC's -metadir, removed at exit."""
     meta = tempfile.mkdtemp(prefix="manyan-meta-")
-    return tlc.split() + ["-workers", "1", "-metadir", meta]
+    atexit.register(shutil.rmtree, meta, True)
+    return meta
+
+
+def oracle_command(tlc):
+    return tlc.split() + ["-workers", "1", "-metadir", metadir()]
 
 
 def main():
