@@ -43,6 +43,9 @@ unreleased:
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
   verdicts and 899 counterexamples are TLC's
+- `[][]A` is `[]A` and `<><>A` is `<>A` in a temporal property, as TLC
+  simplifies them: the counterexample to `<>[][]P` went around its cycle
+  twice
 - a temporal property whose negation has more than 64 eventualities
   `<>A` is checked right: their 65th shared the first's mark of being
   deferred, so a fair cycle that fulfils both at different states was

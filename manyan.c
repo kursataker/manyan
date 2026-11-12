@@ -13252,6 +13252,7 @@ static TF *tf_new(int op, TF *a, TF *b) {
         if (a->op == TF_TRUE + TF_FALSE - unit) return a;
         if (b->op == TF_TRUE + TF_FALSE - unit) return b;
     }
+    if ((op == TF_ALWAYS || op == TF_EVENTUALLY) && a->op == op) return a;   /* as TLC simplifies [][]A and <><>A */
     TF *t = NEW(TF);
     t->op = op; t->a = a; t->b = b;
     if (op == TF_EVENTUALLY) {
