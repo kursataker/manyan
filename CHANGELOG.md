@@ -43,8 +43,9 @@ unreleased:
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
   verdicts and 899 counterexamples are TLC's (before nested properties)
-- `{x \in SUBSET S : P}` takes each subset in turn, as TLC does, so `S`
-  may have more than 24 elements: Examples' SpanTreeTest5Nodes, a filter
+- `{x \in SUBSET S : P}` and `{f \in [D -> R] : P}` take each element in
+  turn, as TLC does, keeping only those that pass, so `S` may have more
+  than 24 elements and `[D -> R]` more than 100 million: Examples' SpanTreeTest5Nodes, a filter
   of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
   Manyan 168 s); it failed with an overflow
 - a counterexample's cycle ends with the step into its first state, as

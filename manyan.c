@@ -1249,28 +1249,53 @@ static Value *mk_fcn_from(List *keys, List *vals);
 
 /* All functions from the elements of `dom` (sorted) to elements of `rng`,
    made in the standard order: the last value varies fastest. */
-static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
+/* Calls fn on each function from the nd keys dom to the set rng in the
+   standard order, the last key's value varying fastest, until fn returns
+   nonzero. The function is one value, reused: fn copies it to keep it. */
+static int each_function(Value **dom, int nd, Value *rng, int range, int (*fn)(Value *f, void *data), void *data) {
     rng = enumerate(rng);
+    if (nd && !rng->n) return 0;
+    Value *f = NEW(Value);
+    f->kind = V_FCN;
+    f->n = nd;
+    f->range = range && nd;
+    f->u.fcn.keys = alloc_raw(sizeof(Value *) * (size_t)nd);   /* the copies share them */
+    if (nd) memcpy(f->u.fcn.keys, dom, sizeof(Value *) * (size_t)nd);
+    f->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)nd);
+    int *idx = xcalloc((size_t)nd + 1, sizeof(int)), r = 0;
+    for (;;) {
+        f->u.fcn.hash = 0;
+        f->u.fcn.source = NULL;
+        for (int i = 0; i < nd; i++) f->u.fcn.vals[i] = rng->u.set.elems[idx[i]];
+        if ((r = fn(f, data))) break;
+        int i = nd - 1;
+        for (; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
+        if (i < 0) break;
+    }
+    free(idx);
+    return r;
+}
+
+static Value *fcn_copy(Value *f) {
+    Value *c = NEW(Value);
+    *c = *f;
+    c->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)f->n);
+    if (f->n) memcpy(c->u.fcn.vals, f->u.fcn.vals, sizeof(Value *) * (size_t)f->n);
+    return c;
+}
+
+static int function_keep(Value *f, void *out) { Value *o = out; o->u.set.elems[o->n++] = fcn_copy(f); return 0; }
+
+static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
     int64_t total = 1;
+    Value *r = enumerate(rng);
     for (int i = 0; i < nd; i++) {
-        total *= rng->n;
+        total *= r->n;
         if (total > 100000000) fail("Attempted to enumerate a set of functions with too many elements.");
     }
     Value *out = mk_set((int)total);
-    Value **keys = alloc_raw(sizeof(Value *) * (size_t)nd);   /* the functions share them */
-    if (nd) memcpy(keys, dom, sizeof(Value *) * (size_t)nd);
-    int *idx = xcalloc((size_t)nd + 1, sizeof(int));
-    for (int64_t k = 0; k < total; k++) {
-        Value *f = out->u.set.elems[k] = NEW(Value);
-        f->kind = V_FCN;
-        f->n = nd;
-        f->range = range && nd;
-        f->u.fcn.keys = keys;
-        f->u.fcn.vals = alloc_raw(sizeof(Value *) * (size_t)nd);
-        for (int i = 0; i < nd; i++) f->u.fcn.vals[i] = rng->u.set.elems[idx[i]];
-        for (int i = nd - 1; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
-    }
-    free(idx);
+    out->n = 0;
+    each_function(dom, nd, r, range, function_keep, out);
     return out;
 }
 
@@ -1311,6 +1336,17 @@ static Value **elements_slot(Value *s) {
     }
 }
 
+/* The domain of [D -> R] enumerated, as TLC fails for one it cannot hold
+   as its elements, Nat or Seq(S), or a range it cannot enumerate. */
+static Value *fcnset_domain(Value *s) {
+    if (user_set(s->u.l.a))
+        fail("Attempted to enumerate a set of the form [D -> R],but the domain D:\n%s\ncannot be enumerated.", pretty(s->u.l.a));
+    Value *dom = enumerate(s->u.l.a);
+    if (set_is_infinite(s->u.l.b))
+        fail("Attempted to enumerate a set of the form [D -> R],but the range R:\n%s\ncannot be enumerated.", pretty(s->u.l.b));
+    return dom;
+}
+
 /* Calls fn on each subset of the set base in the standard order: smaller
    subsets first, then those of each size in the order of their elements;
    so nothing to sort; until fn returns nonzero. The subset is one value,
@@ -1348,32 +1384,49 @@ static int subset_keep(Value *sub, void *out) { Value *o = out; o->u.set.elems[o
 
 static Value *filter_member_test(Value *s, Value *v);
 
-/* {x \in SUBSET S : p}, as TLC enumerates it: each subset in turn, given
-   to fn if p holds, never all of them at once. */
-typedef struct { Value *filter; int (*fn)(Value *, void *); void *data; } SubsetFilter;
-static int subset_filter(Value *sub, void *data) {
-    SubsetFilter *f = data;
+/* {x \in S : p} of S SUBSET T or [D -> R], as TLC enumerates it: each
+   element of S in turn, given to fn if p holds, never all at once. What
+   testing one makes is dropped: in its region, or for the permanent
+   arena, which has none, in an arena of its own. */
+typedef struct { Value *filter; int (*fn)(Value *, void *); void *data; Arena *own; } Filter;
+static Value *fcn_copy(Value *f);
+static int filter_one(Value *x, void *data) {
+    Filter *f = data;
+    Arena *saved = arena;
+    if (f->own) arena = f->own;
     Region *r = region_open();
-    Value *holds = filter_member_test(f->filter, sub);
+    Value *holds = filter_member_test(f->filter, x);
     region_close(r);
-    return holds == TRUEV ? f->fn(set_copy(sub), f->data) : 0;
+    if (f->own) arena_reset(f->own), arena = saved;
+    return holds == TRUEV ? f->fn(x->kind == V_SET ? set_copy(x) : fcn_copy(x), f->data) : 0;
 }
 
 static int list_keep(Value *v, void *l) { list_add(l, v); return 0; }
 
 /* Calls fn on each element of the filter s in turn, until it returns
-   nonzero: of SUBSET S, without making them all. */
+   nonzero: of SUBSET T or [D -> R], without making them all. */
 static Value *filter_base(Value *s);
+static int each_function(Value **dom, int nd, Value *rng, int range, int (*fn)(Value *f, void *data), void *data);
 static int each_filtered(Value *s, int (*fn)(Value *, void *), void *data) {
     Value *in = s->u.l.a;
+    Arena own = {0};
+    Filter f = {s, fn, data, arena == &perm_arena ? &own : NULL};
+    int r = 0, streamed = 1;
     if (in->kind == V_LAZY && in->lazy == L_SUBSET && !in->u.l.b && !set_is_infinite(in->u.l.a)) {
-        SubsetFilter f = {s, fn, data};
         Value *base = enumerate(in->u.l.a);
         fp_enter(in->u.l.expr);
-        int r = each_subset(base, subset_filter, &f);
+        r = each_subset(base, filter_one, &f);
         fp_leave(in->u.l.expr);
-        return r;
+    } else if (in->kind == V_LAZY && in->lazy == L_FCNSET && !in->u.l.set) {
+        fp_enter(in->u.l.expr);
+        Value *dom = fcnset_domain(in);
+        r = each_function(dom->u.set.elems, dom->n, in->u.l.b, in->u.l.a->kind == V_INTERVAL, filter_one, &f);
+        fp_leave(in->u.l.expr);
+    } else {
+        streamed = 0;
     }
+    arena_free(&own);
+    if (streamed) return r;
     Value *base = filter_base(s);
     for (int i = 0; i < base->n; i++) {
         int r = filter_member_test(s, base->u.set.elems[i]) == TRUEV ? fn(base->u.set.elems[i], data) : 0;
@@ -1399,13 +1452,7 @@ static Value *enumerate_lazy(Value *s) {
     }
     case L_FCNSET: {
         fp_enter(s->u.l.expr);
-        /* As TLC: a domain it cannot hold as its elements, Nat or Seq(S), is
-           named; another fails as it enumerates it. */
-        if (user_set(s->u.l.a))
-            fail("Attempted to enumerate a set of the form [D -> R],but the domain D:\n%s\ncannot be enumerated.", pretty(s->u.l.a));
-        Value *dom = enumerate(s->u.l.a);
-        if (set_is_infinite(s->u.l.b))
-            fail("Attempted to enumerate a set of the form [D -> R],but the range R:\n%s\ncannot be enumerated.", pretty(s->u.l.b));
+        Value *dom = fcnset_domain(s);
         Value *out = enumerate_functions(dom->u.set.elems, dom->n, s->u.l.b, s->u.l.a->kind == V_INTERVAL);
         fp_leave(s->u.l.expr);
         return out;
