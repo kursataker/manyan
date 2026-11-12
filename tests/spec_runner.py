@@ -8,7 +8,8 @@ normalized output (docs/standards/tla2.md, 11.1) and exit status TLC gives.
 Modules a test uses go in a sibling NAME.files directory. Each test is
 staged in a temporary directory and run as `ENGINE OPTIONS -config
 NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it (which may give
-its own -config; the configuration is also the engine's standard input). The
+its own -config; the configuration is also the engine's standard input, or
+NAME.in where a test has one). The
 oracle does not run a test with an option in ORACLE_SKIPS.
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
@@ -200,9 +201,10 @@ def run(command, path, memory):
         named = options(path)
         config = [] if "-config" in named else ["-config", path.stem + ".cfg"]
         # The configuration is also the engine's standard input, a pipe for
-        # `-config /dev/stdin`.
+        # `-config /dev/stdin`, but for a test that gives its own.
+        given = path.with_suffix(".in")
         _, output, code, killed = guarded(place(command, named) + config + [path.stem], directory, 300, memory,
-                                          (directory / (path.stem + ".cfg")).read_bytes())
+                                          (given if given.exists() else directory / (path.stem + ".cfg")).read_bytes())
         if killed:
             output, code = f"{killed}\n", "killed"
         return normalize(output, directory) + f"exit {code}\n" + dumped(directory)

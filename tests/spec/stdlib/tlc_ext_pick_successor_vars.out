@@ -1,0 +1,25 @@
+Finished computing initial states: 1 distinct state generated.
+Extend behavior of length 1 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+/\ x = 0
+/\ y = 0
+~>
+/\ x = 0
+/\ y = 2
+Extend behavior of length 1 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+/\ y = 2
+
+Extend behavior of length 1 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 7, col 12 to line 7, col 36 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 7, col 12 to line 7, col 36 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 7, col 12 to line 7, col 36 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 7, col 12 to line 7, col 36 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 3 with a "Next" step [<Action line 7, col 12 to line 7, col 36 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Extend behavior of length 3 with a "Next" step [<Action line 8, col 30 to line 8, col 54 of module tlc_ext_pick_successor_vars>]? (Yes/no/explored/states/diff):
+Model checking completed. No error has been found.
+19 states generated, 6 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 0

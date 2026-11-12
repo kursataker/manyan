@@ -10,8 +10,11 @@ says how one is written.
 Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
 Randomization, RealTime, Toolbox, TLCExt and Json are built into `manyan.c`: a
 spec need not supply them, and one it supplies is read in their place. Of
-TLCExt, `PickSuccessor` and `TLCFP` stop the check: they need TLC's
-interaction or its fingerprints.
+TLCExt, `TLCFP` stops the check: it needs TLC's fingerprints.
+`PickSuccessor(e)` asks on standard input, as TLC does, whether to take
+each step to a state not yet seen where `e` is false: yes (or an empty
+line), no, explored (taken, but not expanded), or print the two states or
+what changes.
 
 ## CommunityModules
 

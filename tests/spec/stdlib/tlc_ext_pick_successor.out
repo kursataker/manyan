@@ -1,0 +1,16 @@
+Finished computing initial states: 1 distinct state generated.
+Extend behavior of length 1 with a "B" step [<Action line 8, col 6 to line 8, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "B" step [<Action line 8, col 6 to line 8, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+x = 1
+~>
+x = 3
+Extend behavior of length 2 with a "B" step [<Action line 8, col 6 to line 8, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+x = 3
+
+Extend behavior of length 2 with a "B" step [<Action line 8, col 6 to line 8, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "A" step [<Action line 7, col 6 to line 7, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+Extend behavior of length 2 with a "B" step [<Action line 8, col 6 to line 8, col 15 of module tlc_ext_pick_successor>]? (Yes/no/explored/states/diff):
+Model checking completed. No error has been found.
+7 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 0

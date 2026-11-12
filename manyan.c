@@ -7864,7 +7864,8 @@ static Value *counter_example(void);
 static Value *counter_trace(Value *ce);
 NATIVE(n_counterexample) { UNUSED; return counter_example(); }
 NATIVE(n_totrace) { UNUSED; return counter_trace(a[0]); }
-UNSUPPORTED(n_picksuccessor, "PickSuccessor")
+NATIVE(n_picksuccessor);   /* after the search */
+static int npicked_explored;
 UNSUPPORTED(n_tlcfp, "TLCFP")
 
 /* TLCDefer(e): TRUE. A simulation evaluates e once it picks the successor
@@ -7975,7 +7976,7 @@ static const struct { const char *module, *name; Native fn; const char *ret, *me
     {"TLCExt", "CounterExample", n_counterexample, J_V, "error(" J_EVAL ")"},
     {"TLCExt", "ToTrace", n_totrace, J_V, "lassoOrdinal(" J_V ")"},
     {"TLCExt", "TLCDefer", n_tlcdefer, J_V, "tlcDefer(" J_EVAL ")"},
-    {"TLCExt", "PickSuccessor", n_picksuccessor, J_V, "pickSuccessor(" J_EVAL ")"},
+    {"TLCExt", "PickSuccessor", n_picksuccessor, "synchronized " J_V, "pickSuccessor(" J_EVAL ")"},
     {"TLCExt", "TLCFP", n_tlcfp, J_V, "tlcFingerprint(" J_V ")"},
     {"TLCExt", "TLCEvalDefinition", n_tlcevaldefinition, J_V, "tlcDefByName(" J_EVAL ")"},
     {"TLC", "Print", n_print, J_V, "Print(" J_V "," J_V ")"},
@@ -9948,7 +9949,7 @@ static int reported_trace(int s1, Value **s2, int action) {
 }
 
 static void print_counts(int queued) {
-    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates, queued);
+    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates + npicked_explored, queued);
     printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
     fflush(stdout);
 }
@@ -10173,6 +10174,66 @@ static int init_emit(void) {
     return violation != 0;
 }
 
+/* PickSuccessor(e): TRUE where e is, else the user's answer on standard
+   input, as TLC asks for it, of each step whose successor is not yet
+   seen: yes (or an empty line), no, explored (yes, but go no further from
+   it: seen, as in TLC's set of fingerprints), or show the states or what
+   changes. Of a state or a step not yet complete, TRUE. */
+static uint64_t *picked_explored;
+static int picked_seen(uint64_t fp) {
+    for (int i = 0; i < npicked_explored; i++) if (picked_explored[i] == fp) return 1;
+    return 0;
+}
+NATIVE(n_picksuccessor) {
+    UNUSED;
+    if (a) return TRUEV;
+    if (in_worker) worker_cannot();
+    int complete = next_state != NULL;
+    for (int i = 0; complete && i < nvars; i++) complete = next_state[i] != NULL;
+    uint64_t fp = complete && !simulating ? fingerprint(next_state) : 0;
+    if (complete && !simulating && (fp_find(fp) >= 0 || picked_seen(fp))) return TRUEV;   /* in the model already */
+    Value *g = eval(call->args[0], c);
+    if (g->kind != V_BOOL)
+        fail("In evaluating TLCExt!PickSuccessor, a non-boolean expression (%s) was used as the condition of an IF.\n%s",
+             kind_string(g), node_str(call->args[0]));
+    if (g == TRUEV || !complete) return TRUEV;
+    char *line = NULL;
+    size_t cap = 0;
+    for (;;) {
+        printf("Extend behavior of length %ld with a \"%s\" step [<Action %s>]? (Yes/no/explored/states/diff):\n",
+               (long)cur_level, S(actions[cur_action].name), loc_str(actions[cur_action].e));
+        fflush(stdout);
+        ssize_t n = getline(&line, &cap, stdin);
+        if (n < 0) { free(line); fail("No line found"); }   /* Java's Scanner at the end of the input */
+        if (n && line[n - 1] == '\n') line[--n] = 0;
+        int blank = 1;
+        for (ssize_t i = 0; i < n; i++) blank &= isspace((unsigned char)line[i]) != 0;
+        char first = (char)tolower((unsigned char)line[0]);
+        if (blank || first == 'y') break;
+        if (line[0] == 'n') { free(line); return FALSEV; }
+        Buf b = {0}, t = {0};
+        if (line[0] == 's') {
+            state_text(&b, cur_state), state_text(&t, next_state);
+            while (b.n && b.s[b.n - 1] == '\n') b.s[--b.n] = 0;
+            while (t.n && t.s[t.n - 1] == '\n') t.s[--t.n] = 0;
+            printf("%s\n~>\n%s\n", b.s, t.s);
+        } else if (line[0] == 'd') {
+            for (int i = 0; i < nvars; i++)
+                if (!veq(cur_state[i], next_state[i])) buf_printf(&b, "%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), pretty(next_state[i]));
+            printf("%s\n", b.s ? b.s : "");
+        } else if (line[0] == 'e') {
+            if (simulating) printf("Marking a state explored is unsupported by the current TLC mode. Is TLC running in simulation mode?\n");
+            else {
+                picked_explored = xrealloc(picked_explored, sizeof *picked_explored * (size_t)(npicked_explored + 1));
+                picked_explored[npicked_explored++] = fp;
+                break;
+            }
+        }
+        free(b.s), free(t.s);
+    }
+    free(line);
+    return TRUEV;
+}
 /* Whether the state a violation reports was new: as TLC, it is not queued. */
 static int violation_fresh;
 
@@ -10224,6 +10285,7 @@ static int next_emit(void) {
     uint64_t fp = fingerprint(st);
     fingerprinting = 0;
     int found = fp_find(fp);
+    if (found < 0 && npicked_explored && picked_seen(fp)) return action_violated(st);   /* seen, as PickSuccessor marked it */
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
     if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
     violation_fresh = found < 0;
