@@ -14067,6 +14067,15 @@ static void print_violated(Value ***ls, int n, int cyc) {
     }
 }
 
+/* Extends the cycle from *cur to the node target, within the accepted component. */
+static void cycle_to(List *cyc, List *cacts, int *cur, int target) {
+    if (target == *cur) return;
+    List p = {0}, a = {0};
+    product_path(cur, 1, target, accepted, naccepted, &p, &a);
+    for (int i = 1; i < p.n; i++) { list_add(cyc, p.v[i]); list_add(cacts, a.v[i]); }
+    *cur = target;
+}
+
 /* Prints a lasso through the accepted component: the shortest path to it,
    then a cycle that meets each eventuality and fairness condition. */
 static void warn_stuttering(void);
@@ -14100,12 +14109,7 @@ static void print_counterexample(int *inits, int ninits) {
         int target = -1;
         for (int i = 0; i < naccepted && target < 0; i++)
             if (!(tnodes[pnodes[accepted[i]].tnode].pending & (1ULL << (e & 63)))) target = accepted[i];
-        if (target >= 0 && target != cur) {
-            List p = {0}, a = {0};
-            product_path(&cur, 1, target, accepted, naccepted, &p, &a);
-            for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
-            cur = target;
-        }
+        if (target >= 0) cycle_to(&cyc, &cacts, &cur, target);
     }
     for (int f = 0; f < nfairs; f++) {
         Fair *fr = &fairs[f];
@@ -14116,12 +14120,13 @@ static void print_counterexample(int *inits, int ninits) {
                 if (in_set(accepted, naccepted, w) && pnodes[accepted[i]].act[k] != STUTTER &&
                     fair_step(fr, pnodes[accepted[i]].state, pnodes[w].state)) { from = accepted[i]; to = w; act = pnodes[accepted[i]].act[k]; }
             }
-        if (from < 0) continue;
-        if (from != cur) {
-            List p = {0}, a = {0};
-            product_path(&cur, 1, from, accepted, naccepted, &p, &a);
-            for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
+        if (from < 0) {   /* no step: weak fairness holds where the action is disabled */
+            for (int i = 0; i < naccepted && from < 0; i++)
+                if (!fair_enabled(fr, pnodes[accepted[i]].state)) from = accepted[i];
+            if (from >= 0) cycle_to(&cyc, &cacts, &cur, from);
+            continue;
         }
+        cycle_to(&cyc, &cacts, &cur, from);
         list_add(&cyc, mk_int(to));
         list_add(&cacts, mk_int(act));
         cur = to;
@@ -14142,11 +14147,7 @@ static void print_counterexample(int *inits, int ninits) {
                 }
         }
     }
-    if (!stutter_only && cur != entry) {
-        List p = {0}, a = {0};
-        product_path(&cur, 1, entry, accepted, naccepted, &p, &a);
-        for (int i = 1; i < p.n; i++) { list_add(&cyc, p.v[i]); list_add(&cacts, a.v[i]); }
-    }
+    if (!stutter_only) cycle_to(&cyc, &cacts, &cur, entry);
     int nlasso = path.n + (stutter_only ? 0 : cyc.n - 1);
     int *lasso = NEWN(int, nlasso + 1);
     for (int i = 0; i < nlasso; i++) lasso[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;

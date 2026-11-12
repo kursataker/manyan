@@ -35,6 +35,9 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- a counterexample under weak fairness whose action is never taken goes
+  through a state where it is disabled, as TLC's does; it stuttered at a
+  state where it was enabled, a behavior that is not fair
 - a temporal property's actions are evaluated once for each edge of the
   state graph: Examples' AllocatorImplementation 1.34 → 0.99 s
 - tests/tla/InitSlices.tla models how workers slice Init: every Init of
