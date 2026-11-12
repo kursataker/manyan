@@ -76,7 +76,18 @@ so Manyan may check a specification Apalache rejects.
 | `simulate` | 2 | random symbolic runs |
 | `test`, `server`, `version`, `help` | 6 | |
 
-Only `typecheck` is implemented. On the 62 annotated modules of
+Only `typecheck` is implemented, by decision:
+
+- `parse` writes Apalache's intermediate forms, JSON and TLA+, which are
+  its own; Manyan reports a parse error as SANY does.
+- `simulate` checks random runs to a length; `-symbolic` checks every
+  run to it, so its verdict holds for any run `simulate` draws.
+- `test` checks that one action, from a state predicate, gives states
+  that satisfy another: `-symbolic -length 1` with them as `INIT`,
+  `NEXT` and `INVARIANT` does the same.
+- `server`, `version` and `help` are Apalache's own interface.
+
+On the 62 annotated modules of
 tlaplus/Examples, `-typecheck` gives Apalache's outcome on 58. Of the
 others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
 (SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
