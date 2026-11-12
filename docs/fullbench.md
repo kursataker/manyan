@@ -49,7 +49,10 @@ A model leaves this list when it gets a row in the results.
   and the four that differ with one worker differ alike; the run found
   TLCSailfish1's parse failure, since fixed. SlushMedium and
   MCBoulanger went past the 4 GB guard, which sums the resident memory
-  of the worker processes, pages they share counted in each.
+  of the worker processes, pages they share counted in each: on
+  SlushSmall, 242 MB summed with four workers where the search process
+  holds 67 MB, as it does alone (65 MB). With one worker both run in
+  less than 2 GB.
 - Runtime not recorded: CarTalkPuzzle Model_3, SpanTreeTest5Nodes,
   TestMCReachability, BPConProof, c1cs, TLCSailfish2, MC_HDiskSynod,
   EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC.
