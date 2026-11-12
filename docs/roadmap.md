@@ -24,7 +24,7 @@ from TLC.
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. The verdict is TLC's
   on every random graph `tests/fuzz.py live` makes, the counterexample
-  one TLC prints on 282 of 300. Of several fair lassos TLC prints the
+  one TLC prints on 287 of 300. Of several fair lassos TLC prints the
   first its search by possible error models completes, in an order its
   random fingerprints set; Manyan does not follow that search yet.
 - Model more of Manyan's algorithms in `tests/tla`, such as the tableau

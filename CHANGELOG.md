@@ -41,8 +41,12 @@ unreleased:
 - `tests/fuzz.py live` (`make fuzz-live`) checks random temporal
   properties of random state graphs under weak and strong fairness
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
-  picks of several follows its fingerprints: 300 of 300 verdicts and 282
+  picks of several follows its fingerprints: 300 of 300 verdicts and 287
   counterexamples are TLC's
+- a counterexample's cycle is built as TLC builds it: a walk from its first
+  state that takes an edge meeting a fairness condition as soon as it sees
+  one, then the shortest way back; it went by a shortest path to each
+  condition in turn, through some states again and again
 - a counterexample under weak fairness whose action is never taken goes
   through a state where it is disabled, as TLC's does; it stuttered at a
   state where it was enabled, a behavior that is not fair

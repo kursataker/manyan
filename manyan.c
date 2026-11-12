@@ -14067,13 +14067,110 @@ static void print_violated(Value ***ls, int n, int cyc) {
     }
 }
 
-/* Extends the cycle from *cur to the node target, within the accepted component. */
-static void cycle_to(List *cyc, List *cacts, int *cur, int target) {
-    if (target == *cur) return;
-    List p = {0}, a = {0};
-    product_path(cur, 1, target, accepted, naccepted, &p, &a);
-    for (int i = 1; i < p.n; i++) { list_add(cyc, p.v[i]); list_add(cacts, a.v[i]); }
-    *cur = target;
+/* Whether the edge k of the node p meets the fairness condition f: a
+   step of its action, or for weak fairness one where it is disabled. */
+static int fair_edge(int f, int p, int k) {
+    int to = pnodes[p].act[k] == STUTTER ? STUTTER : pnodes[pnodes[p].succ[k]].state;
+    return fair_step(&fairs[f], pnodes[p].state, to) || (!fairs[f].strong && !fair_enabled(&fairs[f], pnodes[p].state));
+}
+
+/* The cycle as TLC's printTrace starts it (LiveWorker.dfsPostFix): a walk
+   through the accepted component from the entry that takes an edge
+   meeting a fairness condition as soon as it sees one, and else goes on to
+   a node not seen since the last condition met, back up where there is
+   none, until each eventuality and condition is met. A strong one without
+   a step in the component holds as its action is never enabled there.
+   Adds the nodes after the entry to cyc, the action into each to acts,
+   and returns the last. */
+static int live_walk(int entry, List *cyc, List *acts) {
+    char *where = xcalloc((size_t)npnodes, 1);   /* 1 in the component, 2 seen too */
+    for (int i = 0; i < naccepted; i++) where[accepted[i]] = 1;
+    int nmet = neventualities + nfairs, cnt = 0;
+    char *met = xcalloc((size_t)nmet + 1, 1);
+    for (int f = 0; f < nfairs; f++) {
+        met[neventualities + f] = fairs[f].strong;
+        for (int i = 0; i < naccepted && met[neventualities + f]; i++)
+            for (int k = 0; k < pnodes[accepted[i]].nsucc; k++)
+                if (where[pnodes[accepted[i]].succ[k]] && fair_edge(f, accepted[i], k)) { met[neventualities + f] = 0; break; }
+    }
+    for (int i = 0; i < nmet; i++) cnt += !met[i];
+    List stack = {0}, sacts = {0};   /* the walk before cur, and the action into each */
+    int cur = entry, act = -1;
+    where[entry] = 2;
+    while (cnt > 0) {
+        int cnt0 = cnt, to = -1, to_act = 0, reset = 0;
+        while (to < 0) {
+            for (int e = 0; e < neventualities; e++)
+                if (!met[e] && !(tnodes[pnodes[cur].tnode].pending & (1ULL << (e & 63)))) met[e] = 1, cnt--;
+            if (cnt <= 0) break;
+            int next = -1, next_act = 0, unseen = -1, unseen_act = 0, cnt1 = cnt;
+            for (int k = 0; k < pnodes[cur].nsucc && to < 0; k++) {
+                int w = pnodes[cur].succ[k];
+                if (!where[w]) continue;
+                next = w, next_act = pnodes[cur].act[k];
+                for (int f = 0; f < nfairs; f++)
+                    if (!met[neventualities + f] && fair_edge(f, cur, k)) met[neventualities + f] = 1, cnt--;
+                if (cnt < cnt1) to = w, to_act = next_act, reset = 1;
+                else if (where[w] == 1) unseen = w, unseen_act = next_act;
+            }
+            if (to < 0 && cnt < cnt0) to = next, to_act = next_act, reset = 1;
+            if (to >= 0) break;
+            while (unseen < 0 && stack.n > 0) {   /* back up */
+                cur = (int)stack.v[--stack.n]->u.i, act = (int)sacts.v[--sacts.n]->u.i;
+                for (int k = 0; k < pnodes[cur].nsucc && unseen < 0; k++)
+                    if (where[pnodes[cur].succ[k]] == 1) unseen = pnodes[cur].succ[k], unseen_act = pnodes[cur].act[k];
+            }
+            if (unseen < 0) break;
+            to = unseen, to_act = unseen_act;
+            where[to] = 2;
+        }
+        if (to < 0) break;
+        list_add(&stack, mk_int(cur));
+        list_add(&sacts, mk_int(act));
+        cur = to, act = to_act;
+        if (reset)
+            for (int i = 0; i < naccepted; i++) where[accepted[i]] = 1;
+    }
+    for (int i = 1; i < stack.n; i++) { list_add(cyc, stack.v[i]); list_add(acts, sacts.v[i]); }
+    if (stack.n) { list_add(cyc, mk_int(cur)); list_add(acts, mk_int(act)); }
+    free(where); free(met);
+    return cur;
+}
+
+/* Closes the cycle as TLC does (LiveWorker.bfsPostFix): the shortest way
+   from the state of the node from to the entry, by states of the accepted
+   component, each taking the edges of all its nodes there. */
+static void live_back(int from, int entry, List *cyc, List *acts) {
+    int *first = xmalloc(sizeof(int) * (size_t)nstates), *next = xmalloc(sizeof(int) * (size_t)naccepted);
+    int *prev = xmalloc(sizeof(int) * (size_t)nstates), *pact = xmalloc(sizeof(int) * (size_t)nstates);
+    int *queue = xmalloc(sizeof(int) * (size_t)nstates);
+    for (int s = 0; s < nstates; s++) first[s] = -1, prev[s] = -2;
+    for (int i = naccepted - 1; i >= 0; i--) next[i] = first[pnodes[accepted[i]].state], first[pnodes[accepted[i]].state] = i;
+    int qh = 0, qt = 0, last = -1, back = 0;
+    queue[qt++] = pnodes[from].state;
+    prev[pnodes[from].state] = -1;
+    while (qh < qt && last < 0) {
+        int s = queue[qh++];
+        for (int i = first[s]; i >= 0 && last < 0; i = next[i]) {
+            int p = accepted[i];
+            for (int k = 0; k < pnodes[p].nsucc && last < 0; k++) {
+                int w = pnodes[p].succ[k], ws = pnodes[w].state;
+                if (w == p) continue;
+                if (w == entry) last = s, back = pnodes[p].act[k];
+                else if (first[ws] >= 0 && prev[ws] == -2) prev[ws] = s, pact[ws] = pnodes[p].act[k], queue[qt++] = ws;
+            }
+        }
+    }
+    int n = 0;
+    for (int s = last; s >= 0 && prev[s] >= 0; s = prev[s]) queue[n++] = s;
+    while (n > 0) {
+        int s = queue[--n];
+        list_add(cyc, mk_int(accepted[first[s]]));
+        list_add(acts, mk_int(pact[s]));
+    }
+    list_add(cyc, mk_int(entry));
+    list_add(acts, mk_int(back));
+    free(first); free(next); free(prev); free(pact); free(queue);
 }
 
 /* Drops each of the first n nodes whose state is the one before it, prev
@@ -14117,52 +14214,10 @@ static void print_counterexample(int *inits, int ninits) {
         free(prev); free(queue);
     }
     product_path(inits, ninits, entry, NULL, 0, &path, &acts);
-    /* The cycle: from the entry through each required node or edge, back. */
     List cyc = {0}, cacts = {0};
-    int cur = entry;
-    for (int e = 0; e < neventualities; e++) {
-        int target = -1;
-        for (int i = 0; i < naccepted && target < 0; i++)
-            if (!(tnodes[pnodes[accepted[i]].tnode].pending & (1ULL << (e & 63)))) target = accepted[i];
-        if (target >= 0) cycle_to(&cyc, &cacts, &cur, target);
-    }
-    for (int f = 0; f < nfairs; f++) {
-        Fair *fr = &fairs[f];
-        int from = -1, to = -1, act = 0;
-        for (int i = 0; i < naccepted && from < 0; i++)
-            for (int k = 0; k < pnodes[accepted[i]].nsucc && from < 0; k++) {
-                int w = pnodes[accepted[i]].succ[k];
-                if (in_set(accepted, naccepted, w) && pnodes[accepted[i]].act[k] != STUTTER &&
-                    fair_step(fr, pnodes[accepted[i]].state, pnodes[w].state)) { from = accepted[i]; to = w; act = pnodes[accepted[i]].act[k]; }
-            }
-        if (from < 0) {   /* no step: weak fairness holds where the action is disabled */
-            for (int i = 0; i < naccepted && from < 0; i++)
-                if (!fair_enabled(fr, pnodes[accepted[i]].state)) from = accepted[i];
-            if (from >= 0) cycle_to(&cyc, &cacts, &cur, from);
-            continue;
-        }
-        cycle_to(&cyc, &cacts, &cur, from);
-        list_add(&cyc, mk_int(to));
-        list_add(&cacts, mk_int(act));
-        cur = to;
-    }
-    /* Back to the entry. */
-    int stutter_only = 0;
-    if (cur == entry && cyc.n == 0) {
-        /* a step that returns to the state, by any action, is TLC's stuttering */
-        for (int k = 0; k < pnodes[entry].nsucc; k++) if (pnodes[entry].succ[k] == entry) stutter_only = 1;
-        if (!stutter_only) {
-            /* leave the entry along any edge inside the component */
-            for (int k = 0; k < pnodes[entry].nsucc; k++)
-                if (in_set(accepted, naccepted, pnodes[entry].succ[k])) {
-                    list_add(&cyc, mk_int(pnodes[entry].succ[k]));
-                    list_add(&cacts, mk_int(pnodes[entry].act[k]));
-                    cur = pnodes[entry].succ[k];
-                    break;
-                }
-        }
-    }
-    if (!stutter_only) cycle_to(&cyc, &cacts, &cur, entry);
+    int cur = live_walk(entry, &cyc, &cacts);
+    int stutter_only = cyc.n == 0;
+    if (cur != entry) live_back(cur, entry, &cyc, &cacts);
     drop_repeats(&path, &acts, path.n, -1);
     if (!stutter_only) {
         drop_repeats(&cyc, &cacts, cyc.n - 1, pnodes[entry].state);
