@@ -88,8 +88,9 @@ Only `typecheck` is implemented, by decision:
 - `server`, `version` and `help` are Apalache's own interface.
 
 On the 62 annotated modules of
-tlaplus/Examples, `-typecheck` gives Apalache's outcome on 58. Of the
-others, two (APEWD840, EWD998) use TLAPS, a module Manyan lacks. In two
+tlaplus/Examples, `-typecheck` gives Apalache's outcome on 60, with
+TLAPS's library beside the two that extend it (APEWD840, EWD998), for
+both. In the other two
 (SPA_Attack, SPA_Attack_New) several `VARIABLE`s lack an annotation:
 Apalache names the last in SANY's hash table, Manyan the last declared.
 `-symbolic` uses the types for `Gen` and for refusing what Apalache

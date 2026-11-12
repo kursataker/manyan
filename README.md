@@ -66,8 +66,8 @@ manyan -workers auto examples/DieHard   # one worker per core
 
 **Compatible with TLC.** Manyan accepts TLC-style TLA⁺ modules and `.cfg`
 files. Its default output and exit statuses are tested against TLC so it can
-be used in existing scripts and CI workflows. Some TLC features are not yet
-supported; see [limitations](docs/manual.md#limitations).
+be used in existing scripts and CI workflows. Some TLC features are left
+out by decision; see [limitations](docs/manual.md#limitations).
 
 **Fast startup and checking.** A small native executable avoids Java startup
 overhead. Benchmarks on the included models show substantial speedups over
@@ -137,9 +137,10 @@ report as TLC with one worker.
   give its outcome (see the
   [manual](docs/manual.md#type-checking-experimental)).
 
-Not yet supported: TLC's `-terse`, `-maxSetSize`, `-dfid`, `-coverage`,
-`-tool` and `-generateSpecTE`, checkpoints, distributed checking (see
-the [manual](docs/manual.md#limitations)). Real numbers and `\AA`/`\EE`
+Left out by decision, each for a reason the
+[manual](docs/manual.md#limitations) gives: TLC's `-terse`, `-maxSetSize`,
+`-dfid`, `-coverage`, `-tool` and `-generateSpecTE`, checkpoints,
+distributed checking, and `TLCFP`. Real numbers and `\AA`/`\EE`
 give TLC's errors, as TLC cannot check them either. The proof language is
 parsed and skipped.
 
