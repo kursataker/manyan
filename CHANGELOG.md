@@ -30,6 +30,11 @@ unreleased:
 - TLCExt's `TLCEvalDefinition`: the body of the root module's definition
   of that name, as written; `TLCDefer`: TRUE, its expression evaluated
   when a simulation picks the successor it was met for
+- TLCExt's `CounterExample` and `ToTrace`: in a postcondition after an
+  error, the behavior TLC reports, its steps with their actions, a
+  lasso's step back, and the `ALIAS`'s states where TLC gives them
+- With `-continue`, an invariant or action property found violated is
+  followed by no check of the postconditions, as in TLC
 - An assumption of a level above constant is SANY's level error; an
   error raised in one of TLC's evaluation methods (`TLCEvalDefinition`,
   `TLCCache`, ...) is wrapped in its Java method, as TLC wraps it

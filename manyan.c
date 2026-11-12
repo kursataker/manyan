@@ -4925,6 +4925,7 @@ static Def *level_probe;
 static int every_argument;
 static Value *n_tlcget(Expr *call, Value **a, Ctx c);
 static Value *n_trace(Expr *call, Value **a, Ctx c);
+static Value *n_counterexample(Expr *call, Value **a, Ctx c);
 
 static int def_level(Def *d) {
     if (every_argument ? d->level_bound > 0 : d->level >= 0 && (d->local != 2 || d->level_probe == level_probe))
@@ -4932,7 +4933,8 @@ static int def_level(Def *d) {
     if (d->level_busy) return 0;
     d->level_busy = 1;
     int l = 0;
-    if (d->kind == D_VAR || (every_argument && (d->native == n_tlcget || d->native == n_trace))) l = 1;   /* TLCGet's and Trace's minLevel */
+    if (d->kind == D_VAR || (every_argument && (d->native == n_tlcget || d->native == n_trace || d->native == n_counterexample)))
+        l = 1;   /* the minLevel of TLCGet, Trace and CounterExample */
     else if (d->kind == D_OP || d->kind == D_FCN) {
         if (d->body) l = expr_level(d->body);
         for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_level(d->bounds[i].set); if (b > l) l = b; }
@@ -7200,6 +7202,7 @@ static Value *search_config(void);
 static Value *tlc_revision(void);
 static Value *sim_stats(void);
 static Value *action_record(Value **st);
+static Value *action_value(int act);
 
 /* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
    sets: pairs of k and its value, interned. A worker leaves them to manyan. */
@@ -7847,8 +7850,19 @@ static _Noreturn void unsupported(const char *op) {
     exit(MANYAN_ERROR);
 }
 #define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
-UNSUPPORTED(n_counterexample, "CounterExample")
-UNSUPPORTED(n_totrace, "ToTrace")
+/* TLCExt's CounterExample: in a postcondition checked after an error,
+   the behavior TLC reports it with (post_behavior), else none. Its
+   states are numbered from 1, and each step names its action; a lasso's
+   last state steps back to state loop (from 1), by loop_act. Its states
+   are the ALIAS's where TLC gives them so, aliased: 1 evaluated as the
+   error is reported, as TLC does for a trace even with no postcondition;
+   2 when CounterExample is, where TLC uses those it printed. */
+static struct { Value ***st, **rec; int *act, n, loop, loop_act, aliased; Value *value; } post_trace;
+static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased);
+static Value *counter_example(void);
+static Value *counter_trace(Value *ce);
+NATIVE(n_counterexample) { UNUSED; return counter_example(); }
+NATIVE(n_totrace) { UNUSED; return counter_trace(a[0]); }
 UNSUPPORTED(n_picksuccessor, "PickSuccessor")
 UNSUPPORTED(n_tlcfp, "TLCFP")
 
@@ -9688,30 +9702,36 @@ static void state_text(Buf *b, Value **st) {
    as the state if it is a record, its fields as variables, in the order a
    record constructor gives them, as TLC prints the record unnormalized; an
    error evaluating it is printed as a variable _ALIASEvalError after st's. */
+/* The ALIAS of state st, followed by next, at level; NULL if it fails, why. */
+static Value *alias_value(Value **st, Value **next, int level, Buf *why) {
+    Def *d = late_def(alias_name, "alias", why);
+    Value *v = NULL;
+    if (!d) return NULL;
+    EvalState saved = eval_save();
+    ErrorState error = error_save();
+    int64_t saved_level = cur_level;
+    sigjmp_buf here;
+    handler = &here;
+    if (!sigsetjmp(here, 0)) {
+        cur_state = st;
+        next_state = next;
+        cur_level = level;
+        v = realize(eval(d->body, root_ctx));
+    } else {
+        buf_puts(why, error_message.s ? error_message.s : "");
+        if (error_expr && error_expr->mod) buf_puts(why, "\n"), node_text(why, error_expr);
+    }
+    eval_restore(saved);
+    error_restore(&error);
+    cur_level = saved_level;
+    return v;
+}
+
 static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
     if (!alias_name) { state_text(b, st); return; }
     Buf why = {0};
-    Def *d = late_def(alias_name, "alias", &why);
-    Value *v = NULL;
-    if (d) {
-        EvalState saved = eval_save();
-        ErrorState error = error_save();
-        int64_t saved_level = cur_level;
-        sigjmp_buf here;
-        handler = &here;
-        if (!sigsetjmp(here, 0)) {
-            cur_state = st;
-            next_state = next;
-            cur_level = level;
-            v = realize(eval(d->body, root_ctx));
-        } else {
-            buf_puts(&why, error_message.s ? error_message.s : "");
-            if (error_expr && error_expr->mod) buf_puts(&why, "\n"), node_text(&why, error_expr);
-        }
-        eval_restore(saved);
-        error_restore(&error);
-        cur_level = saved_level;
-    }
+    Value *v = alias_value(st, next, level, &why);
+    Def *d = v ? late_def(alias_name, "alias", &why) : NULL;
     if (v && fcn_is_record(v)) {
         Expr *made = unfold(d->body);
         int fmt = intern("_format");
@@ -9816,6 +9836,12 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
         ntrace_path = n + 1;
         if (print) print_numbered(n + 1, action, s2, NULL, s2);
     }
+    if (!print) {
+        int *acts = NEWN(int, n + 1);
+        for (int i = 0; i < n; i++) acts[i] = i ? states[path[i]].action : -1;
+        acts[n] = action;
+        post_behavior(st, acts, n + (s2 != NULL), 0, 0, 1);
+    }
 }
 
 /* The behavior from an initial state to state s1, then the state s2
@@ -9865,6 +9891,7 @@ static int check_posts(int after_error) {
             printf("%s\n", why.s);
         }
         free(why.s);
+        post_trace.n = 0;
         return simulating ? MANYAN_ERROR_CONFIG : after_error ? 0 : MANYAN_ERROR;
     }
     EvalState saved = eval_save();
@@ -9898,6 +9925,7 @@ static int check_posts(int after_error) {
         free(b.s);
     }
     checking_posts = 0;
+    post_trace.n = 0;
     eval_restore(saved);
     error_restore(&error);
     cur_level = level;
@@ -10095,12 +10123,15 @@ static int check_initial(Value **st) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
         if (!print_shown(st)) print_trace_state(st, st, 1);
         printf("\n");
+        post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
         if (!print_shown(st)) print_trace_state(st, st, 1);
+        printf("\n");
+        post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }
     return 0;
@@ -10150,8 +10181,8 @@ static int action_violated(Value **st) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad < 0) return 0;
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+    if (keep_going) { print_trace(expanding, st, cur_action); return 0; }   /* as TLC, no postcondition */
     reported_trace(expanding, st, cur_action);
-    if (keep_going) return 0;
     violation = MANYAN_VIOLATION_LIVENESS;
     return 1;
 }
@@ -10179,8 +10210,9 @@ static int next_emit(void) {
         violation_fresh = 0;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            reported_trace(expanding, st, cur_action);
-            if (!keep_going) {
+            if (keep_going) print_trace(expanding, st, cur_action);   /* as TLC, no postcondition */
+            else {
+                reported_trace(expanding, st, cur_action);
                 violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
             }
@@ -10203,8 +10235,9 @@ static int next_emit(void) {
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            reported_trace(expanding, st, cur_action);
-            if (!keep_going) {
+            if (keep_going) print_trace(expanding, st, cur_action);   /* as TLC, no postcondition */
+            else {
+                reported_trace(expanding, st, cur_action);
                 violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
             }
@@ -10226,6 +10259,99 @@ static Value *mk_record(int n, const char *const *names, Value *const *vals) {
     Value *r = mk_fcn_from(&keys, &l);
     r->made = MADE_RECORD;
     return r;
+}
+
+static Value *empty_counter_example;
+
+/* The record of state i of n: its ALIAS's on the step from it, as TLC
+   evaluates it, if aliased, else of its variables. */
+static Value *post_state(Value ***st, int n, int i, int aliased) {
+    Buf why = {0};
+    int depth = java_depth;   /* TLC evaluates the ALIAS before the postconditions */
+    java_depth = 0;
+    Value *alias = aliased ? alias_value(st[i], st[i + 1 < n ? i + 1 : i], i + 1, &why) : NULL;
+    java_depth = depth;
+    List keys = {0}, vals = {0};
+    for (int v = 0; v < nvars; v++) list_add(&keys, mk_str(vars[v]->name)), list_add(&vals, st[i][v]);
+    if (aliased && !alias)   /* TLC's record of the state, with why */
+        list_add(&keys, mk_str(intern("_ALIASEvalError"))), list_add(&vals, mk_str(intern(why.s ? why.s : "")));
+    free(why.s);
+    if (alias && fcn_is_record(alias)) return alias;
+    Value *r = mk_fcn_from(&keys, &vals);
+    r->made = MADE_RECORD;
+    return r;
+}
+
+static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased) {
+    aliased = alias_name ? aliased : 0;
+    Value **rec = NEWN(Value *, n);
+    for (int i = 0; i < n && aliased == 1; i++) rec[i] = post_state(st, n, i, 1);
+    if (!nposts) return;
+    /* kept for good: the arena of the states may be reset before the check */
+    Arena *saved = arena;
+    arena = &perm_arena;
+    post_trace.st = NEWN(Value **, n);
+    post_trace.rec = NEWN(Value *, n);
+    for (int i = 0; i < n; i++) {
+        post_trace.st[i] = NEWN(Value *, nvars);
+        for (int v = 0; v <= nvars; v++) {
+            Value *x = v < nvars ? st[i][v] : rec[i];
+            long budget = INT64_MAX;
+            Value *kept = x ? copy_value(x, &budget) : NULL;
+            *(v < nvars ? &post_trace.st[i][v] : &post_trace.rec[i]) = kept ? kept : x;
+        }
+    }
+    arena = saved;
+    post_trace.act = memcpy(xrealloc(post_trace.act, sizeof(int) * (size_t)n), act, sizeof(int) * (size_t)n);
+    post_trace.n = n, post_trace.loop = loop, post_trace.loop_act = loop_act, post_trace.aliased = aliased;
+    post_trace.value = NULL;
+}
+
+static Value *counter_example(void) {
+    if (!checking_posts || !post_trace.n) {
+        if (!empty_counter_example) {
+            Arena *saved = arena;
+            arena = &perm_arena;
+            const char *names[] = {"state", "action"};
+            Value *vals[] = {mk_set(0), mk_set(0)};
+            empty_counter_example = mk_record(2, names, vals);
+            arena = saved;
+        }
+        return empty_counter_example;
+    }
+    if (post_trace.value) return post_trace.value;
+    int n = post_trace.n;
+    Value **node = NEWN(Value *, n), *states = mk_set(n), *steps = mk_set(n - 1 + (post_trace.loop > 0));
+    for (int i = 0; i < n; i++) {
+        node[i] = mk_tuple(2);
+        node[i]->u.fcn.vals[0] = mk_int(i + 1);
+        node[i]->u.fcn.vals[1] = post_trace.rec[i] ? post_trace.rec[i] : post_state(post_trace.st, n, i, post_trace.aliased);
+        states->u.set.elems[i] = node[i];
+    }
+    for (int i = 0; i < steps->n; i++) {
+        Value *step = steps->u.set.elems[i] = mk_tuple(3);
+        int last = i + 1 == n;   /* the lasso's step back */
+        step->u.fcn.vals[0] = node[i];
+        int act = last ? post_trace.loop_act : post_trace.act[i + 1];
+        step->u.fcn.vals[1] = action_value(act < 0 ? -2 : act);   /* TLC knows no action of an initial state */
+        step->u.fcn.vals[2] = node[last ? post_trace.loop - 1 : i + 1];
+    }
+    const char *names[] = {"state", "action"};
+    Value *vals[] = {set_normalize(states), set_normalize(steps)};
+    return post_trace.value = mk_record(2, names, vals);
+}
+
+/* ToTrace(ce): the states of a CounterExample, in order. */
+static Value *counter_trace(Value *ce) {
+    if (!ce || (ce != post_trace.value && ce != empty_counter_example))
+        fail_module("The argument of ToTrace should be a CounterExample, but instead it is:\n%s", pretty(ce));
+    Value *states = ce->u.fcn.vals[fcn_index(ce, mk_str(intern("state")))];
+    Value *t = mk_tuple(states->n);
+    for (int i = 0; i < states->n; i++) {
+        Value *node = states->u.set.elems[i];
+        t->u.fcn.vals[node->u.fcn.vals[0]->u.i - 1] = node->u.fcn.vals[1];
+    }
+    return t;
 }
 
 /* TLCGet("config") of a search or a simulation: TLC's fields but those
@@ -10966,10 +11092,9 @@ static Value *location_record(Expr *l) {
 /* TLCGet("action"): the action into st, as a simulation keeps it in
    each state, Init's -1 for an initial one; TLC's UnnamedAction for a
    state without one, as each of a search. */
-static Value *action_record(Value **st) {
-    int act = -2;
-    for (int i = sim_trace.n - 1; i >= 0 && act == -2 && simulating; i--) if (sim_trace.a[i] == st) act = sim_trace.act[i];
-    if (act == -2 && simulating && st == sim_checked) act = cur_action;
+/* Action act as TLC's record of it: its name and location, and the values
+   of the parameters that label it; -1 the initial predicate, -2 none. */
+static Value *action_value(int act) {
     const char *names[] = {"name", "location", "context", "parameters"};
     if (act < -1) {
         Value *vals[] = {mk_str(intern("UnnamedAction")), location_record(NULL)};
@@ -10991,6 +11116,13 @@ static Value *action_record(Value **st) {
     vals[2]->made = MADE_RECORD;
     vals[3] = params;
     return mk_record(4, names, vals);
+}
+
+static Value *action_record(Value **st) {
+    int act = -2;
+    for (int i = sim_trace.n - 1; i >= 0 && act == -2 && simulating; i--) if (sim_trace.a[i] == st) act = sim_trace.act[i];
+    if (act == -2 && simulating && st == sim_checked) act = cur_action;
+    return action_value(act);
 }
 
 /* A state as Trace gives it: a record of its variables, and in a
@@ -11361,6 +11493,7 @@ static int simulate(const ManyanOptions *o) {
                     status = MANYAN_VIOLATION_DEADLOCK;
                 } else break;
                 sim_print(b);
+                post_behavior(b->a, b->act, b->n, 0, 0, 1);
                 sim_summary(seed, aril);
                 if (!keep_going) {
                     int post = check_posts(1);
@@ -13506,11 +13639,15 @@ static void print_counterexample(int *inits, int ninits) {
                          lasso[number < nlasso ? number : stutter_only ? number - 1 : path.n - 1]);
     }
     int entry_number = number;
+    int *lacts = NEWN(int, nlasso + 1);
+    for (int i = 0; i < nlasso; i++) lacts[i] = !i ? -1 : (int)(i < path.n ? acts.v[i] : cacts.v[i - path.n])->u.i;
     if (stutter_only) {
         printf("State %d: Stuttering\n", number + 1);
         warn_stuttering();
+        post_behavior(lasso_values(lasso, nlasso), lacts, nlasso, nlasso, lacts[nlasso - 1], 0);
         return;
     }
+    post_behavior(lasso_values(lasso, nlasso), lacts, nlasso, entry_number, (int)cacts.v[cyc.n - 1]->u.i, 0);
     for (int i = 0; i + 1 < cyc.n; i++) {
         int p = (int)cyc.v[i]->u.i;
         int before = (int)(i ? cyc.v[i - 1] : path.v[path.n - 1])->u.i;
@@ -13674,6 +13811,8 @@ static void print_cut(int at) {
     print_violated(lasso_values(ls, n), n, n - 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
+    act[0] = -1;
+    post_behavior(lasso_values(ls, n), act, n, 0, 0, 2);
 }
 
 /* What TLC evaluates of the properties on each initial state, before its

@@ -1,0 +1,67 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Live was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = "a"
+
+State 2: <Inc line 7, col 8 to line 7, col 41 of module counter_example_stuttering>
+/\ x = 1
+/\ y = "a"
+
+State 3: <Inc line 7, col 8 to line 7, col 41 of module counter_example_stuttering>
+/\ x = 2
+/\ y = "a"
+
+State 4: <Inc line 7, col 8 to line 7, col 41 of module counter_example_stuttering>
+/\ x = 3
+/\ y = "a"
+
+State 5: Stuttering
+[ state |->
+      { <<1, [x |-> 0, y |-> "a"]>>,
+        <<2, [x |-> 1, y |-> "a"]>>,
+        <<3, [x |-> 2, y |-> "a"]>>,
+        <<4, [x |-> 3, y |-> "a"]>> },
+  action |->
+      { << <<1, [x |-> 0, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 8,
+                   endLine |-> 7,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering" ] ],
+           <<2, [x |-> 1, y |-> "a"]>> >>,
+        << <<2, [x |-> 1, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 8,
+                   endLine |-> 7,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering" ] ],
+           <<3, [x |-> 2, y |-> "a"]>> >>,
+        << <<3, [x |-> 2, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 8,
+                   endLine |-> 7,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering" ] ],
+           <<4, [x |-> 3, y |-> "a"]>> >>,
+        << <<4, [x |-> 3, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 8,
+                   endLine |-> 7,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering" ] ],
+           <<4, [x |-> 3, y |-> "a"]>> >> } ]
+15 states generated, 8 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 13

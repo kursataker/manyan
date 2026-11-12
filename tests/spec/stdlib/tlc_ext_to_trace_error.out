@@ -1,0 +1,7 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating postcondition Post at line 7, col 9 to line 7, col 54 of module tlc_ext_to_trace_error failed.
+The argument of ToTrace should be a CounterExample, but instead it is:
+[state |-> {}, action |-> {}]
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 10

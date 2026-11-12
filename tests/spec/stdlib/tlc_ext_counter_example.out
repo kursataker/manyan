@@ -1,0 +1,28 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 1
+/\ y = "a"
+
+State 2: <A(2) line 8, col 9 to line 8, col 33 of module tlc_ext_counter_example>
+/\ x = 3
+/\ y = "a"
+
+[ state |-> {<<1, [x |-> 1, y |-> "a"]>>, <<2, [x |-> 3, y |-> "a"]>>},
+  action |->
+      { << <<1, [x |-> 1, y |-> "a"]>>,
+           [ name |-> "A",
+             location |->
+                 [ beginLine |-> 8,
+                   beginColumn |-> 9,
+                   endLine |-> 8,
+                   endColumn |-> 33,
+                   module |-> "tlc_ext_counter_example" ],
+             context |-> [i |-> 2],
+             parameters |-> <<"i">> ],
+           <<2, [x |-> 3, y |-> "a"]>> >> } ]
+<<[x |-> 1, y |-> "a"], [x |-> 3, y |-> "a"]>>
+5 states generated, 5 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

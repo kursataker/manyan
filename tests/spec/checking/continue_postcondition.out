@@ -1,0 +1,33 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 2
+
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 2
+
+State 4: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 3
+
+State 5: <Next line 8, col 9 to line 8, col 27 of module continue_postcondition>
+x = 4
+
+<<"post", <<[x |-> 0], [x |-> 1], [x |-> 2], [x |-> 3], [x |-> 4]>>>>
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 11

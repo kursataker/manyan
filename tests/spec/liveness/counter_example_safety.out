@@ -1,0 +1,35 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Safe is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+w = 1
+
+State 2: <Next line 7, col 9 to line 7, col 27 of module counter_example_safety>
+w = 2
+
+State 3: <Next line 7, col 9 to line 7, col 27 of module counter_example_safety>
+w = 3
+
+[ state |-> {<<1, [w |-> 1]>>, <<2, [w |-> 2]>>, <<3, [w |-> 3]>>},
+  action |->
+      { << <<1, [w |-> 1]>>,
+           [ name |-> "Next",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 9,
+                   endLine |-> 7,
+                   endColumn |-> 27,
+                   module |-> "counter_example_safety" ] ],
+           <<2, [w |-> 2]>> >>,
+        << <<2, [w |-> 2]>>,
+           [ name |-> "Next",
+             location |->
+                 [ beginLine |-> 7,
+                   beginColumn |-> 9,
+                   endLine |-> 7,
+                   endColumn |-> 27,
+                   module |-> "counter_example_safety" ] ],
+           <<3, [w |-> 3]>> >> } ]
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

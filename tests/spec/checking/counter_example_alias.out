@@ -1,0 +1,19 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ y = 5
+/\ next = 1
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module counter_example_alias>
+/\ y = 10
+/\ next = 2
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module counter_example_alias>
+/\ x = 2
+/\ _ALIASEvalError = "The second argument of \\div is 0."
+
+<<[y |-> 5, next |-> 1], [y |-> 10, next |-> 2], [x |-> 2, _ALIASEvalError |-> "The second argument of \\div is 0."]>>
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

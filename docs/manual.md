@@ -329,8 +329,7 @@ Not supported: the proof language (parsed and skipped); TLC's
 `-terse`, `-maxSetSize` (Manyan does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
 `-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
-`_POSSIBLE`, TLCExt's `CounterExample`, `ToTrace`, `PickSuccessor` and
-`TLCFP`, checkpoints (`-checkpoint`, `-recover`) and
+`_POSSIBLE`, TLCExt's `PickSuccessor` and `TLCFP`, checkpoints (`-checkpoint`, `-recover`) and
 distributed checking. `Trace` is the behavior to the state evaluated; to
 rebuild it TLC evaluates `Init` again, and with more than one initial
 state may give a shorter one. In a simulation

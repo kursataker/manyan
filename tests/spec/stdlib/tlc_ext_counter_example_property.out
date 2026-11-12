@@ -1,0 +1,5 @@
+Error: Property InitProp is violated by the initial state:
+x = 1
+
+[state |-> {<<1, [x |-> 1]>>}, action |-> {}]
+exit 13
