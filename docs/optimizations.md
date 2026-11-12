@@ -101,5 +101,10 @@ ones with a large serial part, not a slow evaluator.
   Kept for each edge, the atoms are now evaluated once an edge, not 32
   times (above), and the workers evaluate them before the check, each
   on the edges of its states: 0.75 → 0.52 s with 4 workers. Left in one
-  process are the 115 fairness conditions on each state and edge.
+  process are the 115 fairness conditions on each state and edge: the
+  check makes 570424 `ENABLED` evaluations, 468217 of them distinct, and
+  315589 steps, all distinct, of the 2.0 million and 7.4 million there
+  are. Evaluating all of them in the workers would be about four times
+  the work, so it would take components checked in parallel, not a
+  fill.
   `subst_index` (above) took 3.6% off the evaluation itself.
