@@ -14,8 +14,8 @@ in TLC's format, with TLC's exit statuses.
 | | checks | |
 |---|---:|---|
 | ported, giving Apalache's verdict | 190 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
-| ported, refused as Apalache refuses them | 31 | below |
-| skipped | 10 | below |
+| ported, refused as Apalache refuses them | 32 | below |
+| skipped | 9 | below |
 | not ported | 14 | 12 repeat a check ported but for options that do not change the outcome, such as `--out-dir` and `--tuning-options`; 2 check Quint's JSON, not TLA+ |
 
 ### Skipped
@@ -36,7 +36,6 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
   than its siblings, by a syntactic analysis Manyan does not copy.
 - Bug593: Apalache refuses a `LET` name that clashes with a variable once
   it flattens the instances.
-- Bug2772_2: Apalache refuses to expand a set of functions past its limit.
 - ConfigUnsorted: Apalache refuses the cycle the configuration's
   substitutions make among the definitions.
 
@@ -46,8 +45,9 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 `Next` or invariant; a recursive operator or function; a set or `<<>>`
 whose type is left open; a `Repeat` whose count is no literal; a constant
 the configuration gives a value not of its type; `-max-error` without a
-`VIEW`. These 31 checks expect Apalache's refusal, which
-`tests/symbolic_runner.py` compares as `Refused`, without the message. The four refusals skipped above remain,
+`VIEW`; a set of sets of functions, `{[S -> T] : x \in U}`, which it
+would expand. These 32 checks expect Apalache's refusal, which
+`tests/symbolic_runner.py` compares as `Refused`, without the message. The three refusals skipped above remain,
 so Manyan may check a specification Apalache rejects.
 
 ### Differences in what is checked

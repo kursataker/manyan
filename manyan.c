@@ -19942,10 +19942,12 @@ static int repeat_count(Expr *e) {
 }
 
 static int mono_repeat;   /* what mono_walk found: a Repeat of no literal count */
+static int mono_fcnsets;  /* or { [S -> T] : x \in U }, a set of sets of functions Apalache would expand */
 static Expr *mono_walk(Expr *e, Def ***seen, int *nseen) {
     if (!e) return NULL;
     if (mono_open(e)) return e;
     if (e->kind == K_CALL && e->n == 3 && apalache_op(e->def, "Repeat") && e->mod != e->def->mod && !repeat_count(e->args[1])) { mono_repeat = 1; return e; }
+    if (e->kind == X_MAP && e->args[0]->kind == X_FCNSET && !lib_module(e->mod)) { mono_fcnsets = 1; return e; }
     Expr *bad = e->def ? mono_def(e->def, seen, nseen) : NULL;
     for (int i = 0; !bad && i < e->n; i++) bad = mono_walk(e->args[i], seen, nseen);
     for (int i = 0; !bad && i < e->nb; i++) {
@@ -20061,7 +20063,10 @@ static int sym_types(void) {
         status = MANYAN_ERROR;
     }
     Expr *open = status ? NULL : sym_refused();
-    if (open && mono_repeat) {
+    if (open && mono_fcnsets) {
+        printf("Error: %s: rewriter error: Trying to expand a set of functions. This will blow up the solver.\n", tc_where(open));
+        status = MANYAN_ERROR;
+    } else if (open && mono_repeat) {
         printf("Error: %s: Apalache!Repeat expects a constant positive integer as its second argument.\n", tc_where(open));
         status = MANYAN_ERROR;
     } else if (open) {
