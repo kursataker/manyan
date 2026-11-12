@@ -153,7 +153,7 @@ invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
 0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-42 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+56 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -162,11 +162,16 @@ which then repeats forever. A behavior that never repeats a state is no
 counterexample, and none stutters but as `Next` does. A violation is
 printed as TLC prints one, ending with `Back to state N`.
 
-Apalache has no fairness. With `WF_` and `SF_` in the specification, a
-counterexample is TLC's: a fair lasso, which may also stutter forever at
-its last state (`State N: Stuttering`). That an action is disabled is
-asked of the evaluator, which finds a successor where the solver
-supposed none.
+Apalache has no fairness, constraints or `ENABLED`. With a property of a
+specification with `WF_` or `SF_`, or with `CONSTRAINT` or
+`ACTION_CONSTRAINT` in the configuration, the verdict is TLC's: a counterexample to a property is a
+fair lasso, which may also stutter forever at its last state (`State N:
+Stuttering`), and is reported only if no invariant is violated and no
+state deadlocks in behaviors of up to `-length` steps; a deadlock is a
+state without a successor in any behavior. A state outside the
+constraints has its invariants checked, but no successors. `ENABLED A`
+in an invariant or a property is TLC's too: where the solver supposes
+`A` disabled, it is asked again for a step of `A` from that state.
 
 `-max-error N` goes on past a violation, as Apalache's `--max-error`
 does, until N are found: each behavior after one must differ from it in
@@ -194,8 +199,7 @@ value not of its type: a model value is a string, but `p_OF_PROC` a
 up to `n` elements, as in Apalache: the specification is type checked
 first, as `-typecheck` checks it, and each call makes another value.
 
-Not supported yet: `ENABLED` in a property; action properties and implied
-initial predicates; functions over an
+Not supported yet: `ENABLED` in an action; functions over an
 infinite domain; `Gen` in an operator whose parameters leave its type
 open, and of strings or variants; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
 `-symbolic` does not.

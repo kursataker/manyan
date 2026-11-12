@@ -15594,6 +15594,7 @@ static SVal *sym_plain_eval(Expr *e, Ctx c) {
 }
 
 static SVal *sym(Expr *e, SCtx sc, int pol);
+static SVal *sym_enabled(Expr *e, SCtx sc);
 static int sym_bool(Expr *e, SCtx sc, int pol) { return sv_lit(sym(e, sc, pol), e); }
 
 static SVal *senv_force(SEnv *b) {
@@ -16135,7 +16136,7 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
         return r;
     }
     case X_LET: return sym(e->args[0], let_ctx(e, sc), pol);
-    case K_ENABLED: fail_at(e, "Symbolic checking does not support ENABLED.");
+    case K_ENABLED: return sym_enabled(e, sc);
     default: break;
     }
     if (expr_info(e)->level >= 3) fail_at(e, "Symbolic checking does not check temporal formulas.");
@@ -16601,6 +16602,86 @@ static Branch *act_step(Expr *e, Ctx c, const char *what) {
     return b;
 }
 
+/* ENABLED A, as TLC checks it, where Apalache has none: a literal of its
+   own, true only where some branch of A is, at the state read. That it
+   is false where A is enabled is ruled out as the models show it, by
+   sym_enabled_refine. Only an invariant or a property may read it. */
+typedef struct { int lit; Expr *a; SCtx sc; SVal **at; Branches out; } SymEnabled;
+static SymEnabled *sym_enableds;
+static int nsym_enableds, sym_enabled_ok;
+
+static int sym_enabled_lit(Expr *a, SCtx sc) {
+    SVal **next = sym_next;
+    Branches out = {0};
+    act(a, sc, (Branch){L_TRUE, NEWN(SVal *, nvars)}, &out);
+    sym_next = next;
+    int some = L_FALSE;
+    for (int k = 0; k < out.n; k++) some = g_or(some, out.v[k].guard);
+    if (some == L_FALSE) return L_FALSE;
+    int l = 2 * sat_var();
+    sat_add2(l ^ 1, some);
+    if (!(nsym_enableds & (nsym_enableds + 1))) {
+        SymEnabled *grown = NEWN(SymEnabled, 2 * (nsym_enableds + 1));
+        if (nsym_enableds) memcpy(grown, sym_enableds, sizeof *grown * (size_t)nsym_enableds);
+        sym_enableds = grown;
+    }
+    sym_enableds[nsym_enableds++] = (SymEnabled){l, a, sc, sym_cur, out};
+    return l;
+}
+
+static SVal *sym_enabled(Expr *e, SCtx sc) {
+    if (!sym_enabled_ok) fail_at(e, "Symbolic checking supports ENABLED only in invariants and properties.");
+    return sv_bool(sym_enabled_lit(e->args[0], sc));
+}
+
+/* That st[depth], in the model, has no successor: a deadlock as TLC finds
+   it, in any behavior. */
+static int sym_dead(SVal ***st, int depth, int kept) {
+    sym_cur = st[depth];
+    int some = L_FALSE;
+    for (int k = 0; k < nactions; k++) some = g_or(some, sym_enabled_lit(actions[k].e, (SCtx){actions[k].c, NULL}));
+    return g_and(kept, some ^ 1);
+}
+
+/* Whether each ENABLED made since the from'th that the model has false is: where the solver finds a
+   step of A from the model's state, with its bindings and constants,
+   ENABLED A is tied to every state that step leaves from, and 0 is
+   returned. The model is kept. */
+static int sym_enabled_refine(int from) {
+    int n = 0, m = nsym_enableds, *pins = NEWN(int, m + 1);   /* -1 where the model has it true */
+    for (int i = from; i < m; i++) {
+        SymEnabled *x = &sym_enableds[i];
+        pins[i] = -1;
+        if (lit_true(x->lit)) continue;
+        int pin = L_TRUE;
+        for (int v = 0; v < nvars; v++) pin = g_and(pin, sv_eq(x->at[v], sv_const(sv_model(x->at[v]))));
+        for (SEnv *b = x->sc.s; b; b = b->next) if (b->v) pin = g_and(pin, sv_eq(b->v, sv_const(sv_model(b->v))));
+        for (int c = 0; c < nsym_consts; c++) pin = g_and(pin, sv_eq(sym_const_vals[c], sv_const(sv_model(sym_const_vals[c]))));
+        pins[i] = pin, n++;
+    }
+    if (!n) return 1;
+    int kept = sat.nvars, fine = 1;
+    unsigned char *model = NEWN(unsigned char, kept + 1);
+    memcpy(model, sat.model, (size_t)kept);
+    for (int i = from; i < m; i++) {
+        SymEnabled *x = &sym_enableds[i];
+        if (pins[i] < 0) continue;
+        for (int k = 0; k < x->out.n; k++) {
+            int q[2] = {pins[i], x->out.v[k].guard};
+            if (!sat_solve(q, 2)) continue;
+            SVal **t = NEWN(SVal *, nvars);
+            for (int v = 0; v < nvars; v++) t[v] = sv_const(sv_model(x->out.v[k].next[v] ? x->out.v[k].next[v] : x->at[v]));
+            sym_cur = x->at, sym_next = t;
+            sat_add2(x->lit, sym_bool(x->a, x->sc, P_BOTH) ^ 1);
+            sym_next = NULL;
+            fine = 0;
+            break;
+        }
+    }
+    memcpy(sat.model, model, (size_t)kept);
+    return fine;
+}
+
 /* ---------------------------------------------------------------- symbolic checking */
 
 static long sym_length = 10;
@@ -16745,7 +16826,10 @@ static int sym_violated(int i, SVal ***st, int depth) {
     sym_next = action ? st[depth] : NULL;
     SCtx sc = {c->ctx, NULL};
     if (p) sc = sym_bind(sc, p, sym_history(st, depth));
-    return sym_bool(c->expr, sc, P_NEG) ^ 1;
+    sym_enabled_ok = 1;
+    int l = sym_bool(c->expr, sc, P_NEG) ^ 1;
+    sym_enabled_ok = 0;
+    return l;
 }
 
 /* Temporal properties, as Apalache checks them: on a lasso, a behavior
@@ -16872,10 +16956,12 @@ static int sym_refine(Lasso ls) {
 static int sym_lasso_violated(int p, Lasso ls, int kept) {
     if (!ls.k) return 0;
     LassoMemo *memo = NULL;
-    int n = 0, l = g_and(g_and(kept, ls.back[ls.k - 1]), sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
+    sym_enabled_ok = 1;
+    int from = nsym_enableds, n = 0, l = g_and(g_and(kept, ls.back[ls.k - 1]), sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
+    sym_enabled_ok = 0;
     free(memo);
     if (nfairness) l = g_and(l, sym_fair(ls));
-    while (sat_solve(&l, 1)) if (sym_refine(ls)) return 1;
+    while (sat_solve(&l, 1)) if (sym_refine(ls) && sym_enabled_refine(from)) return 1;
     return 0;
 }
 
@@ -16902,15 +16988,20 @@ static Def *sym_recursive(void) {
 /* Prints the behavior the solver finds to st[depth] that violates
    invariant bad, the index-th violation, or deadlocks (bad < 0); 0 if it
    does not replay. */
-static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int depth, int bad, int index) {
-    int violated = bad >= 0 ? sym_violated(bad, st, depth) : L_TRUE;
-    sat_solve(&violated, 1);
+static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int depth, int bad, int violated, int from, int index) {
+    while (sat_solve(&violated, 1) && !sym_enabled_refine(from)) {}
     Value ***states;
     int *act_of, loop;
     if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, 0, &loop, &states, &act_of)) return 0;
-    if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-    else printf("Error: Deadlock reached.\n");
-    sym_print(states, act_of, depth + 1);
+    if (bad >= 0 && !depth) {   /* as TLC reports it */
+        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+        print_trace_state(states[0], states[0], 1);
+        printf("\n");
+    } else {
+        if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+        else printf("Error: Deadlock reached.\n");
+        sym_print(states, act_of, depth + 1);
+    }
     itf_write(states, depth + 1, -1, bad >= 0 ? index : 0);
     return 1;
 }
@@ -16948,10 +17039,6 @@ static int symbolic(void) {
     if (rec) {
         printf("Error: Symbolic checking does not support recursive operators and functions, as Apalache does not: %s, %s.\n",
                S(rec->name), loc_str(rec->where));
-        return MANYAN_ERROR;
-    }
-    if (naction_props || nimplied_inits) {
-        printf("Error: Symbolic checking checks invariants, temporal properties and deadlock only: the configuration has action properties.\n");
         return MANYAN_ERROR;
     }
     if (sym_max_error > 1 && (!view_expr || sym_cinit_name)) {
@@ -17000,6 +17087,10 @@ static int symbolic(void) {
     }
     int depth = 0, bad = -1, prop = -1, stutter = 0, stuck = !init || !sat_solve(NULL, 0), none = stuck, outside = 0;
     int found = 0;   /* the violations reported, before the last one */
+    int as_tlc = (nfairness && ntemporal_props) || nconstraints || naction_constraints;   /* TLC's verdict, where Apalache has none */
+    int dead = -1, violated = L_FALSE, from = 0;   /* the depth of a deadlock, as TLC finds it; the last violation's literal, and its first ENABLED */
+    Value ***states = NULL;   /* the lasso violating prop, at lasso_depth */
+    int *act_of = NULL, loop = 0, lasso_depth = 0;
     SVal **views = NEWN(SVal *, sym_length + 1);
     for (; !stuck; depth++) {
         if (sym_max_error > 1) {
@@ -17007,22 +17098,33 @@ static int symbolic(void) {
             views[depth] = sym(view_expr, (SCtx){root_ctx, NULL}, P_BOTH);
         }
         for (int i = 0; i < ninvariants && bad < 0; i++) {
-            int violated = sym_violated(i, st, depth);
+            from = nsym_enableds;
+            violated = sym_violated(i, st, depth);
             while (bad < 0 && sat_solve(&violated, 1)) {
+                if (!sym_enabled_refine(from)) continue;
                 if (found + 1 == sym_max_error) { bad = i; break; }
-                int ok = sym_report(st, picks, nenabled, enabled, depth, i, found + 1);
+                int ok = sym_report(st, picks, nenabled, enabled, depth, i, violated, from, found + 1);
                 handler = &here;
                 if (!ok) return MANYAN_ERROR;
                 found++;
                 sat_unit(sym_other_views(views, depth));
             }
         }
-        int kept = sym_kept(st, depth), as_tlc = nfairness || nconstraints || naction_constraints;   /* TLC's verdict, where Apalache has none */
-        for (int p = 0; p < ntemporal_props && bad < 0 && prop < 0; p++) {
+        int kept = sym_kept(st, depth);
+        if (as_tlc && check_deadlock && bad < 0 && nactions) {   /* TLC checks every state for deadlock, before any property */
+            from = nsym_enableds;
+            violated = sym_dead(st, depth, kept);
+            while (sat_solve(&violated, 1)) if (sym_enabled_refine(from)) { dead = depth; break; }
+        }
+        for (int p = 0; p < ntemporal_props && bad < 0 && dead < 0 && prop < 0; p++) {
             if (sym_lasso_violated(p, sym_loop(st, depth), kept)) prop = p;
             else if (as_tlc && sym_lasso_violated(p, sym_stutter(st, depth), kept)) prop = p, stutter = 1;
+            if (prop < 0) continue;
+            if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, &loop, &states, &act_of)) return MANYAN_ERROR;
+            handler = &here;
+            lasso_depth = depth;
         }
-        if (bad >= 0 || prop >= 0 || depth == sym_length || !nactions) break;
+        if (bad >= 0 || dead >= 0 || (prop >= 0 && !(as_tlc && (ninvariants || check_deadlock))) || depth == sym_length || !nactions) break;
         if (!sat_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
         sat_unit(kept);
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
@@ -17040,11 +17142,16 @@ static int symbolic(void) {
         sat_unit(step.guard);
         st[depth + 1] = step.next;
     }
-    if (bad < 0 && prop < 0 && found) {   /* the views of the violations left no more */
+    if (bad >= 0 || dead >= 0) {
+        int ok = sym_report(st, picks, nenabled, enabled, depth, bad, violated, from, found + 1);
+        handler = NULL;
+        return !ok ? MANYAN_ERROR : bad >= 0 ? MANYAN_VIOLATION_SAFETY : MANYAN_VIOLATION_DEADLOCK;
+    }
+    if (prop < 0 && found) {   /* the views of the violations left no more */
         handler = NULL;
         return MANYAN_VIOLATION_SAFETY;
     }
-    if (bad < 0 && prop < 0 && !(stuck && check_deadlock && !outside)) {
+    if (prop < 0 && !(stuck && check_deadlock && !outside && !as_tlc)) {
         handler = NULL;
         printf("Model checking completed. No error has been found");
         if (none) printf(". No state satisfies the initial predicate.\n");
@@ -17055,27 +17162,25 @@ static int symbolic(void) {
     if (none) {
         handler = NULL;
         printf("Error: Deadlock reached.\nError: No state satisfies the initial predicate.\n");
-        return MANYAN_VIOLATION_SAFETY;
+        return MANYAN_VIOLATION_DEADLOCK;
     }
     if (prop < 0) {
-        int ok = sym_report(st, picks, nenabled, enabled, depth, bad, found + 1);
+        int ok = sym_report(st, picks, nenabled, enabled, depth, -1, L_TRUE, nsym_enableds, found + 1);
         handler = NULL;
-        return ok ? MANYAN_VIOLATION_SAFETY : MANYAN_ERROR;
+        return ok ? MANYAN_VIOLATION_DEADLOCK : MANYAN_ERROR;
     }
-    handler = NULL;   /* the solver's model is the lasso's */
-    Value ***states;
-    int *act_of, loop, n = depth + stutter;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, &loop, &states, &act_of)) return MANYAN_ERROR;
+    handler = NULL;
+    int n = lasso_depth + stutter;
     print_violated(states, n, loop);   /* as TLC prints a lasso */
     itf_write(states, n, loop, 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
-    for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + (i < depth)]);
+    for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + (i < lasso_depth)]);
     if (stutter) {
         printf("State %d: Stuttering\n", n + 1);
         return MANYAN_VIOLATION_LIVENESS;
     }
     printf("Back to state %d: ", loop + 1);
-    action_label(act_of[depth]);
+    action_label(act_of[lasso_depth]);
     printf("\n\n");
     return MANYAN_VIOLATION_LIVENESS;
 }

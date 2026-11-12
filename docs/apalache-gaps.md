@@ -59,8 +59,11 @@ so Manyan may check a specification Apalache rejects.
   only where its tableau's own variables repeat too, so it may find only
   a longer lasso than Manyan; the length is not compared.
 - Apalache has no fairness: `WF` and `SF` are left for the user to write
-  out, and `ENABLED` too. With fairness in the specification, Manyan
-  gives TLC's verdict: a fair lasso, which may also stutter forever.
+  out, and `ENABLED` too. With fairness in a specification whose
+  properties are checked, Manyan gives TLC's verdict: a fair lasso, which may also stutter forever,
+  once no invariant is violated and no state deadlocks; a deadlock is a
+  state without a successor, where Apalache's is one no behavior goes
+  on from. `ENABLED` in an invariant or a property is TLC's too.
 - Apalache 0.63.0 reads `CONSTRAINT` and `ACTION_CONSTRAINT` and then
   ignores them: with `CONSTRAINT x < 2` it reports `x < 3` violated, a
   state TLC never reaches. Manyan gives TLC's verdict: a state outside
@@ -87,9 +90,9 @@ operator whose parameters leave it open.
 
 ## Output
 
-Manyan prints TLC's format and exit statuses: a temporal property's
-violation exits with 13, where Apalache exits with 12 for every
-violation. With `-run-dir`, Manyan writes the counterexamples in ITF as
+Manyan prints TLC's format and exit statuses: a deadlock exits with 11
+and a temporal property's violation with 13, where Apalache exits with
+12 for every violation. With `-run-dir`, Manyan writes the counterexamples in ITF as
 Apalache does, but not its `violation*.tla` and `violation*.json`, nor
 Apalache's own variables in a lasso, which ends with ITF's `loop`
 instead. `vars` is in declaration order, where Apalache's is its own.

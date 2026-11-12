@@ -59,10 +59,12 @@ def errors(n):
 
 
 def manyan_outcome(output, code):
-    first = re.split(r"^Error: Invariant \S+ is violated\.$", output, flags=re.M)
+    invariant = r"^Error: Invariant (\S+) is violated(\.| by the initial state:)$"
+    first = re.split(invariant, output, flags=re.M)[::3]
     states = len(re.findall(r"^State \d+: ", first[1] if len(first) > 2 else output, flags=re.M))
-    violated = re.search(r"^Error: Invariant (\S+) is violated\.$", output, flags=re.M)
+    violated = re.search(invariant, output, flags=re.M)
     if violated:
+        states = states if violated.group(2) == "." else 1   # TLC prints the initial state unnumbered
         return f"Error {violated.group(1)} {states}{errors(len(first) - 1)}\nexit {code}\n"
     violated = re.search(r"^Error: Temporal property (\S+) was violated\.$", output, flags=re.M)
     if violated:
@@ -92,8 +94,8 @@ def apalache_outcome(output, code, directory, config):
     traces = sorted(directory.rglob("violation1.tla")) or sorted(directory.rglob("violation*.tla"))
     states = len(re.findall(r"^State\d+ ==", traces[0].read_text(), flags=re.M)) if traces else 0
     found = re.search(r"^Found (\d+) error\(s\)", output, flags=re.M)
-    if outcome == "Deadlock":
-        return f"Deadlock {states}\nexit {code}\n"
+    if outcome == "Deadlock":   # Apalache exits 12 for it, TLC (and Manyan) 11
+        return f"Deadlock {states}\nexit 11\n"
     # Apalache numbers the invariants it checks, a labelled conjunction's conjuncts apart.
     which = re.search(r"State \d+: (?:state|action) invariant (\d+) violated", output)
     names, properties = named(config, "INVARIANT"), named(config, "PROPERT")
