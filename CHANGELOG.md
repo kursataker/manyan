@@ -35,6 +35,8 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- a temporal property's actions are evaluated once for each edge of the
+  state graph: Examples' AllocatorImplementation 1.34 → 0.99 s
 - `-workers N` computes the initial states in parallel too, merged in
   the order one process finds them: Examples' MCBakery, 655200 initial
   states, 1.33 → 0.73 s with 4 workers

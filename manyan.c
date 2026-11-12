@@ -13540,6 +13540,20 @@ static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
 
 static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_values(to)); }
 
+/* An action atom on the state graph's step e of s, its edge or, past
+   them, s stuttering: per state, natoms for each step, 0 unknown, 1
+   false, 2 true. */
+static signed char **edge_atom_cache;
+static int edge_atom_states;
+
+static int atom_holds_edge(TF *t, int s, int e, int to) {
+    signed char **row = &edge_atom_cache[s];
+    if (!*row) *row = xcalloc((size_t)(states[s].nedges + 1) * (size_t)natoms, 1);
+    signed char *slot = &(*row)[(size_t)e * (size_t)natoms + (size_t)t->index];
+    if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), state_values(to)) ? 2 : 1);
+    return (*slot == 2) != t->neg;
+}
+
 static int atom_holds_on(TF *t, int s, Value **next) {
     int v;
     if (!t->action) {
@@ -13598,14 +13612,15 @@ static int tnode_admits(int n, int s) {
     return 1;
 }
 
-/* Whether the step from s to `to` can satisfy tableau node n's actions:
-   under symmetry or a view, some step of s to a state with to's
-   fingerprint, or s stuttering, does. */
-static int tnode_step(int n, int s, int to) {
+/* Whether the step from s to `to`, the state graph's step e of s if e
+   is not negative, can satisfy tableau node n's actions: under symmetry
+   or a view, some step of s to a state with to's fingerprint, or s
+   stuttering, does. */
+static int tnode_step(int n, int s, int e, int to) {
     if (!nsymmetry && !view_expr) {
         for (int i = 0; i < tnodes[n].nlits; i++) {
             TF *t = tnodes[n].lits[i];
-            if (t->action && !atom_holds(t, s, to)) return 0;
+            if (t->action && !(e >= 0 ? atom_holds_edge(t, s, e, to) : atom_holds(t, s, to))) return 0;
         }
         return 1;
     }
@@ -13655,11 +13670,11 @@ static int pnode_find(int s, int t, int create) {
    each successor of the tableau node. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
     static int *found, cap;   /* (successor, action) pairs */
-    int s = pnodes[p].state, t = pnodes[p].tnode, m = 0;
+    int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == states[s].edges;
     tnode_expand(t);
     for (int e = 0; e < n + stutter; e++) {
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
-        if (!tnode_step(t, s, target)) continue;
+        if (!tnode_step(t, s, graph ? e : -1, target)) continue;
         for (int k = 0; k < tnodes[t].nsucc; k++) {
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
@@ -14411,6 +14426,9 @@ static TF *live_setup(int p) {
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
     free(state_atom_cache);
     state_atom_cache = xcalloc((size_t)nstates * (size_t)(natoms + 1), 1);
+    for (int s = 0; s < edge_atom_states; s++) free(edge_atom_cache[s]);
+    free(edge_atom_cache);
+    edge_atom_cache = xcalloc((size_t)(edge_atom_states = nstates), sizeof(signed char *));
     return live_negated = neg;
 }
 
