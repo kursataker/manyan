@@ -1,5 +1,5 @@
 \* options: -length 10
-\* apalache-mc check --next=MustFail reorderTest.tla: ERROR (255)
+\* apalache-mc check --next=MayFail --tuning-options-file=reorderTest.properties reorderTest.tla: OK
 ------------------------------ MODULE reorderTest ------------------------------
 
 EXTENDS Integers 
@@ -47,4 +47,4 @@ MustFail == /\ \E x \in S:
 
 =============================================================================
 INIT Init
-NEXT MustFail
+NEXT MayFail

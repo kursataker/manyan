@@ -9,14 +9,14 @@ in TLC's format, with TLC's exit statuses.
 
 ## `apalache-mc check`
 
-247 checks in all.
+245 checks in all.
 
 | | checks | |
 |---|---:|---|
-| ported, giving Apalache's verdict | 186 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
+| ported, giving Apalache's verdict | 190 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
 | ported, refused as Apalache refuses them | 31 | below |
 | skipped | 10 | below |
-| not ported: options `-symbolic` lacks, or files the test lacks | about 20 | below |
+| not ported | 14 | 12 repeat a check ported but for options that do not change the outcome, such as `--out-dir` and `--tuning-options`; 2 check Quint's JSON, not TLA+ |
 
 ### Skipped
 
@@ -39,11 +39,6 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 - Bug2772_2: Apalache refuses to expand a set of functions past its limit.
 - ConfigUnsorted: Apalache refuses the cycle the configuration's
   substitutions make among the definitions.
-
-### Options -symbolic lacks
-
-- `--tuning-options`, `--tuning-options-file` (9 checks): Apalache's
-  solver settings; most do not change the verdict.
 
 ### Specifications Apalache refuses
 

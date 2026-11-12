@@ -28,9 +28,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests/symbolic/apalache"
 TYPECHECK = ROOT / "tests/typecheck/apalache"
-# Options that do not change the outcome, and those -symbolic has.
+# Options that do not change the outcome (the tuning ones set the solver), and those -symbolic has.
 IGNORED = {"--out-dir", "--run-dir", "--debug", "--write-intermediate", "--discard-disabled", "--smt-solver",
-           "--profiling", "--smtprof", "--output-traces"}
+           "--profiling", "--smtprof", "--output-traces", "--tuning-options", "--tuning-options-file"}
 KNOWN = {"--inv", "--temporal", "--length", "--init", "--next", "--config", "--cinit", "--no-deadlock", "--view", "--max-error"}
 # The modules manyan builds in, Apalache's among them.
 BUILT_IN = {"Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "Apalache",

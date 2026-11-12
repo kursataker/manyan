@@ -31,6 +31,11 @@ unreleased:
   as Apalache does: a string the specification has or a fresh one
 - `-symbolic` makes `Gen` in an operator whose parameters leave its type
   open, of the type each call instantiates
+- `-symbolic` keeps an `\E` of more than 64 bindings in `Next` as one
+  action, as Apalache does, where it split it into an action for each
+  binding as TLC does: Apalache's factorization test, an `\E` over
+  `2..1000000` twice, takes 0.02 s where it ran out of memory; Apalache's
+  tests run with `--tuning-options` now run too (190 give its verdict)
 - the configuration's `_PERIODIC`, evaluated as TLC does at a
   simulation's last progress report, and `_RL_REWARD`, checked and, as TLC
   does without its reinforcement learning, ignored

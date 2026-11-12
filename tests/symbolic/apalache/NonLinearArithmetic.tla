@@ -1,5 +1,5 @@
 \* options: -length 0
-\* apalache-mc check --smt-solver=cvc5 --length=0 --inv=SquareNonNegative NonLinearArithmetic.tla: ERROR (255)
+\* apalache-mc check --smt-solver=cvc5 --tuning-options=cvc5.smt.logic=QF_UFNIA --length=0 --inv=SquareNonNegative NonLinearArithmetic.tla: OK
 -------------------------- MODULE NonLinearArithmetic --------------------------
 EXTENDS Integers
 

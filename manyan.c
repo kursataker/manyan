@@ -8893,6 +8893,18 @@ static int bounds_constant(Expr *e) {
     return 1;
 }
 
+/* Whether the bounds of e have more bindings than -symbolic splits an
+   action into: past them it picks one, as Apalache does. */
+static int bindings_many(Expr *e, Ctx c) {
+    int64_t total = 1;
+    for (int i = 0; i < e->nb; i++) {
+        int64_t n = set_size(union_cache(eval(e->bounds[i].set, c)));
+        for (int j = 0; j < (e->bounds[i].tuple ? 1 : e->bounds[i].n); j++)
+            if (n < 0 || (total *= n) > 64) return 1;
+    }
+    return 0;
+}
+
 /* The actions of e, as TLC splits them: each named by the definition it
    is in, op, and labeled with the values of op's constant arguments. */
 static void split_action(Expr *e, Ctx c, int name, Def *op) {
@@ -8905,14 +8917,16 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
             /* As TLC, \E x \in S : A is one action if S is empty or fails. */
             SplitData s = {e->args[0], name, op};
             int n = nactions;
+            volatile int many = 0;
             EvalState es = eval_save();
             ErrorState er = error_save();
             sigjmp_buf here;
             handler = &here;
-            if (!sigsetjmp(here, 0)) for_bindings(e->bounds, e->nb, c, split_fn, &s);
-            else nactions = n;
+            if (sigsetjmp(here, 0)) nactions = n;
+            else if (!symbolic_mode || !(many = bindings_many(e, c))) for_bindings(e->bounds, e->nb, c, split_fn, &s);
             eval_restore(es);
             error_restore(&er);
+            if (many) { add_action(e, c, name, e->args[0], op); return; }   /* located as TLC's action of each binding */
             if (nactions > n) return;
         }
         break;
