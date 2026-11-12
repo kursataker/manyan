@@ -14,8 +14,8 @@ in TLC's format, with TLC's exit statuses.
 | | checks | |
 |---|---:|---|
 | ported, giving Apalache's verdict | 190 | invariants (state, action, trace), temporal properties, deadlock, `--cinit`, `Gen`, `--max-error` with `--view` |
-| ported, refused as Apalache refuses them | 34 | below |
-| skipped | 7 | below |
+| ported, refused as Apalache refuses them | 35 | below |
+| skipped | 6 | below |
 | not ported | 14 | 12 repeat a check ported but for options that do not change the outcome, such as `--out-dir` and `--tuning-options`; 2 check Quint's JSON, not TLA+ |
 
 ### Skipped
@@ -32,8 +32,6 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
   (TLC 32-bit), and bignums there would slow every model checked.
 - TestFunctions: Apalache itself runs out of 4 GB.
 - FoldSetInInit: `ApaFoldSet` over `SUBSET (1..10)` takes more than 1 GB.
-- Selections: Apalache refuses a disjunct that assigns other variables
-  than its siblings, by a syntactic analysis Manyan does not copy.
 
 ### Specifications Apalache refuses
 
@@ -43,9 +41,13 @@ whose type is left open; a `Repeat` whose count is no literal; a constant
 the configuration gives a value not of its type; `-max-error` without a
 `VIEW`; a set of sets of functions, `{[S -> T] : x \in U}`, which it
 would expand; a cycle its `OVERRIDE_` definitions make; a `LET` definition of an
-extended module named as a variable or constant of the root. These 34 checks expect Apalache's refusal, which
-`tests/symbolic_runner.py` compares as `Refused`, without the message. The refusal skipped above remains,
-so Manyan may check a specification Apalache rejects.
+extended module named as a variable or constant of the root; a disjunct,
+or an arm of `IF` or `CASE`, that assigns other variables than its
+siblings, as Apalache finds assignments, by the syntax alone. These 35 checks expect Apalache's refusal, which
+`tests/symbolic_runner.py` compares as `Refused`, without the message. Where the
+assignments go through an instance's variables or an operator's
+arguments, Manyan does not check that rule, so it may check a
+specification Apalache rejects.
 
 ### Differences in what is checked
 

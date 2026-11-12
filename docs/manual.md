@@ -199,7 +199,11 @@ typed, a recursive operator or function, a set or `<<>>` whose type is
 left open (`Cardinality({{}})`: annotate the empty set), a `Repeat`
 whose count is no literal, and a constant the configuration gives a
 value not of its type: a model value is a string, but `p_OF_PROC` a
-`PROC`.
+`PROC`. It refuses, too, a disjunct, or an arm of `IF` or `CASE`, that
+assigns other variables than its siblings: in `(x' = 1 \/ y' = 2) /\
+x' = 1 /\ y' = 2`, TLC takes either disjunct, but Apalache finds which
+`x' = e` or `x' \in S` assigns by the syntax alone, and needs each
+disjunct to assign the same.
 
 `Gen(n)` is any value of its type, with sets, functions and sequences of
 up to `n` elements, as in Apalache: the specification is type checked

@@ -129,7 +129,7 @@ report as TLC with one worker.
   Apalache does, with its `--cinit` (`-cinit`), `--max-error`
   (`-max-error`, with the configuration's `VIEW`), `--run-dir` (`-run-dir`,
   counterexamples in ITF), action and trace invariants, `Gen` and its
-  module, and TLC's fairness; 217 of
+  module, and TLC's fairness; 225 of
   Apalache's own tests give its outcome, refusing what it refuses (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
 - Experimental: `-typecheck` checks types and `@type` annotations as

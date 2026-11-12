@@ -14,7 +14,8 @@ unreleased:
   operator or function, a set or `<<>>` of an open type, a `Repeat` of no
   literal count, a constant configured with a value not of its type, a
   set of sets of functions it would expand, a `LET` definition of an
-  extended module named as a variable of the root; 32 more of Apalache's tests,
+  extended module named as a variable of the root, a disjunct that assigns
+  other variables than its siblings; 33 more of Apalache's tests,
   those it refuses, give its outcome
 - `-symbolic -max-error N` finds up to N violations told apart by the
   configuration's `VIEW`, as Apalache's `--max-error` with `--view`; its

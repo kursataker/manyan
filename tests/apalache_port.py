@@ -46,7 +46,6 @@ SKIP = {
     "InfDomFun": "Apalache reports f[0] = 42 violated, where f[0] is 42", "FunInInfiniteSubset": "a function over an infinite domain",
     "SafeMath": "integers of more than 64 bits", "SafeMath_2": "integers of more than 64 bits",
     "FoldSetInInit": "ApaFoldSet over SUBSET (1..10) takes more than 1 GB",
-    "Selections": "Apalache's syntactic analysis of what each disjunct assigns",
 }
 
 

@@ -1,0 +1,29 @@
+\* options: -length 10
+\* apalache-mc check Selections.tla: ERROR (255)
+---------------------- MODULE Selections ----------------------
+VARIABLE
+    \* @type: Int;
+    x,
+    \* @type: Int;
+    y,
+    \* @type: Int;
+    z
+
+Init ==
+    x = 0 /\ y = 1 /\ z = 2
+
+Next == /\ /\ \/ y' \in {1}
+              \/ y' \in {2}
+           /\ \/ x' \in {3}
+              \/ x' \in {4}
+              \/ /\ z' \in {5}
+                 /\ y' \in {6}
+        /\ \/ z' \in {7}
+           \/ z' \in {8}
+        /\ \/ x' \in {9}
+           \/ /\ x' \in {10}
+              /\ x' \in {11}
+
+==============================================================
+INIT Init
+NEXT Next
