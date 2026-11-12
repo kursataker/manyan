@@ -2027,6 +2027,7 @@ struct Def {
     int level_bound;      /* TLC's bound on its level, plus 1; 0 unknown */
     int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
     int level_checked;
+    unsigned level_walk;  /* the walk of subst_level that last entered it */
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int uncached;         /* one that failed as TLC started: evaluated each time, as in TLC */
     int local;
@@ -4954,6 +4955,43 @@ static int def_level(Def *d) {
 
 static int max_level(Expr **args, int n);
 
+/* The highest level of the substitutions for the declarations e names,
+   through the definitions it calls, where e is seen through the n
+   INSTANCEs of chain, outermost first: as SANY, an instance's definition
+   is of the level of what it uses. */
+static unsigned level_walks;   /* subst_level's walks, each marking the definitions it enters */
+static int subst_level(Expr *e, Def **chain, int n, unsigned walk) {
+    if (!e) return 0;
+    Def *in = chain[n - 1];
+    int l = 0, k;
+    if (e->kind == K_DECL)
+        for (int i = 0; i < in->nsubst; i++)
+            if (in->subst_decl[i] == e->def) {
+                Expr *x = in->subst_expr[i];
+                k = n == 1 ? expr_level(x) : subst_level(x, chain, n - 1, ++level_walks);
+                if (k > l) l = k;
+            }
+    if ((e->kind == K_CALL || e->kind == K_INSTCALL || e->kind == X_OPREF) && e->def->level_walk != walk) {
+        Def *d = e->def;
+        d->level_walk = walk;
+        if ((k = subst_level(d->body, chain, n, walk)) > l) l = k;
+        for (int i = 0; i < d->nb; i++) if ((k = subst_level(d->bounds[i].set, chain, n, walk)) > l) l = k;
+    }
+    if (e->kind == K_INSTCALL)
+        for (int j = 0; j < e->ndefs; j++)
+            for (int i = 0; i < e->defs[j]->nsubst; i++) if ((k = subst_level(e->defs[j]->subst_expr[i], chain, n, walk)) > l) l = k;
+    for (int i = 0; i < e->n; i++) if ((k = subst_level(e->args[i], chain, n, walk)) > l) l = k;
+    for (int i = 0; i < e->nb; i++) if ((k = subst_level(e->bounds[i].set, chain, n, walk)) > l) l = k;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int j = 0; j < e->paths[i].n; j++) if ((k = subst_level(e->paths[i].keys[j], chain, n, walk)) > l) l = k;
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) if ((k = subst_level(e->defs[i]->body, chain, n, walk)) > l) l = k;
+    if (e->kind == X_LAMBDA && (k = subst_level(e->def->body, chain, n, walk)) > l) l = k;
+    for (int i = 0; i < e->nseg; i++)
+        for (int j = 0; j < e->segs[i].n; j++) if ((k = subst_level(e->segs[i].args[j], chain, n, walk)) > l) l = k;
+    return l;
+}
+
 /* The level of a call of d: an argument counts when its parameter is used
    outside ENABLED, as SANY finds the level parameters of a definition. */
 static int args_level(Def *d, Expr **args, int n) {
@@ -5036,7 +5074,15 @@ static int expr_level(Expr *e) {
     }
     case K_INSTCALL: {
         int d = def_level(e->def);
-        for (int i = 0; i < e->ndefs; i++) { int p = def_level(e->defs[i]); if (p > d) d = p; }
+        int coarse = d;
+        for (int i = 0; i < e->ndefs; i++) { int p = def_level(e->defs[i]); if (p > coarse) coarse = p; }
+        if (coarse > d) {   /* only the substitutions it uses */
+            Def *def = e->def;
+            unsigned walk = def->level_walk = ++level_walks;
+            int p = subst_level(def->body, e->defs, e->ndefs, walk);
+            for (int i = 0; i < def->nb; i++) { int b = subst_level(def->bounds[i].set, e->defs, e->ndefs, walk); if (b > p) p = b; }
+            if (p > d) d = p;
+        }
         for (int i = 0; i < e->nseg; i++) { int a = max_level(e->segs[i].args, e->segs[i].n); if (a > d) d = a; }
         return d > l ? d : l;
     }
