@@ -74,6 +74,7 @@ In the order they were made.
 | Interning strings and model values (counters made 5.8M model values) | no gain: arena allocation is a pointer bump, and the scratch arena is reset each state, so it stays in cache |
 | `t \in [1..n -> R]` for a tuple `t` checking the domain by the interval's bounds, without enumerating it | 0.25% fewer instructions on Examples' MCBakery, whose TypeOK does it twice per state: the profile's samples there were the members' checks |
 | `assignable` with a fast path, an inline front, or a switch | each made partition about 11% slower with the profile-guided build; the loop form stays |
+| `ev_call` computing `+ - < <= > >=` of two integers inline, without the native call | none on the quick bench with the profile-guided build (counters 0.78 → 0.77, others equal): the natives are a few instructions already |
 
 ## Where the time goes now
 
