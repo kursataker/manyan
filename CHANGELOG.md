@@ -40,7 +40,9 @@ unreleased:
   an `<Initial predicate>` or a step to itself
 - `tests/fuzz.py live` (`make fuzz-live`) checks random temporal
   properties of random state graphs under weak and strong fairness
-  against TLC: 100 of 100 verdicts and 93 counterexamples are TLC's
+  against TLC, with ten of its fingerprint polynomials, as the lasso TLC
+  picks of several follows its fingerprints: 300 of 300 verdicts and 282
+  counterexamples are TLC's
 - a counterexample under weak fairness whose action is never taken goes
   through a state where it is disabled, as TLC's does; it stuttered at a
   state where it was enabled, a behavior that is not fair

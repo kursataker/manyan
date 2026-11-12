@@ -23,10 +23,10 @@ from TLC.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. The verdict is TLC's
-  on every random graph `tests/fuzz.py live` makes, the counterexample on
-  93 of 100: where there are several fair lassos, TLC prints the first
-  its search by possible error models completes, which Manyan does not
-  follow yet.
+  on every random graph `tests/fuzz.py live` makes, the counterexample
+  one TLC prints on 282 of 300. Of several fair lassos TLC prints the
+  first its search by possible error models completes, in an order its
+  random fingerprints set; Manyan does not follow that search yet.
 - Model more of Manyan's algorithms in `tests/tla`, such as the tableau
   and symmetry, and fuzz what the models cannot reach. The parallel
   search, the slicing of Init and the search for a fair cycle have models.

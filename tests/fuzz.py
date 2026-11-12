@@ -15,7 +15,7 @@ sim: runs models of tests/spec as random simulations (-simulate or
 
 live: checks a random temporal property of a random state graph under
 random weak and strong fairness with the engine and with TLC; they must
-print the same.
+print the same, for TLC with one of ten fingerprint polynomials.
 
 diff: makes random constant expressions and checks ASSUME PrintT(e) with
 the engine and with TLC; they must print the same. A batch of expressions
@@ -361,6 +361,13 @@ def live(engine, tlc, runs, seed):
             path.write_text(model)
             ours = spec_runner.run(engine, path, MEMORY)
             theirs = spec_runner.run(spec_runner.oracle_command(tlc), path, MEMORY)
+            # Of several fair lassos, TLC's search meets first the one its
+            # fingerprints' polynomial, picked at random, leads it to.
+            for fp in range(10):
+                if ours == theirs:
+                    break
+                if spec_runner.run(spec_runner.oracle_command(tlc) + ["-fp", str(fp)], path, MEMORY) == ours:
+                    theirs = ours
         if ours != theirs:
             failed += 1
             print(f"DIFF\n{model}--- engine\n{ours}--- TLC\n{theirs}")
