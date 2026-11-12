@@ -43,10 +43,11 @@ the configuration gives a value not of its type; `-max-error` without a
 would expand; a cycle its `OVERRIDE_` definitions make; a `LET` definition of an
 extended module named as a variable or constant of the root; a disjunct,
 or an arm of `IF` or `CASE`, that assigns other variables than its
-siblings, as Apalache finds assignments, by the syntax alone. These 35 checks expect Apalache's refusal, which
+siblings, or a `Next` that leaves a variable unassigned, as Apalache
+finds assignments, by the syntax alone, though TLC never takes it. These 35 checks expect Apalache's refusal, which
 `tests/symbolic_runner.py` compares as `Refused`, without the message. Where the
-assignments go through an instance's variables or an operator's
-arguments, Manyan does not check that rule, so it may check a
+assignments go through an instance's variables or a `LAMBDA`, Manyan
+does not check that rule, so it may check a
 specification Apalache rejects.
 
 ### Differences in what is checked

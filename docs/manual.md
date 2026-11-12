@@ -203,7 +203,8 @@ value not of its type: a model value is a string, but `p_OF_PROC` a
 assigns other variables than its siblings: in `(x' = 1 \/ y' = 2) /\
 x' = 1 /\ y' = 2`, TLC takes either disjunct, but Apalache finds which
 `x' = e` or `x' \in S` assigns by the syntax alone, and needs each
-disjunct to assign the same.
+disjunct to assign the same, and every variable assigned, even by an
+action never enabled.
 
 `Gen(n)` is any value of its type, with sets, functions and sequences of
 up to `n` elements, as in Apalache: the specification is type checked

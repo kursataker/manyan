@@ -16833,28 +16833,68 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
 }
 
 /* Which variables e assigns, as Apalache finds its assignments: by the
-   syntax alone, refusing a disjunct, or an arm of IF or CASE, that assigns
-   other variables than its siblings. What it cannot follow, an instance's
-   variables or an operator's arguments, leaves the rule unchecked. */
-static int asg_unknown;
+   syntax alone, with operators inlined, refusing a disjunct, or an arm of
+   IF or CASE, that assigns other variables than its siblings. What it
+   cannot follow, an instance's variables or a LAMBDA, leaves the rule
+   unchecked. asg_env holds the arguments of the operators being inlined. */
+static int asg_unknown, asg_depth;
+typedef struct { Def *param; Expr *arg; } AsgArg;
+static AsgArg *asg_env;
+static int nasg_env, asg_env_cap;
 static void asg(Expr *e, char *done);
 
+/* What e stands for: an argument for a parameter, a definition's body for
+   a name without arguments. */
+static Expr *asg_resolve(Expr *e) {
+    for (int depth = 0; depth < 100; depth++) {
+        int i = nasg_env - 1;
+        if (e->kind == K_BOUND || (e->kind == K_PARAMCALL && !e->n)) while (i >= 0 && asg_env[i].param != e->def) i--;
+        if (i >= 0 && (e->kind == K_BOUND || e->kind == K_PARAMCALL)) e = asg_env[i].arg;
+        else if (e->kind == K_CALL && !e->n && e->def->kind == D_OP && !e->def->native && !e->def->arity) e = e->def->body;
+        else return e;
+    }
+    return e;
+}
+
+static void asg_call(Def *d, Expr **args, int n, char *done) {
+    if (d->replacement) d = d->replacement;
+    if (d->kind != D_OP || d->native) return;
+    if (d->recursive || d->nparams != n || asg_depth > 100) { asg_unknown = 1; return; }
+    if (nasg_env + n > asg_env_cap) {
+        AsgArg *grown = NEWN(AsgArg, asg_env_cap = 2 * (nasg_env + n));
+        if (nasg_env) memcpy(grown, asg_env, sizeof *asg_env * (size_t)nasg_env);
+        asg_env = grown;
+    }
+    for (int i = 0; i < n; i++) asg_env[nasg_env + i].param = d->params[i], asg_env[nasg_env + i].arg = args[i];
+    nasg_env += n, asg_depth++;
+    asg(d->body, done);
+    nasg_env -= n, asg_depth--;
+}
+
 static void asg_target(Expr *lhs, char *done) {
+    lhs = asg_resolve(lhs);
     int primed = lhs->kind == K_PRIME;
-    if (primed) lhs = lhs->args[0];
-    if (lhs->kind == K_BOUND || lhs->kind == K_INSTCALL || (lhs->kind == K_CALL && !lhs->n) || (primed && lhs->kind != K_DECL))
+    if (primed) lhs = asg_resolve(lhs->args[0]);
+    if (lhs->kind == K_INSTCALL || (primed && lhs->kind != K_DECL))
         asg_unknown = 1;
-    else if (primed != sym_init && lhs->kind == K_DECL && lhs->def->kind == D_VAR) {
+    else if ((primed || sym_init) && lhs->kind == K_DECL && lhs->def->kind == D_VAR) {   /* in the initial predicate, x' is x */
         if (lhs->def->var_index < 0) asg_unknown = 1;
         else done[lhs->def->var_index] = 1;
     }
 }
 
 static void asg_unchanged(Expr *x, char *done) {
+    x = asg_resolve(x);
     if (x->kind == X_TUPLE) for (int i = 0; i < x->n; i++) asg_unchanged(x->args[i], done);
-    else if (x->kind == K_CALL && !x->n && x->def->kind == D_OP && !x->def->native) asg_unchanged(x->def->body, done);
     else if (x->kind == K_DECL) asg_target(&(Expr){.kind = K_PRIME, .n = 1, .args = &x}, done);
     else asg_unknown = 1;
+}
+
+/* The variables of want, all if NULL, that done does not assign; NULL if none. */
+static char *asg_missing(char *want, char *done) {
+    Buf b = {0};
+    for (int v = 0; v < nvars; v++) if ((!want || want[v]) && !done[v]) buf_printf(&b, "%s%s", b.s ? ", " : "", S(vars[v]->name));
+    return b.s;
 }
 
 static void asg_arms(Expr **arms, int n, char *done) {
@@ -16866,15 +16906,14 @@ static void asg_arms(Expr **arms, int n, char *done) {
         for (int v = 0; v < nvars; v++) any[v] |= sets[i][v];
     }
     for (int i = 0; i < n; i++) {
-        Buf b = {0};
-        for (int v = 0; v < nvars; v++) if (any[v] && !sets[i][v]) buf_printf(&b, "%s%s", b.s ? ", " : "", S(vars[v]->name));
-        if (b.s) fail_at(arms[i], "Missing assignments to: %s", b.s);
+        char *missing = asg_missing(any, sets[i]);
+        if (missing) fail_at(arms[i], "Missing assignments to: %s", missing);
     }
     memcpy(done, any, (size_t)nvars);
 }
 
 static void asg(Expr *e, char *done) {
-    if (asg_unknown || (e->kind != K_UNCHANGED && expr_level(e) < (sym_init ? 1 : 2))) return;
+    if (asg_unknown) return;
     switch (e->kind) {
     case K_AND: case X_ANGLEACT:
         for (int i = 0; i < (e->kind == K_AND ? e->n : 1); i++) asg(e->args[i], done);
@@ -16896,14 +16935,28 @@ static void asg(Expr *e, char *done) {
     case X_EXISTS: case X_LET: asg(e->args[0], done); return;
     case K_EQ: case K_IN: asg_target(e->args[0], done); return;
     case K_UNCHANGED: asg_unchanged(e->args[0], done); return;
-    case K_CALL: {
-        Def *d = e->def->replacement ? e->def->replacement : e->def;
-        if (d->kind == D_OP && !d->native && !d->recursive) asg(d->body, done);
+    case K_CALL: asg_call(e->def, e->args, e->n, done); return;
+    case K_PARAMCALL: {
+        Expr *op = asg_resolve(&(Expr){.kind = K_PARAMCALL, .def = e->def});
+        if (op->kind == X_OPREF || ((op->kind == K_CALL || op->kind == K_PARAMCALL) && !op->n)) asg_call(op->def, e->args, e->n, done);
+        else asg_unknown = 1;
         return;
     }
-    case K_PARAMCALL: case K_INSTCALL: case K_SUBSETEQ: asg_unknown = 1; return;
+    case K_BOUND: { Expr *x = asg_resolve(e); if (x != e) asg(x, done); return; }
+    case K_INSTCALL: case K_SUBSETEQ: asg_unknown = 1; return;
     default: return;
     }
+}
+
+/* That e, the initial predicate or the next-state relation, assigns
+   every variable as Apalache finds assignments. */
+static void asg_check(Expr *e, int init) {
+    char *done = NEWN(char, nvars), *missing;
+    sym_init = init;
+    asg_unknown = nasg_env = asg_depth = 0;
+    asg(e, done);
+    sym_init = 0;
+    if (!asg_unknown && (missing = asg_missing(NULL, done))) fail("No assignments found for: %s", missing);
 }
 
 /* The single branch of an action that assigns every variable, as one
@@ -16911,8 +16964,6 @@ static void asg(Expr *e, char *done) {
 static Branch *act_step(Expr *e, Ctx c, const char *what) {
     Branches out = {0};
     Branch in = {L_TRUE, NEWN(SVal *, nvars)};
-    asg_unknown = sym_cinit;
-    asg(e, NEWN(char, nvars));
     act(e, (SCtx){c, NULL}, in, &out);
     if (!out.n) return NULL;
     for (int k = 0; k < out.n; k++)
@@ -17390,6 +17441,8 @@ static int symbolic(void) {
         print_error_text();
         return MANYAN_ERROR;
     }
+    asg_check(init_expr, 1);
+    if (next_expr) asg_check(next_expr, 0);
     sym_init = sym_primed = 1;
     Branch *init = sym_cinit_name ? sym_constants() : &(Branch){L_TRUE, NULL};
     if (init) sat_unit(init->guard);
