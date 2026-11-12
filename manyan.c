@@ -1311,6 +1311,77 @@ static Value **elements_slot(Value *s) {
     }
 }
 
+/* Calls fn on each subset of the set base in the standard order: smaller
+   subsets first, then those of each size in the order of their elements;
+   so nothing to sort; until fn returns nonzero. The subset is one value,
+   reused: fn copies it to keep it. */
+static int each_subset(Value *base, int (*fn)(Value *sub, void *data), void *data) {
+    int n = base->n, c[64];
+    if (n > 64) fail("Attempted to enumerate SUBSET of a set with too many elements.");
+    Value *sub = mk_set(n);
+    for (int k = 0; k <= n; k++) {
+        for (int i = 0; i < k; i++) c[i] = i;
+        for (;;) {
+            sub->n = k;
+            sub->u.set.hash = 0;
+            sub->u.set.source = NULL;
+            for (int i = 0; i < k; i++) sub->u.set.elems[i] = base->u.set.elems[c[i]];
+            int r = fn(sub, data);
+            if (r) return r;
+            int i = k - 1;
+            while (i >= 0 && c[i] == n - k + i) i--;
+            if (i < 0) break;
+            c[i]++;
+            for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
+        }
+    }
+    return 0;
+}
+
+static Value *set_copy(Value *s) {
+    Value *c = mk_set(s->n);
+    memcpy(c->u.set.elems, s->u.set.elems, sizeof(Value *) * (size_t)s->n);
+    return c;
+}
+
+static int subset_keep(Value *sub, void *out) { Value *o = out; o->u.set.elems[o->n++] = set_copy(sub); return 0; }
+
+static Value *filter_member_test(Value *s, Value *v);
+
+/* {x \in SUBSET S : p}, as TLC enumerates it: each subset in turn, given
+   to fn if p holds, never all of them at once. */
+typedef struct { Value *filter; int (*fn)(Value *, void *); void *data; } SubsetFilter;
+static int subset_filter(Value *sub, void *data) {
+    SubsetFilter *f = data;
+    Region *r = region_open();
+    Value *holds = filter_member_test(f->filter, sub);
+    region_close(r);
+    return holds == TRUEV ? f->fn(set_copy(sub), f->data) : 0;
+}
+
+static int list_keep(Value *v, void *l) { list_add(l, v); return 0; }
+
+/* Calls fn on each element of the filter s in turn, until it returns
+   nonzero: of SUBSET S, without making them all. */
+static Value *filter_base(Value *s);
+static int each_filtered(Value *s, int (*fn)(Value *, void *), void *data) {
+    Value *in = s->u.l.a;
+    if (in->kind == V_LAZY && in->lazy == L_SUBSET && !in->u.l.b && !set_is_infinite(in->u.l.a)) {
+        SubsetFilter f = {s, fn, data};
+        Value *base = enumerate(in->u.l.a);
+        fp_enter(in->u.l.expr);
+        int r = each_subset(base, subset_filter, &f);
+        fp_leave(in->u.l.expr);
+        return r;
+    }
+    Value *base = filter_base(s);
+    for (int i = 0; i < base->n; i++) {
+        int r = filter_member_test(s, base->u.set.elems[i]) == TRUEV ? fn(base->u.set.elems[i], data) : 0;
+        if (r) return r;
+    }
+    return 0;
+}
+
 static Value *enumerate_lazy(Value *s) {
     switch (s->lazy) {
     /* A set TLC made with a source names it if enumerating it fails. */
@@ -1320,22 +1391,9 @@ static Value *enumerate_lazy(Value *s) {
         Value *base = enumerate(s->u.l.a);
         if (base->n >= 31) fail("Overflow when computing the number of elements in:\n%s", pretty(s));   /* TLC's size() */
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
-        /* In the standard order, so nothing to sort: smaller subsets first,
-           then those of each size in the order of their elements. */
-        int n = base->n, at = 0, c[24];
-        Value *out = mk_set(1 << n);
-        for (int k = 0; k <= n; k++) {
-            for (int i = 0; i < k; i++) c[i] = i;
-            for (;;) {
-                Value *sub = out->u.set.elems[at++] = mk_set(k);
-                for (int i = 0; i < k; i++) sub->u.set.elems[i] = base->u.set.elems[c[i]];
-                int i = k - 1;
-                while (i >= 0 && c[i] == n - k + i) i--;
-                if (i < 0) break;
-                c[i]++;
-                for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
-            }
-        }
+        Value *out = mk_set(1 << base->n);
+        out->n = 0;
+        each_subset(base, subset_keep, out);
         fp_leave(s->u.l.expr);
         return out;
     }
@@ -1392,10 +1450,8 @@ static Value *enumerate_lazy(Value *s) {
     case L_FILTER: {
         if (s->u.l.b) return s->u.l.b;
         Arena *saved = keeping(s->perm);
-        Value *base = filter_base(s);
         List out = {0};
-        for (int i = 0; i < base->n; i++)
-            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
+        each_filtered(s, list_keep, &out);
         Value *set = list_set(&out);
         /* Keep the elements unless they would outlive the filter's arena. */
         if (may_keep(s)) s->u.l.b = set;
@@ -8685,6 +8741,12 @@ static int gen_tracked(Expr *e, Ctx c, Cont *k) {
 static inline int gen(Expr *e, Ctx c, Cont *k) { return tracking ? gen_tracked(e, c, k) : gen_untracked(e, c, k); }
 
 /* var' \in s: each element in turn, in TLC's random order in -generate. */
+typedef struct { int var; Cont *k; } GenMember;
+static int gen_member_take(Value *v, void *data) {
+    GenMember *g = data;
+    return !slicing || choice_take() ? gen_assign(g->var, v, g->k) : 0;
+}
+
 static int gen_member(int var, Value *s, Expr *e, Cont *k) {
     /* TLC enumerates any set it can, failing there for an infinite one. */
     if (!is_set(s) || user_set(s))
@@ -8701,10 +8763,8 @@ static int gen_member(int var, Value *s, Expr *e, Cont *k) {
     int r = 0;
     if (slicing && !choice_begin()) return 0;
     if (s->kind == V_LAZY && s->lazy == L_FILTER && !s->u.l.b) {   /* as TLC, one element at a time */
-        Value *base = filter_base(s);
-        for (int i = 0; i < base->n && !r; i++)
-            if (filter_member_test(s, base->u.set.elems[i]) == TRUEV && (!slicing || choice_take()))
-                r = gen_assign(var, base->u.set.elems[i], k);
+        GenMember g = {var, k};
+        r = each_filtered(s, gen_member_take, &g);
     } else {
         s = elements(s);
         for (int i = 0; i < s->n && !r; i++) if (!slicing || choice_take()) r = gen_assign(var, s->u.set.elems[i], k);

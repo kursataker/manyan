@@ -43,6 +43,10 @@ unreleased:
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
   verdicts and 899 counterexamples are TLC's (before nested properties)
+- `{x \in SUBSET S : P}` takes each subset in turn, as TLC does, so `S`
+  may have more than 24 elements: Examples' SpanTreeTest5Nodes, a filter
+  of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
+  Manyan 168 s); it failed with an overflow
 - a counterexample's cycle ends with the step into its first state, as
   TLC's does; a move between that state's tableau nodes printed it twice,
   the last labelled `<Initial predicate>`
