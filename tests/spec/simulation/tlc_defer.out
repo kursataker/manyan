@@ -1,0 +1,13 @@
+Finished computing initial states: 1 distinct state generated.
+<<"last", 3>>
+<<"four", 4>>
+<<"last", 3>>
+<<"pre", 7, 8>>
+<<"pre", 0, 1>>
+<<"four", 4>>
+<<"two", 4, 6>>
+<<"two", 6, 8>>
+<<"last", 3>>
+<<"last", 3>>
+<<"two", 6, 8>>
+exit 0

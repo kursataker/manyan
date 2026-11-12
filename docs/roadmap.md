@@ -17,7 +17,7 @@ from TLC.
   output ([full benchmark](fullbench.md)). Each spec that differs becomes a test in
   `tests/spec` and then a fix. The goal is all of them.
 - Finish TLC 1.8.0's `TLCExt`: `CounterExample` and `ToTrace` in a
-  `POSTCONDITION`, `TLCDefer`, `TLCFP` and `TLCEvalDefinition`.
+  `POSTCONDITION`, and `TLCFP`.
 - Close the gaps the [manual](manual.md#limitations) lists:
   - `-coverage`, `-generateSpecTE`, `-dfid`, `-terse` and `-maxSetSize`;
   - checkpoints;

@@ -384,10 +384,16 @@ static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va
     char *small = xmalloc((size_t)n + 1);
     vsnprintf(small, (size_t)n + 1, fmt, ap);
     error_reset();
-    if (!module && java_depth) {
-        for (int i = 0; i < java_depth && i < 64; i++)
+    /* TLC's evaluator wraps an error in each Java method it is raised in;
+       an evaluation method wraps any error raised in it. */
+    int wrapped = 0;
+    for (int i = 0; i < java_depth && i < 64; i++)
+        if (!module || strstr(java_frames[i], "ExprOrOpArgNode[]")) {
             buf_printf(&error_message, "Attempted to apply the operator overridden by the Java method\n%s,\n"
                        "but it produced the following error:\n", java_frames[i]);
+            wrapped = 1;
+        }
+    if (wrapped) {
         buf_puts(&error_message, small);
         loc_line(&error_message, e);
         e = NULL;
@@ -2049,6 +2055,7 @@ typedef struct {
     Expr *expr;
     Module *module;
     int local;
+    Expr *where;          /* an assumption's, from its keyword */
 } Unit;
 
 struct Module {
@@ -3422,6 +3429,8 @@ static Module *parse_module(Module *outer) {
             Expr *e = parse_expr();
             if (d) { d->body = e; add_name(m, d); }
             add_unit(m, 2, d, e, NULL, 0);
+            Expr *where = m->units[m->nunits - 1].where = mk_expr(e->kind, t);
+            where->l2 = e->l2, where->c2 = e->c2;
             continue;
         }
         if (is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY")) {
@@ -4746,8 +4755,11 @@ static void resolve_module(Module *m) {
     }
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
-        if (u->kind == 2) check_levels(u->expr, 3);
-        else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
+        if (u->kind == 2) {
+            check_levels(u->expr, 3);
+            int l = expr_level(u->expr);
+            if (l) semantic_error(u->where, "Level error: assumptions must be level 0 (Constant), \nbut this one has level %d.", l);
+        } else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
         else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
     }
     if (!m->outer) { print_warnings(m); lint_records(m); }
@@ -7837,10 +7849,61 @@ static _Noreturn void unsupported(const char *op) {
 #define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
 UNSUPPORTED(n_counterexample, "CounterExample")
 UNSUPPORTED(n_totrace, "ToTrace")
-UNSUPPORTED(n_tlcdefer, "TLCDefer")
 UNSUPPORTED(n_picksuccessor, "PickSuccessor")
 UNSUPPORTED(n_tlcfp, "TLCFP")
-UNSUPPORTED(n_tlcevaldefinition, "TLCEvalDefinition")
+
+/* TLCDefer(e): TRUE. A simulation evaluates e once it picks the successor
+   being made, where e was met, as TLC's worker calls the callable its
+   working state keeps: the last one met, from where the successor before
+   was emitted. Model checking keeps none. */
+typedef struct { Expr *e; Ctx c; Value **st; int primed; } Defer;
+static Defer sim_defer;
+NATIVE(n_tlcdefer) {
+    UNUSED;
+    if (!a && simulating && !gen_init)
+        sim_defer.e = call->args[0], sim_defer.c = c, sim_defer.st = cur_state, sim_defer.primed = next_state != NULL;
+    return TRUEV;
+}
+
+/* TLCEvalDefinition(name): the body of the root module's definition of
+   that name without parameters, as written: the configuration replaces
+   it, or TLC's Java gives it, only where it is called by name. */
+static Value *fcndef_value(Def *d, Ctx c);
+static Module *root;
+NATIVE(n_tlcevaldefinition) {
+    UNUSED;
+    if (a) return TRUEV;
+    Value *v = eval(call->args[0], c);
+    if (v->kind != V_STR)
+        fail("The argument of TLCEvalDefinition should be a string, but instead it is:\n%s", pretty(v));
+    Module *m = root;
+    Inst *inst = NULL;
+    Def *d = NULL;
+    for (const char *s = S((int)v->u.i), *bang; s; s = bang ? bang + 1 : NULL) {
+        bang = strchr(s, '!');
+        Sym *sym = m ? module_lookup(m, bang ? intern_n(s, (int)(bang - s)) : intern(s)) : NULL;
+        d = sym && (m == root || !sym->local) ? sym->def : NULL;
+        for (int k = 0; d && k < sym->npath; k++) {
+            Inst *in = NEW(Inst);
+            in->def = sym->path[k], in->parent = inst, inst = in;
+        }
+        if (d && bang && d->kind == D_INST && !d->nparams) {
+            Inst *in = NEW(Inst);
+            in->def = d, in->parent = inst, inst = in;
+            m = d->target;
+        } else if (bang) d = NULL;
+        if (!d) break;
+    }
+    if (!d || (d->kind != D_OP && d->kind != D_FCN && d->kind != D_RECURSIVE))
+        fail("The argument of TLCEvalDefinition should be a name of a definition reachable from the root module, but instead it is:\n%s", pretty(v));
+    if (d->nparams) {
+        Buf b = {0};
+        for (int i = 0; i < d->nparams; i++) buf_printf(&b, "%s%s", i ? ", " : "", S(d->params[i]->name));
+        fail("The argument of TLCEvalDefinition should be a a zero-arity definition, but instead it is:\n%s(%s)", S(d->name), b.s);
+    }
+    Ctx dc = {NULL, inst};
+    return d->kind == D_FCN ? fcndef_value(d, dc) : eval_body(d->body, dc);
+}
 
 /* Java's names of TLC's value classes, for its methods' signatures. */
 #define J_V "tlc2.value.impl.Value"
@@ -11037,6 +11100,8 @@ static int sim_emit(void) {
    kept if in the model. A failed check stops the generation. */
 static int sim_failed;        /* its failed check: 1 incomplete, 2 an invariant, 3 an action property */
 static int sim_bad;           /* the invariant or action property */
+static Defer *sim_defers;     /* each successor kept's TLCDefer */
+static int sim_defers_cap;
 
 static int sim_succ_emit(void) {
     generated++;
@@ -11045,9 +11110,25 @@ static int sim_succ_emit(void) {
         if (!s1[v]) return sim_failed = 1;
     if ((sim_bad = check_list(invariants, ninvariants, s1)) >= 0) return sim_failed = 2;
     if ((sim_bad = check_actions(action_props, naction_props, cur_state, s1)) >= 0) return sim_failed = 3;
-    if (check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, cur_state, s1) < 0)
+    int kept = check_list(constraints, nconstraints, s1) < 0 && check_actions(action_constraints, naction_constraints, cur_state, s1) < 0;
+    if (kept) {
         sim_push(&sim_found, s1, cur_action);
+        if (sim_defers_cap < sim_found.cap) sim_defers = xrealloc(sim_defers, sizeof(Defer) * (size_t)(sim_defers_cap = sim_found.cap));
+        sim_defers[sim_found.n - 1] = sim_defer;
+    }
+    sim_defer.e = NULL;
     return 0;
+}
+
+/* The successor picked, from st: what TLCDefer left it to evaluate. */
+static void sim_deferred(Value **st, int k) {
+    Defer d = sim_defers[k];
+    if (!d.e) return;
+    cur_state = d.st;
+    next_state = d.primed ? sim_found.a[k] : NULL;
+    eval(d.e, d.c);
+    cur_state = st;
+    next_state = NULL;
 }
 
 /* The successors of st by one action: TLC picks the first action at
@@ -11061,6 +11142,7 @@ static int sim_next(Value **st) {
     for (int i = 0; i < nactions; i++) {
         cur_state = st;
         cur_action = a;
+        sim_defer.e = NULL;   /* each action's working state is new */
         memset(succ, 0, sizeof(Value *) * (size_t)nvars);
         next_state = succ;
         gen_target = succ;
@@ -11288,6 +11370,7 @@ static int simulate(const ManyanOptions *o) {
                 break;
             }
             int k = rng_index(sim_found.n);
+            sim_deferred(st, k);
             sim_push(trace, st = sim_found.a[k], sim_found.act[k]);
         }
         if (exit_requested) break;   /* TLCSet("exit"): the simulation ends after the step */

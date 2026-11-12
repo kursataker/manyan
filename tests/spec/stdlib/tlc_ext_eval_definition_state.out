@@ -1,0 +1,7 @@
+Error: Evaluating assumption line 7, col 8 to line 7, col 39 of module tlc_ext_eval_definition_state failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLCExt.tlcDefByName(tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context,tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel),
+but it produced the following error:
+In evaluation, the identifier x is either undefined or not an operator.
+line 6, col 8 to line 6, col 8 of module tlc_ext_eval_definition_state
+exit 10

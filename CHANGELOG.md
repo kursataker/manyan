@@ -27,6 +27,12 @@ unreleased:
   `JsonSerialize`, `ndJsonSerialize`
 - TLCExt's `Trace`: the behavior to the state evaluated, in a search, a
   simulation, and an `ALIAS` while the error trace is printed
+- TLCExt's `TLCEvalDefinition`: the body of the root module's definition
+  of that name, as written; `TLCDefer`: TRUE, its expression evaluated
+  when a simulation picks the successor it was met for
+- An assumption of a level above constant is SANY's level error; an
+  error raised in one of TLC's evaluation methods (`TLCEvalDefinition`,
+  `TLCCache`, ...) is wrapped in its Java method, as TLC wraps it
 
 2026-11-12 0.10.0:
 

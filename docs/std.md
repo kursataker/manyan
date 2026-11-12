@@ -10,9 +10,8 @@ says how one is written.
 Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
 Randomization, RealTime, Toolbox, TLCExt and Json are built into `manyan.c`: a
 spec need not supply them, and one it supplies is read in their place. Of
-TLCExt, `CounterExample`, `ToTrace`, `TLCDefer`, `PickSuccessor`, `TLCFP` and
-`TLCEvalDefinition` stop the check: they need TLC's own trace file,
-fingerprints or interaction.
+TLCExt, `CounterExample`, `ToTrace`, `PickSuccessor` and `TLCFP` stop the
+check: they need TLC's own trace file, fingerprints or interaction.
 
 ## CommunityModules
 
