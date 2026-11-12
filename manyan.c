@@ -12706,9 +12706,15 @@ static int java_bucket(int name, int cap) {
     return (int)((h & 0x7fffffff) % (uint32_t)cap);
 }
 
-static Def **tlc_constants(int *n) {
+/* The capacity of SANY's Hashtable of the root module's symbols. */
+static int root_table_cap(void) {
     int cap = 11, count = 72 + root->nsyms;
     for (int k = 0; k < count; k++) if (k >= (int)(cap * 0.75)) cap = cap * 2 + 1;
+    return cap;
+}
+
+static Def **tlc_constants(int *n) {
+    int cap = root_table_cap();
     Def **c = NEWN(Def *, root->ndecls);
     *n = 0;
     for (int i = 0; i < root->ndecls; i++) {
@@ -19487,6 +19493,24 @@ static void tc_walk(Module *m, TInst *frame, Module ***seen, int *nseen, Module 
     }
 }
 
+/* Apalache names a declaration without an annotation as it translates
+   SANY's root module, its constants then its variables, each in its
+   Hashtable's order (tlc_constants), from the last: where all are the
+   root module's own. */
+static void tc_unannotated(void) {
+    Def *last = NULL;
+    int cap = root_table_cap();
+    for (int i = 0; i < tc_ndecls; i++) {
+        Def *d = tc_decls[i].def;
+        if (!d || (d->kind != D_CONST && d->kind != D_VAR) || tc_decls[i].has_annot) continue;
+        int own = 0;
+        for (int k = 0; k < root->ndecls && !own; k++) own = root->decls[k] == d;
+        if (tc_decls[i].frame || !own) return;
+        if (!last || d->kind > last->kind || (d->kind == last->kind && java_bucket(d->name, cap) >= java_bucket(last->name, cap))) last = d;
+    }
+    if (last) tc_input_error("Expected a type annotation for %s %s", last->kind == D_CONST ? "CONSTANT" : "VARIABLE", S(last->name));
+}
+
 /* Apalache's ensureTypeSystem12: old records are not types of Type System 1.2. */
 static int ts12(Type *t) {
     if (t->kind == TY_OLDREC) return 0;
@@ -19569,6 +19593,7 @@ static void tc_annotations(void) {
             tc_decls[i].has_annot = 1;
         }
     }
+    tc_unannotated();
     for (int i = tc_ndecls - 1; i >= 0; i--) {   /* as Apalache translates them, from the last */
         Def *d = tc_decls[i].def;
         if (d && (d->kind == D_CONST || d->kind == D_VAR) && !tc_decls[i].has_annot)

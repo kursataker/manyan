@@ -5,7 +5,8 @@ unreleased:
   annotations, inference with records, variants and rows, Apalache's
   messages and exit statuses. All 75 of Apalache 0.63.0's type checking
   tests give its outcome (tests/typecheck/apalache, ported by
-  tests/apalache_port.py)
+  tests/apalache_port.py), and of all 62 annotated modules of
+  tlaplus/Examples
 - `-symbolic` makes Apalache's `Gen(n)` from the types `-typecheck` infers:
   Bug2973 and Bug3158 of Apalache's tests now run, and 182 of them give its
   outcome
