@@ -88,5 +88,7 @@ operator whose parameters leave it open.
 
 Manyan prints TLC's format and exit statuses: a temporal property's
 violation exits with 13, where Apalache exits with 12 for every
-violation. Apalache's counterexample files (`violation*.tla`, ITF JSON)
-are not written.
+violation. With `-run-dir`, Manyan writes the counterexamples in ITF as
+Apalache does, but not its `violation*.tla` and `violation*.json`, nor
+Apalache's own variables in a lasso, which ends with ITF's `loop`
+instead. `vars` is in declaration order, where Apalache's is its own.

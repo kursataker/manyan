@@ -1,0 +1,171 @@
+{
+  "#meta": {
+    "format": "ITF",
+    "format-description": "https://apalache-mc.org/docs/adr/015adr-trace.html",
+    "description": "Created by Manyan",
+    "varTypes": {
+      "f": "(Int -> Bool)",
+      "m": "M",
+      "r": "{ a: Str, b: Int }",
+      "s": "Seq(Int)",
+      "t": "<<Int, Str>>",
+      "set": "Set(Int)",
+      "v": "A(UNIT) | B(Int)",
+      "x": "Int"
+    }
+  },
+  "params": [
+    "N"
+  ],
+  "vars": [
+    "f",
+    "m",
+    "r",
+    "s",
+    "t",
+    "set",
+    "v",
+    "x"
+  ],
+  "states": [
+    {
+      "#meta": {
+        "index": 0
+      },
+      "N": {
+        "#bigint": "2"
+      },
+      "f": {
+        "#map": [
+          [
+            {
+              "#bigint": "1"
+            },
+            true
+          ],
+          [
+            {
+              "#bigint": "2"
+            },
+            false
+          ]
+        ]
+      },
+      "m": "m1_OF_M",
+      "r": {
+        "a": "q",
+        "b": {
+          "#bigint": "1"
+        }
+      },
+      "s": [
+        {
+        "#bigint": "3"
+      },
+        {
+        "#bigint": "1"
+      }
+      ],
+      "set": {
+        "#set": [
+          {
+          "#bigint": "1"
+        },
+          {
+          "#bigint": "2"
+        },
+          {
+          "#bigint": "3"
+        }
+        ]
+      },
+      "t": {
+        "#tup": [
+          {
+            "#bigint": "2"
+          },
+          "z\"q"
+        ]
+      },
+      "v": {
+        "tag": "B",
+        "value": {
+          "#bigint": "7"
+        }
+      },
+      "x": {
+        "#bigint": "-1"
+      }
+    },
+    {
+      "#meta": {
+        "index": 1
+      },
+      "N": {
+        "#bigint": "2"
+      },
+      "f": {
+        "#map": [
+          [
+            {
+              "#bigint": "1"
+            },
+            true
+          ],
+          [
+            {
+              "#bigint": "2"
+            },
+            false
+          ]
+        ]
+      },
+      "m": "m1_OF_M",
+      "r": {
+        "a": "q",
+        "b": {
+          "#bigint": "1"
+        }
+      },
+      "s": [
+        {
+        "#bigint": "3"
+      },
+        {
+        "#bigint": "1"
+      },
+        {
+        "#bigint": "-1"
+      }
+      ],
+      "set": {
+        "#set": [
+          {
+          "#bigint": "1"
+        },
+          {
+          "#bigint": "2"
+        },
+          {
+          "#bigint": "3"
+        }
+        ]
+      },
+      "t": {
+        "#tup": [
+          {
+            "#bigint": "2"
+          },
+          "z\"q"
+        ]
+      },
+      "v": {
+        "tag": "A",
+        "value": "U_OF_UNIT"
+      },
+      "x": {
+        "#bigint": "1"
+      }
+    }
+  ]
+}

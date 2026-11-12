@@ -51,6 +51,7 @@ for it; [std.md](std.md) lists them.
 | `-length N` | symbolic checking: the steps in a behavior (10) |
 | `-cinit C` | symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's `--cinit` |
 | `-max-error N` | symbolic checking: the invariant violations to find (1), as Apalache's `--max-error`: those the configuration's `VIEW` tells apart |
+| `-run-dir DIR` | symbolic checking: write each counterexample to `DIR` in ITF, as Apalache's `--run-dir` |
 | `-typecheck` | experimental: check the module's types as Apalache's `apalache-mc typecheck` does, without a configuration (see [Type checking](#type-checking-experimental)) |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
@@ -152,7 +153,7 @@ invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
 0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-40 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+42 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -171,6 +172,16 @@ supposed none.
 does, until N are found: each behavior after one must differ from it in
 the configuration's `VIEW` of some state, so that the violations found
 are as many as the views tell apart. Each is printed as TLC prints one.
+
+`-run-dir DIR` also writes each counterexample in Apalache's Informal
+Trace Format (ITF, its ADR-015), as Apalache writes it there:
+`violationN.itf.json` for the Nth violation, `violation0.itf.json` for a
+deadlock, and `violation.itf.json` for the last. Each value is written by
+its type, and the constants are in each state. A lasso ends at the last
+state before its loop, with `"loop"` the index of the first state on it;
+Apalache instead repeats that state and adds its tableau's variables.
+`vars` lists the variables as declared. Apalache's `.tla` and `.json`
+counterexamples are not written.
 
 As Apalache does, `-symbolic` refuses a specification that is not well
 typed, a recursive operator or function, a set or `<<>>` whose type is
@@ -285,7 +296,7 @@ A test in `tests/symbolic` is a module and its configuration, as in
 `tests/spec`, with an `options:` line for `-length`, `-deadlock` and
 `-cinit`; `NAME.out` is Apalache's outcome (no error, the invariant
 violated or a deadlock, with the length of the counterexample) and exit
-status. `tests/symbolic/apalache` is ported from Apalache's own
+status. With `NAME.itf.json`, `-run-dir` must write that counterexample. `tests/symbolic/apalache` is ported from Apalache's own
 integration tests by `tests/apalache_port.py`. Each run is killed past
 `--memory` MB resident (1000, 3000 with an oracle), and only as many run
 at once as keep to half the machine's memory.

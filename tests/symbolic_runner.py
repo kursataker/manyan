@@ -15,7 +15,9 @@ exit status, not a bug or a crash. For a property the counterexample is a lasso,
 is not compared: Apalache closes a loop only where its tableau's own
 variables repeat too, so it may find only a longer one than Manyan.
 The traces themselves are the solver's choice and are not compared;
-Manyan replays each of its own through its evaluator.
+Manyan replays each of its own through its evaluator. But where a test
+has NAME.itf.json, Manyan's -run-dir must write it, the last
+counterexample in ITF, as violation.itf.json.
 
 With --oracle, Apalache (its apalache-mc) must give NAME.out too, which
 validates the test; --bless writes NAME.out from it. Each run is killed
@@ -121,13 +123,15 @@ def run(command, path, oracle, memory):
             args = command + ["-symbolic", "-length", length] + (["-deadlock"] if no_deadlock else [])
             args += ["-cinit", cinit] if cinit else []
             args += ["-max-error", max_error] if max_error else []
+            args += ["-run-dir", f"{directory}/run"] if path.with_suffix(".itf.json").exists() else []
             args += ["-config", cfg, path.stem]
         _, output, code, killed = guarded(args, directory, 600, memory)
         if killed:
-            return f"{killed}\n", output
+            return f"{killed}\n", output, None
         if oracle:
-            return apalache_outcome(output, code, directory, (directory / cfg).read_text()), output
-        return manyan_outcome(output, code), output
+            return apalache_outcome(output, code, directory, (directory / cfg).read_text()), output, None
+        itf = directory / "run/violation.itf.json"
+        return manyan_outcome(output, code), output, itf.read_text() if itf.exists() else None
 
 
 def main():
@@ -153,16 +157,19 @@ def main():
         expected_path = path.with_suffix(".out")
         notes = []
         if args.oracle:
-            reference, log = run(oracle, path, True, memory)
+            reference, log, _ = run(oracle, path, True, memory)
             if args.bless:
                 expected_path.write_text(reference)
             elif not expected_path.exists() or reference != expected_path.read_text():
                 notes.append("oracle disagrees with " + expected_path.name + ": " + reference.replace("\n", " "))
         if not expected_path.exists():
             return path, False, ["no " + expected_path.name], ""
-        actual, output = run(engine, path, False, memory)
+        actual, output, itf = run(engine, path, False, memory)
         if actual != expected_path.read_text():
             notes.append("outcome differs: " + actual.replace("\n", " "))
+        itf_path = path.with_suffix(".itf.json")
+        if itf_path.exists() and itf != itf_path.read_text():
+            notes.append("ITF differs from " + itf_path.name)
         return path, not notes, notes, output
 
     failed = 0

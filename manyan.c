@@ -30,6 +30,7 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -16382,11 +16383,14 @@ static Branch *act_step(Expr *e, Ctx c, const char *what) {
 
 static long sym_length = 10;
 static long sym_max_error = 1;   /* -max-error */
+static const char *sym_run_dir;   /* -run-dir */
 
 static void sym_print(Value ***s, int *act_of, int n) {
     printf("Error: The behavior up to this point is:\n");
     for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], s[i], i ? s[i - 1] : NULL, s[i + (i + 1 < n)]);
 }
+
+static void itf_write(Value ***s, int n, int loop, int index);
 
 /* The parameter of a trace invariant, which Apalache checks of the
    behavior so far; NULL for another invariant. */
@@ -16674,8 +16678,9 @@ static Def *sym_recursive(void) {
 }
 
 /* Prints the behavior the solver finds to st[depth] that violates
-   invariant bad, or deadlocks (bad < 0); 0 if it does not replay. */
-static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int depth, int bad) {
+   invariant bad, the index-th violation, or deadlocks (bad < 0); 0 if it
+   does not replay. */
+static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int depth, int bad, int index) {
     int violated = bad >= 0 ? sym_violated(bad, st, depth) : L_TRUE;
     sat_solve(&violated, 1);
     Value ***states;
@@ -16684,6 +16689,7 @@ static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int
     if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
     else printf("Error: Deadlock reached.\n");
     sym_print(states, act_of, depth + 1);
+    itf_write(states, depth + 1, -1, bad >= 0 ? index : 0);
     return 1;
 }
 
@@ -16765,7 +16771,7 @@ static int symbolic(void) {
             int violated = sym_violated(i, st, depth);
             while (bad < 0 && sat_solve(&violated, 1)) {
                 if (found + 1 == sym_max_error) { bad = i; break; }
-                int ok = sym_report(st, picks, nenabled, enabled, depth, i);
+                int ok = sym_report(st, picks, nenabled, enabled, depth, i, found + 1);
                 handler = &here;
                 if (!ok) return MANYAN_ERROR;
                 found++;
@@ -16810,7 +16816,7 @@ static int symbolic(void) {
         return MANYAN_VIOLATION_SAFETY;
     }
     if (prop < 0) {
-        int ok = sym_report(st, picks, nenabled, enabled, depth, bad);
+        int ok = sym_report(st, picks, nenabled, enabled, depth, bad, found + 1);
         handler = NULL;
         return ok ? MANYAN_VIOLATION_SAFETY : MANYAN_ERROR;
     }
@@ -16819,6 +16825,7 @@ static int symbolic(void) {
     int *act_of, loop, n = depth + stutter;
     if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, &loop, &states, &act_of)) return MANYAN_ERROR;
     print_violated(states, n, loop);   /* as TLC prints a lasso */
+    itf_write(states, n, loop, 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + (i < depth)]);
     if (stutter) {
@@ -19417,6 +19424,214 @@ static int sym_types(void) {
     return status;
 }
 
+/* Counterexamples in the Informal Trace Format, as Apalache writes them
+   (its ADR-015), laid out as its JSON library does: each value by its
+   type, a sequence as a list, a tuple as #tup. A lasso's loop is the
+   ADR's "loop", not Apalache's own variables. */
+
+static void itf_item(Buf *b, int *count, int depth) {
+    buf_printf(b, "%s\n%*s", (*count)++ ? "," : "", 2 * depth + 2, "");
+}
+
+static void itf_close(Buf *b, int count, int depth, char c) {
+    if (count) buf_printf(b, "\n%*s", 2 * depth, "");
+    buf_add(b, &c, 1);
+}
+
+static void itf_string(Buf *b, const char *s) {
+    buf_puts(b, "\"");
+    for (; *s; s++) {
+        const char *esc = strchr("\b\t\n\f\r\"\\", *s);
+        if (esc) buf_printf(b, "\\%c", "btnfr\"\\"[esc - "\b\t\n\f\r\"\\"]);
+        else if ((unsigned char)*s < 0x20) buf_printf(b, "\\u%04x", (unsigned char)*s);
+        else buf_add(b, s, 1);
+    }
+    buf_puts(b, "\"");
+}
+
+static void itf_key(Buf *b, int *count, int depth, const char *key) {
+    itf_item(b, count, depth);
+    itf_string(b, key);
+    buf_puts(b, ": ");
+}
+
+static int itf_by_name(const void *a, const void *b) {
+    return strcmp(S((*(Value *const *)a)->u.i), S((*(Value *const *)b)->u.i));
+}
+
+static void itf_value(Buf *b, Value *v, Type *t, int depth);
+
+/* The elements of v, a set, a function or a tuple: {"tag": [...]}, or
+   with no tag a list; a function's as [key, value] pairs. */
+static void itf_elems(Buf *b, Value *v, const char *tag, Type *key, Type *val, int depth) {
+    int count = 0, d = depth + !!tag;
+    if (tag) { buf_puts(b, "{"); itf_key(b, &count, depth, tag); }
+    buf_puts(b, "[");
+    int n = 0;
+    for (int i = 0; i < v->n; i++) {
+        itf_item(b, &n, d);
+        Value *k = v->kind == V_SET ? v->u.set.elems[i] : v->kind == V_TUPLE ? mk_int(i + 1) : v->u.fcn.keys[i];
+        Value *x = v->kind == V_SET ? NULL : v->u.fcn.vals[i];
+        if (!key) { itf_value(b, x ? x : k, val, d); continue; }
+        int pair = 0;
+        buf_puts(b, "[");
+        itf_item(b, &pair, d + 1), itf_value(b, k, key, d + 2);
+        itf_item(b, &pair, d + 1), itf_value(b, x, val, d + 2);
+        itf_close(b, pair, d + 1, ']');
+    }
+    itf_close(b, n, d, ']');
+    if (tag) itf_close(b, count, depth, '}');
+}
+
+static void itf_value(Buf *b, Value *v, Type *t, int depth) {
+    v = realize(v);
+    if (v->kind == V_INTERVAL) v = enumerate(v);
+    int fcn = v->kind == V_FCN || v->kind == V_TUPLE, count = 0;
+    switch (t ? (t = ty_zonk(t))->kind : -1) {
+    case TY_INT:
+        if (v->kind != V_INT) break;
+        buf_puts(b, "{");
+        itf_key(b, &count, depth, "#bigint");
+        buf_printf(b, "\"%lld\"", (long long)v->u.i);
+        itf_close(b, count, depth, '}');
+        return;
+    case TY_BOOL:
+        if (v->kind != V_BOOL) break;
+        buf_puts(b, v->u.i ? "true" : "false");
+        return;
+    case TY_STR: case TY_CONST:
+        if (v->kind != V_STR && v->kind != V_MODEL) break;
+        itf_string(b, S(v->u.i));
+        return;
+    case TY_SET:
+        if (v->kind != V_SET) break;
+        itf_elems(b, v, "#set", NULL, t->args[0], depth);
+        return;
+    case TY_SEQ: case TY_TUP:
+        if (v->kind != V_TUPLE) break;
+        if (t->kind == TY_SEQ) { itf_elems(b, v, NULL, NULL, t->args[0], depth); return; }
+        buf_puts(b, "{");
+        itf_key(b, &count, depth, "#tup");
+        buf_puts(b, "[");
+        int n = 0;
+        for (int i = 0; i < v->n; i++) itf_item(b, &n, depth + 1), itf_value(b, v->u.fcn.vals[i], i < t->n ? t->args[i] : NULL, depth + 2);
+        itf_close(b, n, depth + 1, ']');
+        itf_close(b, count, depth, '}');
+        return;
+    case TY_FUN:
+        if (!fcn) break;
+        itf_elems(b, v, "#map", t->args[0], t->args[1], depth);
+        return;
+    case TY_REC: case TY_OLDREC: case TY_VARIANT: {
+        Type *row = t->kind == TY_OLDREC ? t : t->args[0];
+        if (!fcn_is_record(v) || (t->kind == TY_VARIANT && v->n != 1)) break;
+        Value **keys = NEWN(Value *, v->n);
+        memcpy(keys, v->u.fcn.keys, sizeof *keys * (size_t)v->n);
+        qsort(keys, (size_t)v->n, sizeof *keys, itf_by_name);
+        buf_puts(b, "{");
+        for (int i = 0; i < v->n; i++) {
+            Type *f = NULL;
+            for (int k = 0; k < row->n; k++) if (row->keys[k] == keys[i]->u.i) f = row->args[k];
+            Value *x = v->u.fcn.vals[0];
+            for (int k = 0; k < v->n; k++) if (v->u.fcn.keys[k] == keys[i]) x = v->u.fcn.vals[k];
+            if (t->kind == TY_VARIANT) {
+                itf_key(b, &count, depth, "tag");
+                itf_string(b, S(keys[i]->u.i));
+                itf_key(b, &count, depth, "value");
+            } else itf_key(b, &count, depth, S(keys[i]->u.i));
+            itf_value(b, x, f, depth + 1);
+        }
+        itf_close(b, count, depth, '}');
+        return;
+    }
+    default: break;
+    }
+    buf_puts(b, "{");
+    itf_key(b, &count, depth, "#unserializable");
+    itf_string(b, pretty(v));
+    itf_close(b, count, depth, '}');
+}
+
+/* Writes the behavior of the n states s, a lasso back to state loop if
+   loop >= 0, as violation<index>.itf.json and violation.itf.json of the
+   run directory, as Apalache does. */
+static void itf_write(Value ***s, int n, int loop, int index) {
+    if (!sym_run_dir) return;
+    Buf b = {0};
+    int top = 0, meta = 0, types = 0;
+    buf_puts(&b, "{");
+    itf_key(&b, &top, 0, "#meta");
+    buf_puts(&b, "{");
+    itf_key(&b, &meta, 1, "format"), itf_string(&b, "ITF");
+    itf_key(&b, &meta, 1, "format-description"), itf_string(&b, "https://apalache-mc.org/docs/adr/015adr-trace.html");
+    itf_key(&b, &meta, 1, "description"), itf_string(&b, "Created by Manyan");
+    itf_key(&b, &meta, 1, "varTypes");
+    buf_puts(&b, "{");
+    for (int v = 0; v < nvars; v++) {
+        TEntry *t = tc_find(NULL, vars[v]);
+        itf_key(&b, &types, 2, S(vars[v]->name));
+        itf_string(&b, t ? ty_text(t->t) : "");
+    }
+    itf_close(&b, types, 2, '}');
+    itf_close(&b, meta, 1, '}');
+    Def **names = NEWN(Def *, root->ndecls + nvars);   /* the constants with values, then the variables */
+    int nconsts = 0, nnames, count = 0;
+    for (int i = 0; i < root->ndecls; i++) {
+        Def *d = root->decls[i];
+        if (d->kind == D_CONST && !d->arity && d->value) names[nconsts++] = d;
+    }
+    for (int i = 0; i < 2; i++) {
+        int from = i ? nconsts : 0, to = i ? nconsts + nvars : nconsts;
+        if (i) memcpy(names + nconsts, vars, sizeof *vars * (size_t)nvars);
+        if (from == to) continue;
+        itf_key(&b, &top, 0, i ? "vars" : "params");
+        buf_puts(&b, "[");
+        count = 0;
+        for (int k = from; k < to; k++) itf_item(&b, &count, 1), itf_string(&b, S(names[k]->name));
+        itf_close(&b, count, 1, ']');
+    }
+    nnames = nconsts + nvars;
+    for (int i = 1; i < nnames; i++)   /* a state's fields, by name */
+        for (int j = i; j > 0 && strcmp(S(names[j - 1]->name), S(names[j]->name)) > 0; j--) { Def *t = names[j]; names[j] = names[j - 1]; names[j - 1] = t; }
+    itf_key(&b, &top, 0, "states");
+    buf_puts(&b, "[");
+    count = 0;
+    for (int i = 0; i < n; i++) {
+        int fields = 0, index_meta = 0;
+        itf_item(&b, &count, 1);
+        buf_puts(&b, "{");
+        itf_key(&b, &fields, 2, "#meta");
+        buf_puts(&b, "{");
+        itf_key(&b, &index_meta, 3, "index");
+        buf_printf(&b, "%d", i);
+        itf_close(&b, index_meta, 3, '}');
+        for (int k = 0; k < nnames; k++) {
+            Def *d = names[k];
+            int v = d->kind == D_CONST ? -1 : 0;
+            while (v >= 0 && vars[v] != d) v++;
+            TEntry *t = tc_find(NULL, d);
+            itf_key(&b, &fields, 2, S(d->name));
+            itf_value(&b, v < 0 ? d->value : s[i][v], t ? t->t : NULL, 3);
+        }
+        itf_close(&b, fields, 2, '}');
+    }
+    itf_close(&b, count, 1, ']');
+    if (loop >= 0) itf_key(&b, &top, 0, "loop"), buf_printf(&b, "%d", loop);
+    itf_close(&b, top, 0, '}');
+    mkdir(sym_run_dir, 0777);
+    for (int i = 0; i < 2; i++) {
+        char *path = xmalloc(strlen(sym_run_dir) + 64);
+        if (i) sprintf(path, "%s/violation.itf.json", sym_run_dir);
+        else sprintf(path, "%s/violation%d.itf.json", sym_run_dir, index);
+        FILE *f = fopen(path, "w");
+        if (!f) fail("Cannot write the counterexample to %s: %s.", path, strerror(errno));
+        fwrite(b.s, 1, b.n, f);
+        fclose(f);
+        free(path);
+    }
+    free(b.s);
+}
+
 static SVal *sym_gen(Expr *e, SCtx sc) {
     SVal *size = e->n == 1 ? sym(e->args[0], sc, P_BOTH) : NULL;
     if (!size || size->kind != SV_CONST || size->value->kind != V_INT || size->value->u.i < 0 || size->value->u.i > 64)
@@ -19582,6 +19797,7 @@ int manyan_check(const ManyanOptions *o) {
     nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
     sym_length = o->length ? o->length : 10;
     sym_max_error = o->max_error > 0 ? o->max_error : 1;
+    sym_run_dir = o->symbolic ? o->run_dir : NULL;
     status = o->symbolic ? symbolic() : o->simulate ? simulate(o) : search();
     handler = NULL;
     if (dump_file) dump_close();
@@ -19621,6 +19837,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-max-error") == 0 && i + 1 < argc) o.max_error = atol(argv[++i]);
+        else if (strcmp(argv[i], "-run-dir") == 0 && i + 1 < argc) o.run_dir = argv[++i];
         else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) { o.seed = atoll(argv[++i]); o.seed_given = 1; }
         else if (strcmp(argv[i], "-stack") == 0 && i + 1 < argc) o.stack = atoi(argv[++i]);
         else if (strcmp(argv[i], "-aril") == 0 && i + 1 < argc) o.aril = atoll(argv[++i]);

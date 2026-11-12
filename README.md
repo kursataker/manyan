@@ -127,8 +127,9 @@ report as TLC with one worker.
 - Experimental: `-symbolic` checks invariants, temporal properties and
   deadlock on behaviors of up to `-length` steps with a SAT solver, as
   Apalache does, with its `--cinit` (`-cinit`), `--max-error`
-  (`-max-error`, with the configuration's `VIEW`), action and trace
-  invariants, `Gen` and its module; 217 of
+  (`-max-error`, with the configuration's `VIEW`), `--run-dir` (`-run-dir`,
+  counterexamples in ITF), action and trace invariants, `Gen` and its
+  module, and TLC's fairness; 217 of
   Apalache's own tests give its outcome, refusing what it refuses (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
 - Experimental: `-typecheck` checks types and `@type` annotations as

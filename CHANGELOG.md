@@ -19,6 +19,9 @@ unreleased:
 - `-symbolic` checks temporal properties under the specification's weak
   and strong fairness, as TLC does: a counterexample is a fair lasso, or
   one stuttering forever at its last state
+- `-symbolic -run-dir DIR` writes each counterexample in Apalache's ITF,
+  as Apalache's `--run-dir` does: `violation1.itf.json`, ... and
+  `violation.itf.json`, each value by its type
 - CommunityModules' `Json` is built in, with its serializers as TLC's
   override writes them: `ToJson`, `ToJsonArray`, `ToJsonObject`,
   `JsonSerialize`, `ndJsonSerialize`
