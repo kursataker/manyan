@@ -14555,7 +14555,8 @@ static void live_init(Value **st) {
 
 /* An error checking the temporal properties, reported as TLC reports it:
    TLC evaluates their predicates as it expands each state: the actions
-   on each step and on stuttering, then ENABLED and, without a tableau,
+   on each step and on stuttering, weak fairness's ENABLED among them,
+   then ENABLED and, without a tableau,
    the other state predicates on the state, then a tableau's on each
    successor. It reports the first error then, as one in Next, with the
    behavior to the state and the counts of that moment. */
@@ -14588,7 +14589,10 @@ static int live_error(void) {
             int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
             for (int i = 0; i < natoms; i++)
                 if (atoms[i]->action) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), state_values(t));
-            for (int i = 0; i < nfairs; i++) holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
+            for (int i = 0; i < nfairs; i++) {   /* WF as TLC's action ~ENABLED A \/ A */
+                if (!fairs[i].strong) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
+                holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
+            }
         }
         for (int i = 0; i < natoms; i++)
             if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);

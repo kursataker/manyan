@@ -43,6 +43,9 @@ unreleased:
   against TLC, with ten of its fingerprint polynomials, as the lasso TLC
   picks of several follows its fingerprints: of 900, on three seeds, all
   verdicts and 899 counterexamples are TLC's
+- an error evaluating fairness is the one TLC reports first: weak
+  fairness's `ENABLED` is evaluated with the actions on each step, before
+  strong fairness's on the state
 - `UNION S` of an `S` with an element that is not a set fails as TLC's
   does, "some element of s is nonenumerable"
 - the counterexample to `<>[][A]_v` takes a step that is not `A`, as
