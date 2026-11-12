@@ -9214,7 +9214,7 @@ static Value **decode_state(int idx) {
 
 /* ---------------------------------------------------------------- the model */
 
-typedef struct { Def *def; Expr *expr; Ctx ctx; int name; } Check;   /* expr, in ctx */
+typedef struct { Def *def; Expr *expr; Ctx ctx; int name, possible; } Check;   /* expr, in ctx; possible: 1 + its _POSSIBLE's index */
 
 static Expr *init_expr, *next_expr;
 /* The last of the initial predicates, which a simulation names an initial
@@ -9235,7 +9235,7 @@ static Expr *spec_subscript;
 
 static void add_check(Check **list, int *n, Def *d, Expr *e, Ctx c, int name) {
     *list = xrealloc(*list, sizeof(Check) * (size_t)(*n + 1));
-    (*list)[*n] = (Check){d, e, c, name};
+    (*list)[*n] = (Check){d, e, c, name, 0};
     (*n)++;
 }
 
@@ -9874,6 +9874,42 @@ static int trace_states(int s1, Value **s2, int action, int print) {
 static int print_trace(int s1, Value **s2, int action) { return trace_states(s1, s2, action, 1); }
 
 static int *posts, nposts;   /* the POSTCONDITIONs' names */
+/* The _POSSIBLE predicates, and how often each held where evaluated:
+   -1 where never evaluated. */
+static Check *possibles;
+static int npossibles;
+static int64_t *possible_counts;
+
+/* Counts an evaluation of a _POSSIBLE predicate, which TLC adds to the
+   constraints, as satisfied. */
+static int count_possible(Check *c, Value *v) {
+    int64_t *w = &possible_counts[c->possible - 1];
+    if (*w < 0) *w = 0;
+    *w += v->u.i;
+    return 1;
+}
+
+/* TLC's check of the _POSSIBLE predicates, after the POSTCONDITIONs: at
+   the first never witnessed, it prints the counts and fails. */
+static int check_possibles(void) {
+    for (int i = 0; i < npossibles; i++) {
+        if (possible_counts[i] > 0) continue;
+        List keys = {0}, vals = {0};
+        for (int j = 0; j < npossibles; j++)
+            if (possible_counts[j] >= 0) list_add(&keys, mk_str(possibles[j].name)), list_add(&vals, mk_int(possible_counts[j]));
+        printf("%s\n", pretty(mk_fcn_from(&keys, &vals)));
+        Buf b = {0};
+        loc_text(&b, possibles[i].def->body);
+        printf("Error: The _POSSIBLE predicate %s at %s was never witnessed.\n"
+               "Others may be unwitnessed too; only witnessed predicates appear with a\n"
+               "non-zero count in the record printed above.\n"
+               "See https://explain.tlapl.us/possible-conditions for additional details.\n", S(possibles[i].name), b.s);
+        free(b.s);
+        return MANYAN_VIOLATION_ASSUMPTION;
+    }
+    return 0;
+}
+
 
 /* The postconditions checked as TLC checks them once the search is done,
    or after an error it reported (after_error), in order: the first that
@@ -9926,6 +9962,7 @@ static int check_posts(int after_error) {
         }
         free(b.s);
     }
+    if (!status) status = check_possibles();
     checking_posts = 0;
     post_trace.n = 0;
     eval_restore(saved);
@@ -10020,7 +10057,7 @@ static int check_list(Check *list, int n, Value **st) {
             cur_level--;
             not_boolean_check(&list[i]);
         }
-        if (!v->u.i) bad = i;
+        if (!(list[i].possible ? count_possible(&list[i], v) : v->u.i)) bad = i;
     }
     error_check = NULL;
     error_state = NULL;
@@ -10039,7 +10076,7 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
         error_state = to;
         Value *v = eval(list[i].expr, list[i].ctx);
         if (v->kind != V_BOOL) not_boolean_check(&list[i]);
-        if (!v->u.i) bad = i;
+        if (!(list[i].possible ? count_possible(&list[i], v) : v->u.i)) bad = i;
     }
     error_check = NULL;
     error_state = NULL;
@@ -10949,7 +10986,7 @@ static void print_unfingerprinted(Expr **fps, int n) {
 
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
-    if (dump_file) nworkers = 1;
+    if (dump_file || npossibles) nworkers = 1;
     if (nworkers > 1) share_search();
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
@@ -12668,7 +12705,7 @@ static int setup_model(void) {
        constraints, then the constraints, then the action constraints. */
     /* As TLC: the constants, the invariants, the specification, its
        properties, the constraints, the action constraints. */
-    for (int pass = 0; pass < 6; pass++) {
+    for (int pass = 0; pass < 7; pass++) {
     if (pass == 3) {
         if (spec && (init || next)) config_error("The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.");
         if (spec) use_specification(spec);
@@ -12699,7 +12736,8 @@ static int setup_model(void) {
         CfgItem *it = &cfg[i];
         const char *k = it->keyword;
         if (pass != (strncmp(k, "CONSTANT", 8) == 0 ? 0 : strncmp(k, "INVARIANT", 9) == 0 ? 1 : strncmp(k, "PROPERT", 7) == 0 ? 3
-                     : strncmp(k, "CONSTRAINT", 10) == 0 ? 4 : strncmp(k, "ACTION_CONSTRAINT", 17) == 0 ? 5 : 2)) continue;
+                     : strncmp(k, "CONSTRAINT", 10) == 0 ? 4 : strncmp(k, "ACTION_CONSTRAINT", 17) == 0 ? 5
+                     : strcmp(k, "_POSSIBLE") == 0 ? 6 : 2)) continue;
         if (pass == 0) {
             Module *m = it->module ? find_module(it->module) : root;
             Sym *s = m ? module_lookup(m, it->name) : NULL;
@@ -12793,6 +12831,20 @@ static int setup_model(void) {
             posts[nposts++] = it->name;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
+        } else if (strcmp(k, "_POSSIBLE") == 0 && !symbolic_mode) {
+            Sym *s = root_sym(it->name);
+            if (s && s->def->kind != D_OP && s->def->kind != D_FCN) config_error("The possible %s cannot be a constant.", S(it->name));
+            e = config_call(it->name, "possible", 'r');
+            int level = expr_level(e);
+            if (level > 2) config_error("The possible of %s is equal to a temporal formula; only state- and action-level predicates are supported", S(it->name));
+            Check **list = level == 2 ? &action_constraints : &constraints;
+            int *n = level == 2 ? &naction_constraints : &nconstraints;
+            add_check(list, n, e->def, e, root_ctx, e->def->name);
+            (*list)[*n - 1].possible = ++npossibles;
+            possibles = xrealloc(possibles, sizeof(Check) * (size_t)npossibles);
+            possibles[npossibles - 1] = (*list)[*n - 1];
+            possible_counts = xrealloc(possible_counts, sizeof(int64_t) * (size_t)npossibles);
+            possible_counts[npossibles - 1] = -1;
         } else if (k[0] == '_') {
             fprintf(stderr, "manyan: %s is not supported\n", k);
             exit(MANYAN_ERROR);

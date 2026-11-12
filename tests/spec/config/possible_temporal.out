@@ -1,0 +1,2 @@
+Error: The possible of P is equal to a temporal formula; only state- and action-level predicates are supported
+exit 151

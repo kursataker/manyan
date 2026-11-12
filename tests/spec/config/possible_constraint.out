@@ -1,0 +1,9 @@
+Finished computing initial states: 1 distinct state generated.
+[Two |-> 0, Three |-> 0, Jump |-> 0]
+Error: The _POSSIBLE predicate Two at line 10, col 8 to line 10, col 12 of module possible_constraint was never witnessed.
+Others may be unwitnessed too; only witnessed predicates appear with a
+non-zero count in the record printed above.
+See https://explain.tlapl.us/possible-conditions for additional details.
+3 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 10

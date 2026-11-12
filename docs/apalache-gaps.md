@@ -27,7 +27,9 @@ The reason is in `SKIP` of `tests/apalache_port.py`.
 - FunInInfiniteSubset: choosing an element of `[P -> SUBSET Int]`, a
   function to arbitrary sets of integers. Bounding the sets' size would
   miss behaviors.
-- SafeMath, SafeMath_2: integers of more than 64 bits.
+- SafeMath, SafeMath_2: integers of more than 64 bits. Not planned: the
+  evaluator every counterexample is replayed through has 64-bit integers
+  (TLC 32-bit), and bignums there would slow every model checked.
 - TestFunctions: Apalache itself runs out of 4 GB.
 - FoldSetInInit: `ApaFoldSet` over `SUBSET (1..10)` takes more than 1 GB.
 - Selections: Apalache refuses a disjunct that assigns other variables

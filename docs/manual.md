@@ -85,6 +85,7 @@ SYMMETRY Perms
 VIEW Abstract
 ALIAS Shown                         \* how a trace's states print
 POSTCONDITION Done                  \* checked once the search is done
+_POSSIBLE Reached                    \* must hold in some state or step
 CHECK_DEADLOCK FALSE
 ```
 
@@ -106,6 +107,9 @@ temporal properties are checked under.
 - **Liveness.** Temporal properties hold on every fair behavior, checked
   after the state graph is complete (exit 13 with a lasso-shaped
   counterexample).
+- **Postconditions.** Each `POSTCONDITION` holds once the search is done,
+  and each `_POSSIBLE` predicate held in some state, or step, of the
+  model; TLC evaluates one only where the constraints hold (exit 10).
 - **Evaluation errors.** An expression TLC cannot evaluate stops the run
   with TLC's message and location (exit 75, or 255 for errors TLC's
   standard-module operators report).
@@ -203,9 +207,12 @@ string, or a value of an uninterpreted type `T`, is one the specification
 has or a fresh one, `FRESHk` or `FRESHk_OF_T`, as Apalache makes them; a
 variant is one of its tags.
 
-Not supported yet: functions over an
-infinite domain; integers beyond 64 bits. [Apalache gaps](apalache-gaps.md) tracks what Apalache does that
-`-symbolic` does not.
+Not supported, by decision: functions over an infinite domain, and
+integers beyond 64 bits. A counterexample is replayed through the
+evaluator, whose integers are 64 bits (TLC's are 32), and whose
+functions are finite, as TLC's are; Apalache's own verdict on such a
+function is wrong where it is tested (InfDomFun). [Apalache
+gaps](apalache-gaps.md) tracks what Apalache does that `-symbolic` does not.
 
 ## Type checking (experimental)
 
@@ -336,8 +343,8 @@ a run with a seed is repeatable. A case any of them finds becomes a test in
 Not supported: the proof language (parsed and skipped); TLC's
 `-terse`, `-maxSetSize` (Manyan does not bound the sets it builds, where TLC
 fails past 10^6 elements), `-dfid`, `-coverage`, `-tool`,
-`-generateSpecTE`, the configuration's `_PERIODIC`, `_RL_REWARD` and
-`_POSSIBLE`, TLCExt's `TLCFP`, checkpoints (`-checkpoint`, `-recover`) and
+`-generateSpecTE`, the configuration's `_PERIODIC` and `_RL_REWARD`
+(and `_POSSIBLE` with `-symbolic`), TLCExt's `TLCFP`, checkpoints (`-checkpoint`, `-recover`) and
 distributed checking. `Trace` is the behavior to the state evaluated; to
 rebuild it TLC evaluates `Init` again, and with more than one initial
 state may give a shorter one. In a simulation

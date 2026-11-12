@@ -1,0 +1,3 @@
+Error: The possible Nope specified in the configuration file
+is not defined in the specification.
+exit 151

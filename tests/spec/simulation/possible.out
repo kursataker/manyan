@@ -1,0 +1,7 @@
+Finished computing initial states: 1 distinct state generated.
+[Three |-> 2, Big |-> 0]
+Error: The _POSSIBLE predicate Big at line 9, col 8 to line 9, col 14 of module possible was never witnessed.
+Others may be unwitnessed too; only witnessed predicates appear with a
+non-zero count in the record printed above.
+See https://explain.tlapl.us/possible-conditions for additional details.
+exit 10

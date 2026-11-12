@@ -1,0 +1,9 @@
+Finished computing initial states: 2 distinct states generated.
+[Zeta |-> 1, Big |-> 0, Step |-> 1, Alpha |-> 1]
+Error: The _POSSIBLE predicate Big at line 9, col 8 to line 9, col 12 of module possible_never was never witnessed.
+Others may be unwitnessed too; only witnessed predicates appear with a
+non-zero count in the record printed above.
+See https://explain.tlapl.us/possible-conditions for additional details.
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 10

@@ -1,0 +1,20 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module possible_after_error>
+x = 2
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module possible_after_error>
+x = 3
+
+[Two |-> 1, Big |-> 0]
+Error: The _POSSIBLE predicate Big at line 10, col 8 to line 10, col 12 of module possible_after_error was never witnessed.
+Others may be unwitnessed too; only witnessed predicates appear with a
+non-zero count in the record printed above.
+See https://explain.tlapl.us/possible-conditions for additional details.
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
