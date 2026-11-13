@@ -193,8 +193,8 @@ unreleased:
 - `RandomElement` of a set TLC cannot enumerate, or of functions from or
   to one, fails as TLC fails; `-generate` counts the set it draws a
   successor from first, as TLC does
-- With `-continue`, a simulation's `CounterExample` is empty, as TLC's
-  simulator keeps no trace for it then
+- With `-continue`, a simulation's `CounterExample` past an initial
+  state is empty, as TLC's simulator keeps no behavior for it then
 - An error checking the temporal properties of a simulated behavior is
   the one TLC meets first, as in model checking: weak fairness's
   `ENABLED` on each step before strong fairness's on the state

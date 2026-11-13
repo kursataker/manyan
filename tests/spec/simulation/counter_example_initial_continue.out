@@ -1,0 +1,6 @@
+Error: Invariant Inv is violated by the initial state:
+x = 5
+
+[action |-> {}, state |-> {<<1, [x |-> 5]>>}]
+<<[x |-> 5]>>
+exit 12
