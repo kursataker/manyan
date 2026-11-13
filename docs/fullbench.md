@@ -39,7 +39,7 @@ A model leaves this list when it gets a row in the results.
 
 | gap | models | to close |
 |---|---:|---|
-| runtime not recorded | 10 | Run each once under the 15-minute cap, and keep the ones that finish |
+| runtime not recorded | 10 | Run once by hand (below): eight need more than 15 minutes of TLC, a longer cap as below |
 | TLC over 15 minutes | 4 | A longer cap for TLC, run once; its results stay cached |
 | recorded over 10 minutes | 7 | A run with a larger `MAX_RUNTIME`, hours long |
 | more than one worker | 7 | Run those recorded over a minute with `-workers 4` too |
