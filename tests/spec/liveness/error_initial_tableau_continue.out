@@ -1,0 +1,18 @@
+Error: Invariant Inv is violated by the initial state:
+x = 7
+
+Finished computing initial states: 2 distinct states generated.
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to check equality of integer 7 with non-integer:
+"s"
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 7
+
+3 states generated, 3 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 2.
+exit 255

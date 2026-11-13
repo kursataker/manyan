@@ -9802,6 +9802,7 @@ static void live_init_lits(void);
 static void live_init(Value **st);
 static void eval_init_lits(Value **st);
 static int live_init_failed;   /* an error in a property on an initial state: its exit status */
+static int check_initial(Value **st);
 
 static int replay_emit(void) {
     if (!replay_found) {
@@ -9815,7 +9816,8 @@ static int replay_emit(void) {
     }
     if (replay_checks) {
         if (ntemporal_props && !live_init_failed) eval_init_lits(gen_target);   /* reported */
-        check_list(invariants, ninvariants, gen_target);
+        if (keep_going) check_initial(gen_target);   /* reported again, as -continue reports it */
+        else check_list(invariants, ninvariants, gen_target);
     }
     return 0;
 }
@@ -15054,10 +15056,10 @@ static int live_error(void) {
         for (int i = 0; i < natoms; i++)
             if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && on_state[i])
                 holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
-        for (int e = 0; e < r->nedges; e++)
+        for (int e = 0; e <= r->nedges; e++)
             for (int i = 0; i < natoms; i++)
                 if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !on_state[i])
-                    holds_in(atoms[i]->atom, atoms[i]->c, state_values(r->edges[2 * e]), NULL);
+                    holds_in(atoms[i]->atom, atoms[i]->c, state_values(e < r->nedges ? r->edges[2 * e] : s), NULL);
     }
     /* Not found so: as it came. */
     handler = NULL;

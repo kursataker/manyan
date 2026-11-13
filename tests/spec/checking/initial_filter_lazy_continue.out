@@ -1,0 +1,16 @@
+Error: Invariant Inv is violated by the initial state:
+x = [a |-> 1]
+
+Error: Invariant Inv is violated by the initial state:
+x = [a |-> 2]
+
+Error: The second argument of \div is 0.
+Error: Invariant Inv is violated by the initial state:
+x = [a |-> 1]
+
+Error: Invariant Inv is violated by the initial state:
+x = [a |-> 2]
+
+2 states generated, 2 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 1.
+exit 75

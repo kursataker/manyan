@@ -176,6 +176,9 @@ unreleased:
   invariant or action property fails the check and the step, as in TLC
 - With `-continue`, a constraint failing on a successor, or a successor
   TLC cannot fingerprint, is reported again as TLC replays the step
+- With `-continue`, an error in Init is followed by the initial states'
+  violations again, as TLC replays Init; an error in a property's tableau
+  on a state stuttering is found where TLC's search finds it
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 
