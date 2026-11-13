@@ -142,6 +142,7 @@ class Gen:
             lambda: f"{self.fcn(d + 1)}[{r.randint(1, 3)}]",
             lambda: self.lazy_fcn(d),
             lambda: f"(LET y == {n()} IN y + {n()})",
+            lambda: f"(CASE {self.bool(d + 1)} -> {n()} [] {self.bool(d + 1)} -> {n()} [] OTHER -> {n()})",
         )
 
     def bool(self, d=0):
@@ -237,6 +238,10 @@ class Gen:
             lambda: f"[{s()} -> {s()}]",
             lambda: f"[a: {s()}, b: BOOLEAN]",
             lambda: f"{{{self.seq(d + 1)}, {self.seq(d + 1)}}}",
+            lambda: f"{{{s()}, {s()}, {s()}}}",
+            lambda: f"{{{self.record(d + 1)}, {self.record(d + 1)}}}",
+            lambda: f"{{<<{self.int(d + 1)}, {self.rng.choice(STRINGS)}>>, <<{self.int(d + 1)}, {self.rng.choice(STRINGS)}>>}}",
+            lambda: f"{{({self.int(d + 1)} :> {self.int(d + 1)} @@ {self.rng.choice(STRINGS)} :> {self.bool(d + 1)})}}",
         )
 
     def filter(self, d):
@@ -264,6 +269,7 @@ class Gen:
             lambda: f"SelectSeq({q()}, LAMBDA v : v > {n()})",
             lambda: f"[{q()} EXCEPT ![{r.randint(1, 3)}] = @ * 2]",
             lambda: f"[{self.fcn(d + 1)} EXCEPT ![{r.randint(1, 3)}] = {n()}]",
+            lambda: f"SortSeq({q()}, {r.choice(['<', '>'])})",
         )
 
     def fcn(self, d=0):
