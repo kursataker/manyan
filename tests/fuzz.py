@@ -364,7 +364,7 @@ def live_model(rng):
     x, y = f"s \\in {sets(some(0.4))}", f"s \\in {sets(some(0.4))}"
     a = f"s' \\in {sets(some(0.4))}"
     prop = rng.choice([f"<>({x})", f"[]<>({x})", f"<>[]({x})", f"({x}) ~> ({y})", f"[]({x})",
-                       f"[]<><<{a}>>_s", f"<>[][{a}]_s", nested(rng, lambda: f"s \\in {sets(some(0.4))}", 3)])
+                       f"[]<><<{a}>>_s", f"<>[][{a}]_s", f"{rng.choice('WS')}F_s({a})", nested(rng, lambda: f"s \\in {sets(some(0.4))}", 3)])
     return (f"---- MODULE L ----\nVARIABLE s\nSucc == <<{', '.join(sets(x) for x in succ)}>>\n"
             f"Init == s \\in {sets(some(0.5) or {1})}\nNext == s' \\in Succ[s]\n{actions}"
             f"Spec == {spec}\nP == {prop}\n====\n"

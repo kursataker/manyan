@@ -1,0 +1,12 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Successor state is not completely specified by the next-state action. The following variable is not defined: y.
+
+Error: The behavior up to this point is:
+State 1: <Init line 6, col 9 to line 6, col 22 of module unassigned_simulate_continue>
+/\ x = 1
+/\ y = 1
+
+State 2: <Next line 7, col 9 to line 7, col 14 of module unassigned_simulate_continue>
+/\ x = 2
+/\ y = null
+exit 75

@@ -10537,8 +10537,17 @@ static int next_emit(void) {
     int unassigned = 0;
     for (int i = 0; i < nvars; i++) unassigned += !succ[i];
     if (unassigned) {
+        /* TLC looks the successor up among its workers' states for the
+           postconditions, to an ArrayIndexOutOfBoundsException; it reports
+           it with -continue, and the error again as it replays it. */
         print_unspecified(succ);
-        reported_trace(expanding, succ, cur_action);
+        print_trace(expanding, succ, cur_action);
+        if (keep_going) {
+            print_exception("java.lang.ArrayIndexOutOfBoundsException", ": Index 32767 out of bounds for length 1\n");
+            print_trace(expanding, succ, cur_action);
+            print_unspecified(succ);
+            print_trace(expanding, succ, cur_action);
+        }
         violation = MANYAN_FAILURE_EVAL;
         return 1;
     }
@@ -11565,7 +11574,14 @@ static int search(void) {
         int violated = live_violated();
         if (violated) {
             check_posts(1);
-            if (violated == MANYAN_VIOLATION_SAFETY) print_counts_after(live_cut);
+            if (violated == MANYAN_VIOLATION_SAFETY && keep_going) {
+                /* TLC stops its temporal checks with an exception, which it
+                   reports with -continue. */
+                print_exception("tlc2.tool.INextStateFunctor$InvariantViolatedException", ": Invariant violated\n");
+                print_trace(live_cut, NULL, 0);
+                violated = MANYAN_ERROR;
+            }
+            if (violated != MANYAN_VIOLATION_LIVENESS) print_counts_after(live_cut);
             else print_counts(exit_requested ? nstates - expanded : 0);
             return violated;
         }
@@ -12015,7 +12031,9 @@ static int simulate(const ManyanOptions *o) {
                     States *b = sim_behavior(trace, sim_checked, cur_action);
                     print_unspecified(sim_checked);
                     sim_print(b);
-                    /* TLC's postcondition writing the behavior fails on it. */
+                    /* TLC's postcondition writing the behavior fails on it,
+                       one -continue sets up none of. */
+                    if (keep_going && !nposts) return MANYAN_FAILURE_EVAL;
                     printf("\nError: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.\n"
                            "Attempted to apply the operator overridden by the Java method\n"
                            "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"
@@ -13536,11 +13554,12 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         /* WF: []<>~ENABLED <<A>>_v \/ []<><<A>>_v; SF: <>[]~ENABLED <<A>>_v \/ []<><<A>>_v. */
         Expr *angle = synth(X_ANGLEACT, e, 2, e->args[1], e->args[0]);
         Expr *en = synth(K_ENABLED, e, 1, angle, NULL);
-        TF *step = tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(angle, c, 0), NULL), NULL);
-        TF *off = e->kind == X_WF ? tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 1), NULL), NULL)
-                                  : tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 1), NULL), NULL);
-        TF *fair = tf_new(TF_OR, off, step);
-        if (!neg) return fair;
+        if (!neg) {   /* built only so: its eventualities are the tableau's */
+            TF *step = tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(angle, c, 0), NULL), NULL);
+            TF *off = e->kind == X_WF ? tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 1), NULL), NULL)
+                                      : tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 1), NULL), NULL);
+            return tf_new(TF_OR, off, step);
+        }
         /* ~WF: <>[]ENABLED /\ <>[]~step; ~SF: []<>ENABLED /\ <>[]~step. */
         TF *nostep = tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(angle, c, 1), NULL), NULL);
         TF *on = e->kind == X_WF ? tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 0), NULL), NULL)

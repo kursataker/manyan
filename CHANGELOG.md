@@ -163,7 +163,13 @@ unreleased:
   reported again as TLC replays it; one in an invariant or action
   property again as an error of the step. A `CounterExample` is
   `[action, state]` and Naturals' Java methods are its own, as TLC sets
-  up no trace spec
+  up no trace spec; so is a successor left incomplete, and a finite
+  counterexample
+- A property `WF_v(A)` or `SF_v(A)` under the specification's fairness
+  gives TLC's fair counterexample, not one stuttering where the
+  specification's fairness rules it out
+- A successor left incomplete is followed by no check of the
+  postconditions, as in TLC; manyan crashed on one using `CounterExample`
 
 2026-11-12 0.10.0:
 
