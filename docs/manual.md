@@ -123,7 +123,11 @@ output TLC produces when it reconstructs a trace.
 an initial state drawn at random, it takes a random action's successors,
 checks every one of them against the invariants and action properties,
 and moves to one in the constraints at random, until the behavior has
-taken `-depth` steps or stops (Standard §10.8). Temporal properties are checked on each behavior.
+taken `-depth` steps or stops (Standard §10.8). Temporal properties are
+checked on each behavior as TLC's simulator checks them: without its
+finite stuttering, on the product TLC builds from it, which follows only
+the tableau nodes new at each state; a violation that needs another node
+there is not found, as in TLC.
 With the same `-seed` and `-aril`, Manyan draws the same behaviors as TLC
 with one worker and prints the same report; `-workers` is ignored. A
 seed is drawn at random unless one is given.
@@ -351,7 +355,9 @@ report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
 `make fuzz-oracle` writes random constant expressions as `ASSUME
 PrintT(e)` and checks that Manyan prints what TLC prints, narrowing a
 difference to one expression. `make fuzz-sim` simulates random tests'
-models with random seeds and depths, with Manyan and with TLC. `make
+models with random seeds and depths, with Manyan and with TLC, one
+behavior of a model that prints or asks: TLC's worker goes on past an
+error until it is stopped. `make
 fuzz-live` checks a random temporal property of a random state graph
 under random weak and strong fairness, with Manyan and with TLC. All four take `RUNS=` (1000) and `SEED=` (1);
 a run with a seed is repeatable. A case any of them finds becomes a test in
