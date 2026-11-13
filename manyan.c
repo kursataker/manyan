@@ -13970,7 +13970,7 @@ static int tnode_step(int n, int s, int e, int to) {
 }
 
 /* The product graph: nodes are (state, tableau node). */
-typedef struct { int state, tnode; int *succ, *act; int nsucc; int index, low, onstack, mark; } PNode;
+typedef struct { int state, tnode; int *succ, *act; int nsucc; int index, low, onstack, mark; char late; } PNode;
 
 static PNode *pnodes;
 static int npnodes, cappnodes;
@@ -13979,6 +13979,8 @@ static int npnodes, cappnodes;
 typedef struct { int tnode, node; } PRef;
 typedef struct { PRef *v; int n; } PRefs;
 static PRefs *pnodes_of;
+
+static int live_step = -1;   /* the state TLC expands as live_build builds the product */
 
 static int pnode_find(int s, int t, int create) {
     PRefs *l = &pnodes_of[s];
@@ -13992,19 +13994,81 @@ static int pnode_find(int s, int t, int create) {
     PNode *p = &pnodes[npnodes];
     memset(p, 0, sizeof *p);
     p->state = s; p->tnode = t; p->index = -1;
+    p->late = live_step >= s;
     return npnodes++;
 }
 
+
+/* The size of the table TLC's worker holds a state's successors in to
+   check liveness (SetOfStates): 16 times a multiplier, which grows by one
+   after each state whose successors outgrew it, in the order of the
+   search. */
+static int *live_cap, nlive_cap, live_mult = 1;
+
+static int succ_table_size(int s) {
+    for (; nlive_cap <= s; nlive_cap++) {
+        if (nlive_cap % 1024 == 0) live_cap = xrealloc(live_cap, sizeof(int) * (size_t)(nlive_cap + 1024));
+        StateRec *r = &states[nlive_cap];
+        int len = live_cap[nlive_cap] = 16 * live_mult, count = r->nedges + 1;
+        for (int e = 0; e < r->nedges; e++) if (r->edges[2 * e] == nlive_cap) count--;
+        for (int i = 0; i < count; i++) if (i >= len / 2) len = 2 * len + 1;
+        if (len > 16 * live_mult) live_mult++;
+    }
+    return live_cap[s];
+}
+
+/* The steps e of state s, edge n its stuttering one if stutter is set, in
+   the order TLC's table of them holds the successors: by a fingerprint's
+   slot, probing linearly, after the successors, the state itself. A node
+   TLC adds once its state is expanded takes the stuttering step first,
+   then the others as the actions make them; its simulator's take them so
+   with the stuttering step first unless an action makes it. */
+static void succ_order(int p, const int *edges, int n, int stutter, int *order) {
+    int s = pnodes[p].state;
+    if (pnodes[p].late || sim_n) {
+        int k = 0, self = n;
+        for (int e = 0; e < n && self == n && !sim_n; e++) if (edges[2 * e] == s) self = e;
+        if (self < n || stutter) order[k++] = self;
+        for (int e = 0; e < n; e++) if (e != self) order[k++] = e;
+        return;
+    }
+    int len = succ_table_size(s), count = 0, *slot = xmalloc(sizeof(int) * (size_t)len);
+    for (int i = 0; i < len; i++) slot[i] = -1;
+    for (int e = 0; e < n + stutter; e++) {
+        if (count >= len / 2) {   /* TLC's grow: the old slots in order, put again */
+            int *old = slot, olen = len;
+            len = 2 * len + 1;
+            slot = xmalloc(sizeof(int) * (size_t)len);
+            for (int i = 0; i < len; i++) slot[i] = -1;
+            count = 0;
+            for (int i = 0; i < olen; i++) {
+                if (old[i] < 0) continue;
+                int at = (int)((uint32_t)states[old[i] < n ? edges[2 * old[i]] : s].fp & 0x7fffffff) % len;
+                while (slot[at] >= 0) at = (at + 1) % len;
+                slot[at] = old[i], count++;
+            }
+            free(old);
+        }
+        int at = (int)((uint32_t)states[e < n ? edges[2 * e] : s].fp & 0x7fffffff) % len;
+        while (slot[at] >= 0) at = (at + 1) % len;
+        slot[at] = e, count++;
+    }
+    int k = 0;
+    for (int i = 0; i < len; i++) if (slot[i] >= 0) order[k++] = slot[i];
+    free(slot);
+}
 
 /* The successors of a product node by the n steps of its state in edges,
    (target, action) pairs, then the stuttering step if stutter is set, with
    each successor of the tableau node. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
-    static int *found, cap;   /* (successor, action) pairs */
+    static int *found, cap, *order, ncap;   /* (successor, action) pairs */
     int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == states[s].edges;
     tnode_expand(t);
+    if (n + 1 > ncap) order = xrealloc(order, sizeof(int) * (size_t)(ncap = n + 1));
+    succ_order(p, edges, n, stutter, order);
     for (int i = 0; i < n + stutter; i++) {
-        int e = stutter ? (i + n) % (n + 1) : i;   /* stuttering, edge n, first: TLC's order */
+        int e = order[i];
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, graph ? e : -1, target)) continue;
         for (int k = tnodes[t].nsucc - 1; k >= 0; k--) {   /* in TLC's order */
@@ -14922,6 +14986,8 @@ static int has_actions(void) {
     return 0;
 }
 
+static int live_build(TF *negated, int cut, int *at);
+
 static int check_property(TF *negated) {
     live_negated = negated;
     int *r, n = live_roots(negated, &r);
@@ -14933,6 +14999,7 @@ static int check_property(TF *negated) {
         stop_workers();   /* to fork with this property's atoms */
         run_level(0, nstates, BATCH, 0, ATOMS);
     }
+    if (!sim_n) live_build(negated, 0, NULL);
     arena_reset(&search_arena);
     if (scc_search(r, n, 0) >= 0) {
         pem_search(r, n);
@@ -14956,23 +15023,23 @@ static int tf_cycle_free(TF *f) {
    expanded already. When such a node's tableau node has nothing left to
    do, a negation with a disjunct free of cycle conditions, and no
    fairness, is met by any continuation of the path to it, and TLC stops
-   there (§10.7). Returns the state being expanded then, or -1; *at is
-   the node. */
-static int live_cut_at(TF *negated, int *at) {
-    if (sim_n || nfairs || nfair_rest || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
-    int *stack = NULL, n = 0, *roots;
+   there (§10.7), if cut is set. Returns the state being expanded then,
+   or -1; *at is the node. */
+static int live_build(TF *negated, int cut, int *at) {
+    int *stack = NULL, n = 0, *roots, found = -1;
     live_roots(negated, &roots);   /* the graph starts with them */
-    for (int s0 = 0; s0 < expanded; s0++)
-        for (int i = 0; i < pnodes_of[s0].n; i++) {
+    for (int s0 = 0; s0 < expanded && found < 0; s0++)
+        for (int i = 0; i < pnodes_of[s0].n && found < 0; i++) {
             if (pnodes[pnodes_of[s0].v[i].node].succ) continue;
+            live_step = s0;
             PUSH(stack, n, pnodes_of[s0].v[i].node);
-            while (n) {
+            while (n && found < 0) {
                 int v = stack[--n];
                 if (pnodes[v].succ) continue;
                 pnode_successors(v);
-                for (int k = 0; k < pnodes[v].nsucc; k++) {
+                for (int k = 0; k < pnodes[v].nsucc && cut && found < 0; k++) {
                     int w = pnodes[v].succ[k];
-                    if (!pnodes[w].succ && pnodes[w].state <= s0 && !tnodes[pnodes[w].tnode].nnext) { *at = w; return s0; }
+                    if (!pnodes[w].succ && pnodes[w].state <= s0 && !tnodes[pnodes[w].tnode].nnext) *at = w, found = s0;
                 }
                 for (int k = pnodes[v].nsucc - 1; k >= 0; k--) {
                     int w = pnodes[v].succ[k];
@@ -14980,7 +15047,13 @@ static int live_cut_at(TF *negated, int *at) {
                 }
             }
         }
-    return -1;
+    live_step = -1;
+    return found;
+}
+
+static int live_cut_at(TF *negated, int *at) {
+    if (sim_n || nfairs || nfair_rest || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
+    return live_build(negated, 1, at);
 }
 
 /* Prints, as TLC, the path to node `at` as a finite counterexample, its

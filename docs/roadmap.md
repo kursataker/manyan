@@ -24,10 +24,11 @@ from TLC.
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. Of 900 random graphs
   `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
-  the counterexample one TLC prints on 896. The rest: TLC checks the
+  the counterexample one TLC prints on 896. Manyan now orders a state's
+  successors as TLC's table of them does, by its own fingerprints in
+  place of TLC's random polynomial. The rest: TLC checks the
   conjuncts `[]<>P` and `<>[]P` of a negated property without its
-  tableau and prunes the search by them, and places the stuttering step
-  among a state's successors by its fingerprints.
+  tableau and prunes the search by them.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle and the tableau have models.

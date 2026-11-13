@@ -198,6 +198,12 @@ unreleased:
 - An error checking the temporal properties of a simulated behavior is
   the one TLC meets first, as in model checking: weak fairness's
   `ENABLED` on each step before strong fairness's on the state
+- The product graph of a temporal property is built in TLC's order, and
+  each node takes its successors in TLC's order: as TLC's table of a
+  state's successors holds them, by fingerprint, for a node there when
+  its state is expanded; the stuttering step first, then the actions',
+  for one added later. Counterexamples TLC could not print, such as a
+  lasso stuttering where TLC's walk leaves the root, are gone
 - `make fuzz-sim` also simulates with `-continue`
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
