@@ -11821,7 +11821,8 @@ static void report_exception(int in_behavior) {
 static int *sim_order, *sim_acts, sim_n;
 
 /* Whether a temporal property fails on the behavior, as TLC checks one:
-   each state may stutter or take its step. */
+   without its finite stuttering, each state may stutter or take its
+   step. */
 static int sim_violates(States *trace) {
     for (int i = 0; i < nstates; i++) free(states[i].edges);
     nstates = 0;
@@ -11830,15 +11831,16 @@ static int sim_violates(States *trace) {
     int prev = -1;
     sim_order = xrealloc(sim_order, sizeof(int) * (size_t)(trace->n + 1));
     sim_acts = xrealloc(sim_acts, sizeof(int) * (size_t)(trace->n + 1));
-    sim_n = trace->n;
+    sim_n = 0;
     for (int i = 0; i < trace->n; i++) {
         Value **st = trace->a[i];
         uint64_t fp = fingerprint(st);
         int s = fp_find(fp);
-        if (s < 0) s = add_state(st, fp, prev, -1, i + 1);
-        sim_acts[i] = prev < 0 || s == prev ? STUTTER : trace->act[i];
-        if (prev >= 0) add_edge(prev, s, sim_acts[i]);
-        sim_order[i] = s;
+        if (s >= 0 && s == prev) continue;
+        if (s < 0) s = add_state(st, fp, prev, -1, sim_n + 1);
+        sim_acts[sim_n] = prev < 0 ? STUTTER : trace->act[i];
+        if (prev >= 0) add_edge(prev, s, sim_acts[sim_n]);
+        sim_order[sim_n++] = s;
         prev = s;
     }
     int violated = live_violated();
@@ -13861,19 +13863,55 @@ static void pnode_successors(int p) {
     pnode_steps(p, r->edges, r->nedges, !self);
 }
 
-/* The product as TLC builds it from a behavior, as its states arrive: a
-   node's successors are those of the first position that expands it, its
-   state taking the behavior's next step or stuttering; the last state
-   only stutters. A node never expanded has none. */
-static void sim_product(void) {
-    for (int i = 0; i < sim_n; i++) {
-        int s = sim_order[i], next = i + 1 < sim_n && sim_order[i + 1] != s;
-        int step[2] = {next ? sim_order[i + 1] : s, next ? sim_acts[i + 1] : STUTTER};
-        for (int p = 0; p < npnodes; p++)
-            if (pnodes[p].state == s && !pnodes[p].succ) pnode_steps(p, step, next, 1);
+/* The product as TLC's simulation builds it from a behavior
+   (LiveCheck1.constructBEGraph): the initial nodes with the edges among
+   them; then at each position the nodes new at the one before step to
+   their tableau successors at its state, and the nodes new there stutter
+   to theirs, until none is new. A node has no other successors. */
+typedef struct { int *v, n; } Ints;
+static Ints *sim_edges;   /* each node's (successor, action) pairs */
+static int nsim_edges;
+
+static void sim_link(int p, int to, int act, int **fresh, int *nfresh) {
+    int s = pnodes[p].state, t = pnodes[p].tnode;
+    tnode_expand(t);
+    if (!tnode_step(t, s, -1, to)) return;
+    for (int k = tnodes[t].nsucc - 1; k >= 0; k--) {   /* in TLC's order */
+        int u = tnodes[t].succ[k], q = pnode_find(to, u, 0);
+        if (q < 0) {
+            if (!fresh || !tnode_admits(u, to)) continue;
+            PUSH(*fresh, *nfresh, q = pnode_find(to, u, 1));
+        }
+        if (npnodes > nsim_edges) {
+            sim_edges = xrealloc(sim_edges, sizeof(Ints) * (size_t)npnodes);
+            memset(sim_edges + nsim_edges, 0, sizeof(Ints) * (size_t)(npnodes - nsim_edges));
+            nsim_edges = npnodes;
+        }
+        Ints *e = &sim_edges[p];
+        int seen = 0;
+        for (int i = 0; i < e->n && !seen; i += 2) seen = e->v[i] == q;
+        if (!seen) PUSH(e->v, e->n, q), PUSH(e->v, e->n, act);
     }
-    for (int p = 0; p < npnodes; p++)
-        if (!pnodes[p].succ) pnode_steps(p, NULL, 0, 0);
+}
+
+static void sim_product(int *roots, int nroots) {
+    int *from = roots, nfrom = nroots;
+    for (int i = 0; i < nfrom; i++) sim_link(from[i], sim_order[0], STUTTER, NULL, NULL);
+    for (int i = 1; i < sim_n && nfrom; i++) {
+        int *fresh = NULL, nfresh = 0;
+        for (int j = 0; j < nfrom; j++) sim_link(from[j], sim_order[i], sim_acts[i], &fresh, &nfresh);
+        for (int j = 0; j < nfresh; j++) sim_link(fresh[j], sim_order[i], STUTTER, &fresh, &nfresh);
+        from = fresh, nfrom = nfresh;
+    }
+    for (int p = 0; p < npnodes; p++) {
+        Ints none = {0}, *e = p < nsim_edges ? &sim_edges[p] : &none;
+        PNode *pn = &pnodes[p];
+        pn->nsucc = e->n / 2;
+        pn->succ = alloc_raw(sizeof(int) * (size_t)(e->n + 1));
+        pn->act = pn->succ + pn->nsucc;
+        for (int i = 0; i < pn->nsucc; i++) pn->succ[i] = e->v[2 * i], pn->act[i] = e->v[2 * i + 1];
+        *e = (Ints){0};
+    }
 }
 
 /* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
@@ -14533,7 +14571,7 @@ static int has_actions(void) {
 static int check_property(TF *negated) {
     live_negated = negated;
     int *r, n = live_roots(negated, &r);
-    if (sim_n && tf_tableau(negated)) sim_product();
+    if (sim_n && tf_tableau(negated)) sim_product(r, n);
     else if (nworkers > 1 && !nsymmetry && !view_expr && has_actions()) {
         stop_workers();   /* to fork with this property's atoms */
         run_level(0, nstates, BATCH, 0, ATOMS);

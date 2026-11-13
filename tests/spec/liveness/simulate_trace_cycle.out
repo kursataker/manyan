@@ -1,0 +1,25 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 8, col 9 to line 8, col 13 of module simulate_trace_cycle>
+x = 0
+
+State 2: <Next line 9, col 9 to line 9, col 24 of module simulate_trace_cycle>
+x = 1
+
+State 3: <Next line 9, col 9 to line 9, col 24 of module simulate_trace_cycle>
+x = 2
+
+State 4: <Next line 9, col 9 to line 9, col 24 of module simulate_trace_cycle>
+x = 0
+
+State 5: <Next line 9, col 9 to line 9, col 24 of module simulate_trace_cycle>
+x = 1
+
+State 6: <Next line 9, col 9 to line 9, col 24 of module simulate_trace_cycle>
+x = 2
+
+State 7: Stuttering
+exit 13

@@ -322,7 +322,7 @@ def sim(engine, tlc, runs, seed):
     for _ in range(runs):
         path = rng.choice(models)
         # TLC's worker runs on past an error until stopped: what it then prints races.
-        num = 1 if "Print" in path.read_text() else rng.randint(1, 5)
+        num = 1 if re.search(r"Print|PickSuccessor", path.read_text()) else rng.randint(1, 5)
         options = [rng.choice(["-simulate", "-generate"]), f"num={num}", "-depth", str(rng.randint(1, 30)),
                    "-seed", str(rng.randint(0, 999))]
         ours = spec_runner.run(engine + options, path, MEMORY)
