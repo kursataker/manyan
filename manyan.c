@@ -5880,6 +5880,7 @@ static Value *fcndef_value(Def *d, Ctx c) {
 }
 
 static int nowarning;   /* TLC's warnings off (-nowarning) */
+static int keep_going;   /* -continue: a violated invariant or action property is reported, and the search goes on */
 
 /* Prints one of TLC's warnings; as TLC, the first of a run says how to
    turn them off. */
@@ -8181,11 +8182,12 @@ static void bind_natives(void) {
                     && (native_arity(natives[k].method) < 0 || d->nparams == native_arity(natives[k].method))) {
                     d->native = natives[k].fn;
                     d->lazy = native_arity(natives[k].method) < 0;
-                    /* TLC always loads Integers (its trace modules use it), and takes
-                       Naturals' operators from its class; a method may name its own
-                       class in tlc2.module, or a class elsewhere in full. */
+                    /* TLC loads Integers for the trace spec it sets up, which
+                       -continue skips, and then takes Naturals' operators from
+                       its class; a method may name its own class in tlc2.module,
+                       or a class elsewhere in full. */
                     const char *m = natives[k].method;
-                    const char *cls = strcmp(natives[k].module, "Naturals") == 0 ? "Integers" : natives[k].module;
+                    const char *cls = !strcmp(natives[k].module, "Naturals") && !keep_going ? "Integers" : natives[k].module;
                     int named = memchr(m, '.', (size_t)(strchr(m, '(') - m)) != NULL, full = !strncmp(m, "tlc2.", 5);
                     Buf b = {0};
                     buf_printf(&b, "public static %s %s%s%s%s", natives[k].ret, full ? "" : "tlc2.module.",
@@ -10211,6 +10213,18 @@ static int reported_trace(int s1, Value **s2, int action) {
     return failed;
 }
 
+/* TLC's report of an error evaluating a step from state s1, to s2 by
+   action: an error of its own evaluator as an unexpected exception, one
+   of a standard module's operators plainly. */
+static void print_next_failure(int s1, Value **s2, int action, int status) {
+    if (status == MANYAN_FAILURE_EVAL && error_module != 1)
+        print_exception("java.lang.RuntimeException", ": ");
+    else
+        printf("Error: ");
+    print_error_text();
+    print_trace(s1, s2, action);
+}
+
 static void print_counts(int queued) {
     printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates + npicked_explored, queued);
     printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
@@ -10383,7 +10397,6 @@ static void dump_close(void) {
 /* An initial state checked as TLC checks it: the invariants, then the
    properties that are state predicates. Returns the exit status of a
    violation, which it reports, or 0. */
-static int keep_going;   /* -continue: a violated invariant or action property is reported, and the search goes on */
 
 static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
@@ -10636,14 +10649,19 @@ static void post_behavior(Value ***st, const int *act, int n, int loop, int loop
     post_trace.value = NULL;
 }
 
+/* A CounterExample: TLC sorts its fields as it interned them, "state"
+   first when it sets up a trace spec, which -continue skips. */
+static Value *counter_example_record(Value *states, Value *steps) {
+    if (keep_going) return mk_record(2, (const char *[]){"action", "state"}, (Value *[]){steps, states});
+    return mk_record(2, (const char *[]){"state", "action"}, (Value *[]){states, steps});
+}
+
 static Value *counter_example(void) {
     if (!checking_posts || !post_trace.n) {
         if (!empty_counter_example) {
             Arena *saved = arena;
             arena = &perm_arena;
-            const char *names[] = {"state", "action"};
-            Value *vals[] = {mk_set(0), mk_set(0)};
-            empty_counter_example = mk_record(2, names, vals);
+            empty_counter_example = counter_example_record(mk_set(0), mk_set(0));
             arena = saved;
         }
         return empty_counter_example;
@@ -10665,9 +10683,7 @@ static Value *counter_example(void) {
         step->u.fcn.vals[1] = action_value(act < 0 ? -2 : act);   /* TLC knows no action of an initial state */
         step->u.fcn.vals[2] = node[last ? post_trace.loop - 1 : i + 1];
     }
-    const char *names[] = {"state", "action"};
-    Value *vals[] = {set_normalize(states), set_normalize(steps)};
-    return post_trace.value = mk_record(2, names, vals);
+    return post_trace.value = counter_example_record(set_normalize(states), set_normalize(steps));
 }
 
 /* ToTrace(ce): the states of a CounterExample, in order. */
@@ -11453,9 +11469,15 @@ static int search(void) {
             return error_module == 1 ? MANYAN_ERROR : MANYAN_FAILURE_EVAL;
         }
         if (checking(action_props, naction_props)) {
-            printf("Error: Evaluating action property %s failed.\n", S(error_check->name));
-            print_error_text();
-            int failed = print_trace(expanding, error_state, cur_action);
+            /* With -continue TLC reports the error again as an error of the
+               step, and all of it again as it replays the step. */
+            int failed = 0;
+            for (int k = 0; k <= keep_going; k++) {
+                printf("Error: Evaluating action property %s failed.\n", S(error_check->name));
+                print_error_text();
+                failed = print_trace(expanding, error_state, cur_action);
+                if (keep_going) print_next_failure(expanding, error_state, cur_action, status);
+            }
             print_unfingerprinted(fps, nfp);
             print_counts(nstates - expanded - violation_fresh);
             return failed ? failed : error_module == 1 ? MANYAN_ERROR : MANYAN_FAILURE_EVAL;
@@ -11467,21 +11489,26 @@ static int search(void) {
             print_error_text();
             int failed = print_trace(expanding, error_state, cur_action);
             if (failed) printf("\n");   /* after the call stack TLC prints for it */
+            else if (keep_going) print_next_failure(expanding, error_state, cur_action, status);   /* as an error of the step */
             print_counts(nstates - expanded - 1);
-            return failed ? failed : MANYAN_FAILURE_SAFETY_EVAL;
+            return failed ? failed : keep_going ? MANYAN_ERROR : MANYAN_FAILURE_SAFETY_EVAL;
         }
-        /* TLC reports an error of its own evaluator in Next as an unexpected
-           exception; one of a standard module's operators plainly. */
-        if (status == MANYAN_FAILURE_EVAL && error_module != 1)
-            print_exception("java.lang.RuntimeException", ": ");
-        else
-            printf("Error: ");
-        print_error_text();
         Value **from = decode_state(expanding);
-        print_trace(expanding, NULL, 0);
+        print_next_failure(expanding, NULL, 0, status);
         /* TLC goes on to find the state deadlocked, its error already
-           reported, and rebuilds the behavior; then it replays the error. */
+           reported, and rebuilds the behavior; then it replays the error.
+           With -continue it reports the deadlock, which replaces the error,
+           or else reports the error again as it replays it: of one it
+           cannot fingerprint, only the behavior. */
+        if (succ_count == 0 && check_deadlock && keep_going) {
+            printf("Error: Deadlock reached.\n");
+            reported_trace(expanding, NULL, 0);
+            print_counts(nstates - expanded);
+            return MANYAN_VIOLATION_DEADLOCK;
+        }
         if (succ_count == 0 && check_deadlock) rebuild_for_posts(expanding, NULL, 0);
+        if (keep_going && nfp) print_trace(expanding, NULL, 0);
+        else if (keep_going) print_next_failure(expanding, NULL, 0, status);
         replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);

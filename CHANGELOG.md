@@ -158,6 +158,12 @@ unreleased:
 - An assumption of a level above constant is SANY's level error; an
   error raised in one of TLC's evaluation methods (`TLCEvalDefinition`,
   `TLCCache`, ...) is wrapped in its Java method, as TLC wraps it
+- With `-continue`, an error evaluating a step is reported as TLC
+  reports it: an error in Next is followed by the state's deadlock, or
+  reported again as TLC replays it; one in an invariant or action
+  property again as an error of the step. A `CounterExample` is
+  `[action, state]` and Naturals' Java methods are its own, as TLC sets
+  up no trace spec
 
 2026-11-12 0.10.0:
 

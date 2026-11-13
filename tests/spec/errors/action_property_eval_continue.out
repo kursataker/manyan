@@ -1,0 +1,66 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating action property Prop failed.
+Attempted to select nonexistent field "b" from the record
+[a |-> 1]
+line 9, col 22 to line 9, col 32 of module action_property_eval_continue
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 2
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to select nonexistent field "b" from the record
+[a |-> 1]
+line 9, col 22 to line 9, col 32 of module action_property_eval_continue
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 2
+
+Error: Evaluating action property Prop failed.
+Attempted to select nonexistent field "b" from the record
+[a |-> 1]
+line 9, col 22 to line 9, col 32 of module action_property_eval_continue
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 2
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to select nonexistent field "b" from the record
+[a |-> 1]
+line 9, col 22 to line 9, col 32 of module action_property_eval_continue
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module action_property_eval_continue>
+x = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 75

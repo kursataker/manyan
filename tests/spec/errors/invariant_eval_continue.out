@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Evaluating invariant Inv failed.
+Attempted to apply Head to the empty sequence.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module invariant_eval_continue>
+x = 1
+
+Error: Attempted to apply Head to the empty sequence.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module invariant_eval_continue>
+x = 1
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 255
