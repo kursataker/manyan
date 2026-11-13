@@ -15,7 +15,7 @@ sim: runs models of tests/spec as random simulations (-simulate or
 -generate), with random seeds and depths, with the engine and with TLC; they must print the same.
 
 check: checks models of tests/spec with random options (-deadlock,
--continue, -difftrace, -nowarning), the engine with one or four workers,
+-continue, -difftrace, -nowarning, -view), the engine with one or four workers,
 and with TLC; they must print the same.
 
 live: checks a random temporal property of a random state graph under
@@ -356,7 +356,7 @@ def check(engine, tlc, runs, seed):
     failed = 0
     for _ in range(runs):
         path = rng.choice(models)
-        options = [o for o in ["-deadlock", "-continue", "-difftrace", "-nowarning"] if rng.random() < 0.4]
+        options = [o for o in ["-deadlock", "-continue", "-difftrace", "-nowarning", "-view"] if rng.random() < 0.4]
         workers = rng.choice([[], ["-workers", "4"]])
         ours = spec_runner.run(engine + workers + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)

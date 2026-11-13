@@ -10026,12 +10026,13 @@ static void print_numbered(int number, int action, Value **st, Value **prev, Val
     static Buf b;   /* TLC makes the state's text before it prints its number; an error may end it */
     b.n = 0;
     if (b.s) b.s[0] = 0;
-    int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr;
+    /* With -difftrace TLC prints a state after another as what changed, not as the view. */
+    int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr && !diff;
     if (!diff && !shown) trace_state_text(&b, st, next, number, diff_trace && prev);
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
-    if (print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
+    if (shown && print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
     if (diff) {
         for (int i = 0; i < nvars; i++)
             if (!unchanged(prev[i], st[i]))
@@ -10438,16 +10439,14 @@ static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
-        if (!print_shown(st)) print_trace_state(st, st, 1);
-        printf("\n");
+        if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
-        if (!print_shown(st)) print_trace_state(st, st, 1);
-        printf("\n");
+        if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }

@@ -1,0 +1,16 @@
+Error: Invariant Inv is violated by the initial state:
+<<0, "v">>
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+<<0, "v">>
+State 2: <Next line 8, col 9 to line 8, col 41 of module view_initial_continue>
+<<1, "v">>
+State 3: <Next line 8, col 9 to line 8, col 41 of module view_initial_continue>
+<<2, "v">>
+State 4: <Next line 8, col 9 to line 8, col 41 of module view_initial_continue>
+<<3, "v">>
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 11

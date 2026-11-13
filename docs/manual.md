@@ -360,7 +360,7 @@ models with random seeds and depths, with Manyan and with TLC, one
 behavior of a model that prints or asks: TLC's worker goes on past an
 error until it is stopped. `make fuzz-check` checks random tests' models
 with random options (`-deadlock`, `-continue`, `-difftrace`,
-`-nowarning`), Manyan with one or four workers. `make
+`-nowarning`, `-view`), Manyan with one or four workers. `make
 fuzz-live` checks a random temporal property of a random state graph
 under random weak and strong fairness, with Manyan and with TLC. All five take `RUNS=` (1000) and `SEED=` (1);
 a run with a seed is repeatable. A case any of them finds becomes a test in

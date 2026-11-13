@@ -179,6 +179,9 @@ unreleased:
 - With `-continue`, an error in Init is followed by the initial states'
   violations again, as TLC replays Init; an error in a property's tableau
   on a state stuttering is found where TLC's search finds it
+- With `-view` and `-difftrace`, a state after another is printed as what
+  changed, as TLC prints it; with `-continue`, an initial state violating
+  an invariant shown as the view is followed by no blank line
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 
