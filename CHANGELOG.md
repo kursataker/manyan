@@ -52,7 +52,8 @@ unreleased:
   simulator checks them (LiveCheck1): without its finite stuttering, on
   a product that steps on from the nodes new at each position only;
   `(x = 1) ~> (x = 2)` on a behavior that stays at `x = 1` is no
-  violation then, as in TLC
+  violation then, as in TLC; with no fairness, its counterexample is
+  the one TLC's search of that product (LiveCheck1) prints
 - `tests/fuzz.py sim` runs a model that prints or asks one behavior
   only: TLC's worker goes on past an error until it is stopped, and what
   it prints then races

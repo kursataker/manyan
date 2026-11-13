@@ -14404,6 +14404,30 @@ static void drop_repeats(List *nodes, List *acts, int n, int prev) {
 /* Prints a lasso through the accepted component: the shortest path to it,
    then a cycle that meets each eventuality and fairness condition. */
 static void warn_stuttering(void);
+/* Prints the lasso of the n states ls, entered by the actions la (la[0]
+   unused), its cycle back to ls[entry] by the action back, or with entry
+   negative its last state stuttering; cyc is where the properties are
+   evaluated to loop back. */
+static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
+    int stutter = entry < 0;
+    print_violated(lasso_values(ls, n), n, cyc);
+    printf("Error: The following behavior constitutes a counter-example:\n\n");
+    la[0] = -1;
+    for (int i = 0; i < n; i++) {
+        print_live_state(i + 1, ls[i], i ? la[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : stutter ? i : entry]);
+        if (i == entry) post_behavior(lasso_values(ls, n), la, n, entry + 1, back, 0);
+    }
+    if (stutter) {
+        printf("State %d: Stuttering\n", n + 1);
+        warn_stuttering();
+        post_behavior(lasso_values(ls, n), la, n, n, la[n - 1], 0);
+        return;
+    }
+    printf("Back to state %d: ", entry + 1);
+    action_label(back);
+    printf("\n\n");
+}
+
 static void print_counterexample(int *inits, int ninits) {
     List path = {0}, acts = {0};
     int entry = accepted[0];   /* as TLC, the root of the component in the search */
@@ -14417,38 +14441,14 @@ static void print_counterexample(int *inits, int ninits) {
         drop_repeats(&cyc, &cacts, cyc.n - 1, pnodes[entry].state);
         stutter_only = cyc.n == 1;
     }
-    int nlasso = path.n + (stutter_only ? 0 : cyc.n - 1);
-    int *lasso = NEWN(int, nlasso + 1);
-    for (int i = 0; i < nlasso; i++) lasso[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;
-    print_violated(lasso_values(lasso, nlasso), nlasso, stutter_only ? nlasso - 1 : path.n - 1);
-    printf("Error: The following behavior constitutes a counter-example:\n\n");
-    int number = 0;
-    for (int i = 0; i < path.n; i++) {
-        int p = (int)path.v[i]->u.i;
-        int act = (int)acts.v[i]->u.i;
-        number++;
-        print_live_state(number, pnodes[p].state, i == 0 ? -1 : act, i == 0 ? -1 : pnodes[path.v[i - 1]->u.i].state,
-                         lasso[number < nlasso ? number : stutter_only ? number - 1 : path.n - 1]);
+    int n = path.n + (stutter_only ? 0 : cyc.n - 1);
+    int *ls = NEWN(int, n + 1), *la = NEWN(int, n + 1);
+    for (int i = 0; i < n; i++) {
+        ls[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;
+        la[i] = (int)(i < path.n ? acts.v[i] : cacts.v[i - path.n])->u.i;
     }
-    int entry_number = number;
-    int *lacts = NEWN(int, nlasso + 1);
-    for (int i = 0; i < nlasso; i++) lacts[i] = !i ? -1 : (int)(i < path.n ? acts.v[i] : cacts.v[i - path.n])->u.i;
-    if (stutter_only) {
-        printf("State %d: Stuttering\n", number + 1);
-        warn_stuttering();
-        post_behavior(lasso_values(lasso, nlasso), lacts, nlasso, nlasso, lacts[nlasso - 1], 0);
-        return;
-    }
-    post_behavior(lasso_values(lasso, nlasso), lacts, nlasso, entry_number, (int)cacts.v[cyc.n - 1]->u.i, 0);
-    for (int i = 0; i + 1 < cyc.n; i++) {
-        int p = (int)cyc.v[i]->u.i;
-        int before = (int)(i ? cyc.v[i - 1] : path.v[path.n - 1])->u.i;
-        number++;
-        print_live_state(number, pnodes[p].state, (int)cacts.v[i]->u.i, pnodes[before].state, lasso[number < nlasso ? number : path.n - 1]);
-    }
-    printf("Back to state %d: ", entry_number);
-    action_label((int)cacts.v[cyc.n - 1]->u.i);
-    printf("\n\n");
+    if (stutter_only) print_lasso(ls, la, n, -1, -1, n - 1);
+    else print_lasso(ls, la, n, path.n - 1, (int)cacts.v[cyc.n - 1]->u.i, path.n - 1);
 }
 
 /* Whether TLC checks a formula with a tableau: it has a temporal part
@@ -14563,6 +14563,190 @@ static void pem_search(int *roots, int nroots) {
     pem_off = NULL;
 }
 
+/* TLC's simulator's search of a behavior's product with no fairness and
+   no []<> or <>[] conditions (LiveCheck1): Tarjan's from each initial
+   node in turn, numbering nodes as TLC does; the first component with an
+   edge inside that meets each eventuality is printed with the cycle TLC
+   walks from its root, after the shortest path to it. */
+#define SIM_FIRST 0x2000000000000000LL
+#define SIM_SECOND 0x5000000000000000LL
+static int64_t *snum, sn1, sn2, sn3, snfirst, snsecond, snstart2, snstart3;
+static Ints scom;   /* the component stack */
+static int sim_hit = -1;   /* the root of the component found */
+
+static int self_edge(int p) {
+    for (int i = 0; i < pnodes[p].nsucc; i++) if (pnodes[p].succ[i] == p) return 1;
+    return 0;
+}
+
+static void sim_subcomponent(int node) {   /* checkSubcomponent */
+    char *met = xcalloc((size_t)neventualities + 1, 1);
+    int *stack = NULL, n = 0;
+    snum[node]++;
+    PUSH(stack, n, node);
+    while (n) {
+        int cur = stack[--n];
+        for (int i = 0; i < pnodes[cur].nsucc; i++) {
+            int d = pnodes[cur].succ[i];
+            if (snum[d] == sn3) snum[d]++, PUSH(stack, n, d);
+        }
+        for (int e = 0; e < neventualities; e++) if (!tnode_defers(pnodes[cur].tnode, e)) met[e] = 1;
+    }
+    sn3 += 2;
+    int all = 1;
+    for (int e = 0; e < neventualities; e++) all &= met[e];
+    free(met);
+    if (all) sim_hit = node;
+}
+
+/* Tarjan's from root: over all nodes (checkSccs), or within the
+   component just taken (checkSccs1); each component found is checked. */
+static void sim_sccs(int root, int second) {
+    typedef struct { int node, i; int64_t low; } Frame;
+    Frame *f = NULL;
+    int nf = 0;
+    PUSH(f, nf, ((Frame){root, 0, snum[root] = second ? sn2++ : sn1++}));
+    PUSH(scom.v, scom.n, root);
+    while (nf && sim_hit < 0) {
+        Frame *t = &f[nf - 1];
+        if (t->i < pnodes[t->node].nsucc) {
+            int d = pnodes[t->node].succ[t->i++];
+            int64_t dn = snum[d];
+            if (second ? snfirst <= dn && (dn < snstart2 || (snsecond <= dn && dn < snstart3)) : dn == 0) {
+                PUSH(f, nf, ((Frame){d, 0, snum[d] = second ? sn2++ : sn1++}));
+                PUSH(scom.v, scom.n, d);
+                continue;
+            }
+            if ((!second || snfirst <= dn) && dn < t->low) t->low = dn;
+            continue;
+        }
+        Frame done = f[--nf];
+        if (nf && done.low < f[nf - 1].low) f[nf - 1].low = done.low;
+        if (done.low != snum[done.node]) continue;
+        int top = scom.v[--scom.n];
+        if (second) {   /* extractComponent1 */
+            if (top == done.node && !self_edge(top)) { snum[top] = sn3++; continue; }
+            snum[top] = sn3;
+            while (top != done.node) snum[top = scom.v[--scom.n]] = sn3;
+            sim_subcomponent(done.node);
+            continue;
+        }
+        if (top == done.node && !self_edge(top)) { snum[top] = SIM_FIRST; continue; }   /* extractComponent */
+        int *nodes = NULL, nn = 0;
+        snfirst = sn2++;
+        snsecond = sn3;
+        snum[top] = snfirst;
+        PUSH(nodes, nn, top);
+        while (top != done.node) snum[top = scom.v[--scom.n]] = snfirst, PUSH(nodes, nn, top);
+        snstart2 = sn2;
+        snstart3 = sn3;
+        for (int j = nn - 1; j >= 0 && sim_hit < 0; j--)
+            if (snum[nodes[j]] < snstart3) sim_sccs(nodes[j], 1);
+    }
+}
+
+/* The cycle printErrorTrace walks from node through its component,
+   meeting each eventuality, back to node: its nodes from node on. */
+static void sim_cycle(int node, Ints *cyc) {
+    int64_t low = sn3 - 1;
+    char *met = xcalloc((size_t)neventualities + 1, 1);
+    int cnt = neventualities, cur = node;
+    while (cnt > 0) {
+        snum[cur] = sn3;
+        int cnt0 = cnt;
+        for (;;) {
+            for (int e = 0; e < neventualities; e++)
+                if (!met[e] && !tnode_defers(pnodes[cur].tnode, e)) met[e] = 1, cnt--;
+            if (cnt <= 0) break;
+            int next1 = -1, next2 = -1;
+            for (int i = 0; i < pnodes[cur].nsucc; i++) {
+                int d = pnodes[cur].succ[i];
+                if (low <= snum[d] && snum[d] <= sn3) next1 = d;
+                if (low <= snum[d] && snum[d] < sn3) next2 = d;
+            }
+            if (cnt < cnt0) { PUSH(cyc->v, cyc->n, cur); cur = next1; sn3++; break; }
+            while (next2 < 0) {
+                cur = cyc->v[--cyc->n];
+                for (int i = 0; i < pnodes[cur].nsucc && next2 < 0; i++) {
+                    int d = pnodes[cur].succ[i];
+                    if (low <= snum[d] && snum[d] < sn3) PUSH(cyc->v, cyc->n, cur), next2 = d;
+                }
+            }
+            PUSH(cyc->v, cyc->n, cur);
+            cur = next2;
+            snum[cur] = sn3;
+        }
+    }
+    free(met);
+    snum[cur] = ++sn3;
+    while (cur != node) {
+        int found = 0, i;
+        for (i = 0; i < pnodes[cur].nsucc; i++) {
+            int d = pnodes[cur].succ[i];
+            if (low <= snum[d] && snum[d] < sn3) break;
+        }
+        if (i < pnodes[cur].nsucc) {
+            int d = pnodes[cur].succ[i];
+            PUSH(cyc->v, cyc->n, cur);
+            if (d == node) break;
+            found = 1;
+            snum[cur = d] = sn3;
+        }
+        if (!found) cur = cyc->v[--cyc->n];
+    }
+    if (!cyc->n) PUSH(cyc->v, cyc->n, cur);
+}
+
+/* The action of the edge from p to q. */
+static int edge_act(int p, int q) {
+    for (int i = 0; i < pnodes[p].nsucc; i++) if (pnodes[p].succ[i] == q) return pnodes[p].act[i];
+    return STUTTER;
+}
+
+static int sim_search(int *roots, int nroots) {
+    snum = xcalloc((size_t)npnodes, sizeof *snum);
+    sn1 = 1, sn2 = SIM_FIRST + 1, sn3 = SIM_SECOND + 1, snfirst = sn2, snsecond = sn3;
+    scom.n = 0;
+    sim_hit = -1;
+    int init = -1;
+    for (int r = 0; r < nroots && sim_hit < 0; r++)
+        if (snum[roots[r]] == 0) sim_sccs(init = roots[r], 0);
+    if (sim_hit < 0) { free(snum); return 0; }
+    Ints cyc = {0};
+    sim_cycle(sim_hit, &cyc);
+    free(snum);
+    /* The shortest path from the initial node to the root (BEGraph.getPath). */
+    int *parent = xmalloc(sizeof(int) * (size_t)npnodes), *queue = xmalloc(sizeof(int) * (size_t)npnodes), head = 0, tail = 0;
+    for (int p = 0; p < npnodes; p++) parent[p] = -2;
+    parent[init] = -1;
+    queue[tail++] = init;
+    while (init != sim_hit && parent[sim_hit] == -2) {
+        int cur = queue[head++];
+        for (int i = 0; i < pnodes[cur].nsucc && parent[sim_hit] == -2; i++) {
+            int d = pnodes[cur].succ[i];
+            if (parent[d] == -2) parent[d] = cur, queue[tail++] = d;
+        }
+    }
+    int np = 0;
+    for (int p = sim_hit; p >= 0; p = parent[p]) queue[np++] = p;
+    int *ls = NEWN(int, np + cyc.n + 1), *la = NEWN(int, np + cyc.n + 1), n = 0;
+    for (int i = np - 1; i >= 0; i--) {   /* each state once, entered by its first node */
+        int p = queue[i];
+        if (n && ls[n - 1] == pnodes[p].state) continue;
+        la[n] = n ? edge_act(queue[i + 1], p) : -1;
+        ls[n++] = pnodes[p].state;
+    }
+    int entry = n - 1;
+    for (int i = 1; i < cyc.n; i++)
+        if (pnodes[cyc.v[i]].state != pnodes[cyc.v[i - 1]].state)
+            la[n] = edge_act(cyc.v[i - 1], cyc.v[i]), ls[n++] = pnodes[cyc.v[i]].state;
+    free(parent);
+    free(queue);
+    if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n, -1, -1, entry);
+    else print_lasso(ls, la, n, entry, edge_act(cyc.v[cyc.n - 1], sim_hit), entry);
+    return 1;
+}
+
 static int has_actions(void) {
     for (int i = 0; i < natoms; i++) if (atoms[i]->action) return 1;
     return 0;
@@ -14571,7 +14755,10 @@ static int has_actions(void) {
 static int check_property(TF *negated) {
     live_negated = negated;
     int *r, n = live_roots(negated, &r);
-    if (sim_n && tf_tableau(negated)) sim_product(r, n);
+    if (sim_n && tf_tableau(negated)) {
+        sim_product(r, n);
+        if (!nfairs && !nfair_rest && !tf_conditions(negated)) return sim_search(r, n);
+    }
     else if (nworkers > 1 && !nsymmetry && !view_expr && has_actions()) {
         stop_workers();   /* to fork with this property's atoms */
         run_level(0, nstates, BATCH, 0, ATOMS);
