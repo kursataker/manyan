@@ -3,6 +3,7 @@
 usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py diff ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
+       fuzz.py check ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py live ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
@@ -12,6 +13,10 @@ sanitizer report.
 
 sim: runs models of tests/spec as random simulations (-simulate or
 -generate), with random seeds and depths, with the engine and with TLC; they must print the same.
+
+check: checks models of tests/spec with random options (-deadlock,
+-continue, -difftrace, -nowarning), the engine with one or four workers,
+and with TLC; they must print the same.
 
 live: checks a random temporal property of a random state graph under
 random weak and strong fairness with the engine and with TLC; they must
@@ -319,11 +324,16 @@ def diff(engine, tlc, runs, seed):
     return failed
 
 
+def spec_models():
+    """The models of tests/spec that run without options."""
+    models = sorted((ROOT / "tests/spec").rglob("*.tla"))
+    return [p for p in models if ".files" not in str(p) and not spec_runner.options(p)
+            and re.search(r"^\s*(INIT|SPECIFICATION)\b", p.read_text(), flags=re.M)]
+
+
 def sim(engine, tlc, runs, seed):
     rng = random.Random(seed)
-    models = sorted((ROOT / "tests/spec").rglob("*.tla"))
-    models = [p for p in models if ".files" not in str(p) and not spec_runner.options(p)
-              and re.search(r"^\s*(INIT|SPECIFICATION)\b", p.read_text(), flags=re.M)]
+    models = spec_models()
     failed = 0
     for _ in range(runs):
         path = rng.choice(models)
@@ -337,6 +347,23 @@ def sim(engine, tlc, runs, seed):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} simulations printed what TLC prints")
+    return failed
+
+
+def check(engine, tlc, runs, seed):
+    rng = random.Random(seed)
+    models = spec_models()
+    failed = 0
+    for _ in range(runs):
+        path = rng.choice(models)
+        options = [o for o in ["-deadlock", "-continue", "-difftrace", "-nowarning"] if rng.random() < 0.4]
+        workers = rng.choice([[], ["-workers", "4"]])
+        ours = spec_runner.run(engine + workers + options, path, MEMORY)
+        theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
+        if ours != theirs:
+            failed += 1
+            print(f"DIFF {path.relative_to(ROOT)} {' '.join(workers + options)}\n--- engine\n{ours}--- TLC\n{theirs}")
+    print(f"{runs - failed}/{runs} checks printed what TLC prints")
     return failed
 
 
@@ -397,7 +424,7 @@ def live(engine, tlc, runs, seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "diff", "sim", "live"])
+    parser.add_argument("mode", choices=["crash", "diff", "sim", "check", "live"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--runs", type=int, default=200)
@@ -408,7 +435,7 @@ def main():
         return 1 if crash(engine, args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
-    return 1 if {"sim": sim, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0
+    return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0
 
 
 if __name__ == "__main__":

@@ -9957,11 +9957,32 @@ static Value *alias_value(Value **st, Value **next, int level, Buf *why) {
     return v;
 }
 
-static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
+/* What TLC printed of the state before, with an ALIAS: the alias's
+   record, or else the state. With -difftrace TLC leaves out the fields
+   that it shows unchanged, but an error evaluating the alias. */
+static Value *shown_record;
+static Value **shown_state;
+
+/* Whether the field name, now v, is as shown before: in record, or else st. */
+static int shown_was(Value *record, Value **st, int name, Value *v) {
+    Value *was = NULL;
+    if (record) {
+        for (int i = 0; i < record->n; i++) if (record->u.fcn.keys[i]->u.i == name) was = record->u.fcn.vals[i];
+    } else if (st) {
+        for (int i = 0; i < nvars; i++) if (vars[i]->name == name) was = st[i];
+    }
+    return unchanged(was, v);
+}
+
+static void trace_state_text(Buf *b, Value **st, Value **next, int level, int diff) {
     if (!alias_name) { state_text(b, st); return; }
     Buf why = {0};
     Value *v = alias_value(st, next, level, &why);
     Def *d = v ? late_def(alias_name, "alias", &why) : NULL;
+    Value *was_record = shown_record;
+    Value **was_state = shown_state;
+    shown_record = v && fcn_is_record(v) ? v : NULL;
+    shown_state = st;
     if (v && fcn_is_record(v)) {
         Expr *made = unfold(d->body);
         int fmt = intern("_format");
@@ -9976,6 +9997,7 @@ static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
             for (int j = 0; made->kind == X_RECORD && j < v->n; j++)
                 if (v->u.fcn.keys[j]->u.i == made->segs[i].name) k = j;
             if (v->u.fcn.keys[k]->u.i == fmt) continue;
+            if (diff && shown_was(was_record, was_state, v->u.fcn.keys[k]->u.i, v->u.fcn.vals[k])) continue;
             const char *key = S(v->u.fcn.keys[k]->u.i), *val = pretty(v->u.fcn.vals[k]);
             if (!format) { buf_printf(b, "%s%s = %s\n", v->n == 1 ? "" : "/\\ ", key, val); continue; }
             const char *cls, *args[] = {key, val}, *why = java_format(b, format, 2, args, &cls);
@@ -9984,14 +10006,16 @@ static void trace_state_text(Buf *b, Value **st, Value **next, int level) {
         return;
     }
     if (v) { state_text(b, st); return; }
-    for (int i = 0; i < nvars; i++) buf_printf(b, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    for (int i = 0; i < nvars; i++)
+        if (!diff || !shown_was(was_record, was_state, vars[i]->name, st[i]))
+            buf_printf(b, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
     buf_printf(b, "/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
     free(why.s);
 }
 
 static void print_trace_state(Value **st, Value **next, int level) {
     Buf b = {0};
-    trace_state_text(&b, st, next, level);
+    trace_state_text(&b, st, next, level, 0);
     fputs(b.s ? b.s : "", stdout);
     free(b.s);
 }
@@ -10001,7 +10025,7 @@ static void print_numbered(int number, int action, Value **st, Value **prev, Val
     b.n = 0;
     if (b.s) b.s[0] = 0;
     int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr;
-    if (!diff && !shown) trace_state_text(&b, st, next, number);
+    if (!diff && !shown) trace_state_text(&b, st, next, number, diff_trace && prev);
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
@@ -10023,14 +10047,16 @@ static void print_exception(const char *cls, const char *then) {
 }
 
 /* The message of the error that stopped the search, then where it was. */
+static void error_text(Buf *b) {
+    buf_printf(b, "%s\n", error_message.s ? error_message.s : "");
+    if (error_expr && error_expr->mod) node_text(b, error_expr), buf_puts(b, "\n");
+}
+
 static void print_error_text(void) {
-    printf("%s\n", error_message.s ? error_message.s : "");
-    if (error_expr && error_expr->mod) {
-        Buf b = {0};
-        node_text(&b, error_expr);
-        printf("%s\n", b.s);
-        free(b.s);
-    }
+    Buf b = {0};
+    error_text(&b);
+    fputs(b.s, stdout);
+    free(b.s);
 }
 
 /* While TLC rebuilds a behavior, the states it rebuilt up to the one it
@@ -10074,10 +10100,15 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
     }
 }
 
+/* The error that failed the last behavior printed: its text, its Java exception. */
+static Buf trace_failure;
+static const char *trace_failure_java;
+
 /* The behavior from an initial state to state s1, then the state s2
-   reached from it by `action` if s2 is not NULL, as TLC prints it. As
-   TLC, an error rebuilding a state ends the behavior there, reported as
-   an exception: returns the exit status of that error, 0 if none. */
+   reached from it by `action` if s2 is not NULL, as TLC prints it (print
+   2: the error is left unreported). As TLC, an error rebuilding a state
+   ends the behavior there, reported as an exception: returns the exit
+   status of that error, 0 if none. */
 static int trace_states(int s1, Value **s2, int action, int print) {
     EvalState s = eval_save();
     ErrorState e = error_save();
@@ -10089,9 +10120,12 @@ static int trace_states(int s1, Value **s2, int action, int print) {
     if (!sigsetjmp(here, 0)) print_trace_states(s1, s2, action, print);
     else {
         failed = eval_failure_status();
-        if (print) {
-            print_exception(error_java ? error_java : "tlc2.tool.EvalException", ": ");
-            print_error_text();
+        trace_failure.n = 0;
+        error_text(&trace_failure);
+        trace_failure_java = error_java ? error_java : "tlc2.tool.EvalException";
+        if (print == 1) {
+            print_exception(trace_failure_java, ": ");
+            fputs(trace_failure.s, stdout);
         }
     }
     trace_path = saved_path, ntrace_path = saved_n;
@@ -10516,13 +10550,37 @@ NATIVE(n_picksuccessor) {
 /* Whether the state a violation reports was new: as TLC, it is not queued. */
 static int violation_fresh;
 
+/* With -continue, the behavior to st, which violates the check named:
+   TLC prints it inside its check, without a postcondition, so an error
+   printing it fails the check, and then the step, which stops the search. */
+static int continued_trace(const char *check, int name, Value **st) {
+    int failed = trace_states(expanding, st, cur_action, 2);
+    if (!failed) return 0;
+    char *why = strdup(trace_failure.s);
+    const char *java = trace_failure_java;
+    printf("Error: Evaluating %s %s failed.\n%s", check, S(name), why);
+    print_trace(expanding, st, cur_action);
+    print_exception(java, ": ");
+    fputs(why, stdout);
+    print_trace(expanding, st, cur_action);
+    free(why);
+    violation = MANYAN_ERROR;
+    return failed;
+}
+
 /* Whether a step to st violates an action property, which TLC checks
    for every step. */
 static int action_violated(Value **st) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad < 0) return 0;
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
-    if (keep_going) { print_trace(expanding, st, cur_action); return 0; }   /* as TLC, no postcondition */
+    if (keep_going) {
+        if (!continued_trace("action property", action_props[bad].name, st)) return 0;
+        /* TLC checks the step again as it replays it, to the same error. */
+        printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+        violation = continued_trace("action property", action_props[bad].name, st);
+        return 1;
+    }
     reported_trace(expanding, st, cur_action);
     violation = MANYAN_VIOLATION_LIVENESS;
     return 1;
@@ -10549,6 +10607,7 @@ static int next_emit(void) {
             print_trace(expanding, succ, cur_action);
         }
         violation = MANYAN_FAILURE_EVAL;
+        violation_fresh = 0;
         return 1;
     }
     Value **st = NEWN(Value *, nvars);
@@ -10560,8 +10619,9 @@ static int next_emit(void) {
         violation_fresh = 0;
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            if (keep_going) print_trace(expanding, st, cur_action);   /* as TLC, no postcondition */
-            else {
+            if (keep_going) {
+                if (continued_trace("invariant", invariants[bad].name, st)) return 1;
+            } else {
                 reported_trace(expanding, st, cur_action);
                 violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
@@ -10586,8 +10646,9 @@ static int next_emit(void) {
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
-            if (keep_going) print_trace(expanding, st, cur_action);   /* as TLC, no postcondition */
-            else {
+            if (keep_going) {
+                if (continued_trace("invariant", invariants[bad].name, st)) return 1;
+            } else {
                 reported_trace(expanding, st, cur_action);
                 violation = MANYAN_VIOLATION_SAFETY;
                 return 1;
@@ -10801,7 +10862,7 @@ static int expand_state(int idx) {
         gen_target = succ;
         gen(actions[a].e, actions[a].c, NULL);
         if (violation) {
-            print_counts(nstates - expanded - (violation != MANYAN_FAILURE_EVAL && violation_fresh));
+            print_counts(nstates - expanded - violation_fresh);
             return violation;
         }
     }

@@ -1,0 +1,30 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ sum = 0
+/\ c = 7
+/\ nx = 1
+
+State 2: <Next line 8, col 9 to line 8, col 28 of module alias_difftrace>
+/\ x = 1
+/\ sum = 1
+/\ nx = 2
+
+State 3: <Next line 8, col 9 to line 8, col 28 of module alias_difftrace>
+/\ x = 2
+/\ sum = 2
+/\ nx = 3
+
+State 4: <Next line 8, col 9 to line 8, col 28 of module alias_difftrace>
+/\ x = 3
+/\ y = 0
+/\ sum = 3
+/\ c = 7
+/\ nx = 3
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12

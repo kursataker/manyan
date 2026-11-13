@@ -170,6 +170,12 @@ unreleased:
   specification's fairness rules it out
 - A successor left incomplete is followed by no check of the
   postconditions, as in TLC; manyan crashed on one using `CounterExample`
+- With `-difftrace` and an `ALIAS`, the alias's fields that are unchanged
+  are left out, as TLC leaves them out, but an error evaluating it
+- With `-continue`, an alias failing to print the behavior to a violated
+  invariant or action property fails the check and the step, as in TLC
+- `make fuzz-check` checks the models of tests/spec with random options,
+  with Manyan (one or four workers) and with TLC
 
 2026-11-12 0.10.0:
 
