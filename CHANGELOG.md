@@ -48,6 +48,9 @@ unreleased:
   than 24 elements and `[D -> R]` more than 100 million: Examples' SpanTreeTest5Nodes, a filter
   of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
   Manyan 168 s); it failed with an overflow
+- an arena's memory is aligned for a 128-bit integer: `-generate`'s
+  random order of a set's elements was stored misaligned (found by
+  `make fuzz`)
 - a simulated behavior's temporal properties are checked as TLC's
   simulator checks them (LiveCheck1): without its finite stuttering, on
   a product that steps on from the nodes new at each position only;

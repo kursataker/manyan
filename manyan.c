@@ -46,7 +46,7 @@ typedef struct Inst Inst;
 /* Values and expressions live in arenas. The permanent arena holds the
    modules and everything computed before the search; the scratch arena
    holds what the search computes for one state and is reset after it. */
-typedef struct Chunk { struct Chunk *next; size_t used, size; char data[]; } Chunk;
+typedef struct Chunk { struct Chunk *next; size_t used, size; _Alignas(16) char data[]; } Chunk;   /* data as aligned as an __int128 */
 typedef struct { Chunk *head, *spare; } Arena;   /* spare: a chunk a region dropped, for the next */
 
 static Arena perm_arena, scratch_arena;
