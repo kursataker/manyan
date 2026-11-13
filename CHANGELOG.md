@@ -182,6 +182,10 @@ unreleased:
 - With `-view` and `-difftrace`, a state after another is printed as what
   changed, as TLC prints it; with `-continue`, an initial state violating
   an invariant shown as the view is followed by no blank line
+- With `-continue`, a deadlock followed by a postcondition TLC cannot
+  resolve, or by a finite counterexample, is reported as TLC reports it,
+  then again as TLC replays the step; an error in Next is reported again
+  as first found
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 

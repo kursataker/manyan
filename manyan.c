@@ -9816,7 +9816,9 @@ static int replay_emit(void) {
     }
     if (replay_checks) {
         if (ntemporal_props && !live_init_failed) eval_init_lits(gen_target);   /* reported */
-        if (keep_going) check_initial(gen_target);   /* reported again, as -continue reports it */
+        /* reported again, as -continue reports it; a property failing on an
+           initial state fails again on it first */
+        if (keep_going && !live_init_failed) check_initial(gen_target);
         else check_list(invariants, ninvariants, gen_target);
     }
     return 0;
@@ -10182,20 +10184,20 @@ static int check_possibles(void) {
    As TLC, each name is resolved first, and an error resolving one stops
    the check: the simulator reports it plainly, with its status, even
    after an error; the model checker as an unexpected exception, but
-   ignores it after an error. */
+   ignores it after an error, or with -continue reports it and returns -1. */
 static int check_posts(int after_error) {
     Def **d = NEWN(Def *, nposts + 1);
     for (int i = 0; i < nposts; i++) {
         Buf why = {0};
         if ((d[i] = late_def(posts[i], "post condition", &why))) continue;
         if (simulating) printf("Error: %s\n", why.s);
-        else if (!after_error) {
+        else if (!after_error || keep_going) {
             print_exception("java.lang.RuntimeException", ": ");
             printf("%s\n", why.s);
         }
         free(why.s);
         post_trace.n = 0;
-        return simulating ? MANYAN_ERROR_CONFIG : after_error ? 0 : MANYAN_ERROR;
+        return simulating ? MANYAN_ERROR_CONFIG : !after_error ? MANYAN_ERROR : keep_going && !simulating ? -1 : 0;
     }
     EvalState saved = eval_save();
     ErrorState error = error_save();
@@ -10823,17 +10825,20 @@ static void note_expanded(int idx) {
 }
 
 /* TLC adds a deadlocked state to its temporal checks after reporting it:
-   a finite counterexample ending there is reported too. */
-static void live_after_deadlock(int idx) {
+   a finite counterexample ending there is reported too. Returns whether
+   one was. */
+static int live_after_deadlock(int idx) {
     note_expanded(idx);
     Arena *saved = arena;
     arena = &perm_arena;
     collect_fairnesses();
     sigjmp_buf live;
     handler = &live;
-    if (!sigsetjmp(live, 0)) live_cut_violated();
+    volatile int found = 0;
+    if (!sigsetjmp(live, 0)) found = live_cut_violated() != 0;
     handler = NULL;
     arena = saved;
+    return found;
 }
 
 /* The counts TLC reports when it stops in its temporal checks, once
@@ -10869,8 +10874,21 @@ static int expand_state(int idx) {
     }
     if (succ_count == 0 && check_deadlock) {
         printf("Error: Deadlock reached.\n");
-        reported_trace(idx, NULL, 0);
-        if (ntemporal_props) live_after_deadlock(idx);
+        print_trace(idx, NULL, 0);
+        trace_states(idx, NULL, 0, 0);
+        /* With -continue TLC's worker fails resolving a postcondition, or
+           stops its temporal checks with an exception it reports; it
+           replays the step, deadlocked again. */
+        int again = check_posts(1) < 0;
+        if (!again && ntemporal_props && live_after_deadlock(idx) && keep_going) {
+            print_exception("tlc2.tool.INextStateFunctor$InvariantViolatedException", ": Invariant violated\n");
+            print_trace(idx, NULL, 0);
+            again = 1;
+        }
+        if (again) {
+            printf("Error: Deadlock reached.\n");
+            print_trace(idx, NULL, 0);
+        }
         print_counts(nstates - expanded);
         return MANYAN_VIOLATION_DEADLOCK;
     }
@@ -11579,9 +11597,15 @@ static int search(void) {
             return MANYAN_VIOLATION_DEADLOCK;
         }
         if (succ_count == 0 && check_deadlock) rebuild_for_posts(expanding, NULL, 0);
+        ErrorState first = error_save();
         replay_error(from);
-        if (keep_going && nfp) print_trace(expanding, NULL, 0);
-        else if (keep_going) print_next_failure(expanding, NULL, 0, status);
+        if (keep_going) {   /* the error first found, as TLC reports it again */
+            ErrorState replayed = error_save();
+            error_restore(&first);
+            if (nfp) print_trace(expanding, NULL, 0);
+            else print_next_failure(expanding, NULL, 0, status);
+            error_restore(&replayed);
+        } else free(first.msg.s);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
         if (status == MANYAN_FAILURE_EVAL && error_module == 1) status = MANYAN_ERROR;
