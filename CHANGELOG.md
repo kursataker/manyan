@@ -193,6 +193,11 @@ unreleased:
 - `RandomElement` of a set TLC cannot enumerate, or of functions from or
   to one, fails as TLC fails; `-generate` counts the set it draws a
   successor from first, as TLC does
+- With `-continue`, a simulation's `CounterExample` is empty, as TLC's
+  simulator keeps no trace for it then
+- An error checking the temporal properties of a simulated behavior is
+  the one TLC meets first, as in model checking: weak fairness's
+  `ENABLED` on each step before strong fairness's on the state
 - `make fuzz-sim` also simulates with `-continue`
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC

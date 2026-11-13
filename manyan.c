@@ -10745,7 +10745,7 @@ static Value *counter_example_record(Value *states, Value *steps) {
 }
 
 static Value *counter_example(void) {
-    if (!checking_posts || !post_trace.n) {
+    if (!checking_posts || !post_trace.n || (simulating && keep_going)) {   /* TLC's simulator keeps no trace to go on */
         if (!empty_counter_example) {
             Arena *saved = arena;
             arena = &perm_arena;
@@ -11972,6 +11972,8 @@ static void report_exception(int in_behavior) {
 /* A simulated behavior: its states and the actions into them. */
 static int *sim_order, *sim_acts, sim_n;
 
+static void live_eval(void);
+
 /* Whether a temporal property fails on the behavior, as TLC checks one:
    without its finite stuttering, each state may stutter or take its
    step. */
@@ -11995,7 +11997,17 @@ static int sim_violates(States *trace) {
         sim_order[sim_n++] = s;
         prev = s;
     }
+    sigjmp_buf here, *outer = handler;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {   /* the error TLC meets first */
+        handler = outer;
+        ErrorState first = error_save();
+        live_eval();
+        error_restore(&first);
+        raise_error();
+    }
     int violated = live_violated();
+    handler = outer;
     sim_n = 0;
     return violated;
 }
@@ -15061,7 +15073,9 @@ static void live_init(Value **st) {
    the other state predicates on the state, then a tableau's on each
    successor. It reports the first error then, as one in Next, with the
    behavior to the state and the counts of that moment. */
-static int live_error(void) {
+static int live_at;   /* the state live_eval is at; read after an error jumps back */
+
+static void live_eval(void) {
     natoms = 0;
     neventualities = 0;
     static char *on_state;   /* each atom: of a property without a tableau */
@@ -15071,20 +15085,8 @@ static int live_error(void) {
         on_state = xrealloc(on_state, (size_t)natoms + 1);
         memset(on_state + from, flat, (size_t)(natoms - from));
     }
-    static int s;   /* static: read after an error jumps back */
-    sigjmp_buf here;
-    handler = &here;
-    if (sigsetjmp(here, 0)) {
-        handler = NULL;
-        printf("\n");
-        if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
-        else printf("Error: ");
-        print_error_text();
-        print_trace(s, NULL, 0);
-        print_counts_after(s);
-        return MANYAN_ERROR;
-    }
-    for (s = 0; s < nstates; s++) {
+    for (live_at = 0; live_at < nstates; live_at++) {
+        int s = live_at;
         StateRec *r = &states[s];
         for (int e = 0; e <= r->nedges; e++) {
             int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
@@ -15106,6 +15108,22 @@ static int live_error(void) {
                 if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !on_state[i])
                     holds_in(atoms[i]->atom, atoms[i]->c, state_values(e < r->nedges ? r->edges[2 * e] : s), NULL);
     }
+}
+
+static int live_error(void) {
+    sigjmp_buf here;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {
+        handler = NULL;
+        printf("\n");
+        if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
+        else printf("Error: ");
+        print_error_text();
+        print_trace(live_at, NULL, 0);
+        print_counts_after(live_at);
+        return MANYAN_ERROR;
+    }
+    live_eval();
     /* Not found so: as it came. */
     handler = NULL;
     print_error_message();

@@ -1,0 +1,28 @@
+Finished computing initial states: 1 distinct state generated.
+Error: In evaluation, the identifier s is either undefined or not an operator.
+line 10, col 24 to line 10, col 24 of module error_fairness_order
+Error: The behavior up to this point is:
+State 1: <Init line 6, col 9 to line 6, col 13 of module error_fairness_order>
+s = 0
+
+State 2: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 1
+
+State 3: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 0
+
+State 4: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 1
+
+State 5: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 0
+
+State 6: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 1
+
+State 7: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 0
+
+State 8: <Next line 7, col 9 to line 7, col 21 of module error_fairness_order>
+s = 1
+exit 151
