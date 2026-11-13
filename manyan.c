@@ -14409,14 +14409,13 @@ static void drop_repeats(List *nodes, List *acts, int n, int prev) {
    then a cycle that meets each eventuality and fairness condition. */
 static void warn_stuttering(void);
 /* Prints the lasso of the n states ls, entered by the actions la (la[0]
-   unused), its cycle back to ls[entry] by the action back, or with entry
-   negative its last state stuttering; cyc is where the properties are
-   evaluated to loop back. */
+   -1), its cycle back to ls[entry] by the action back, or with entry
+   negative its last state stuttering, by back for a CounterExample; cyc
+   is where the properties are evaluated to loop back. */
 static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
     int stutter = entry < 0;
     print_violated(lasso_values(ls, n), n, cyc);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
-    la[0] = -1;
     for (int i = 0; i < n; i++) {
         print_live_state(i + 1, ls[i], i ? la[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : stutter ? i : entry]);
         if (i == entry) post_behavior(lasso_values(ls, n), la, n, entry + 1, back, 0);
@@ -14424,7 +14423,7 @@ static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
     if (stutter) {
         printf("State %d: Stuttering\n", n + 1);
         warn_stuttering();
-        post_behavior(lasso_values(ls, n), la, n, n, la[n - 1], 0);
+        post_behavior(lasso_values(ls, n), la, n, n, back, 0);
         return;
     }
     printf("Back to state %d: ", entry + 1);
@@ -14449,9 +14448,9 @@ static void print_counterexample(int *inits, int ninits) {
     int *ls = NEWN(int, n + 1), *la = NEWN(int, n + 1);
     for (int i = 0; i < n; i++) {
         ls[i] = pnodes[(i < path.n ? path.v[i] : cyc.v[i - path.n])->u.i].state;
-        la[i] = (int)(i < path.n ? acts.v[i] : cacts.v[i - path.n])->u.i;
+        la[i] = i ? (int)(i < path.n ? acts.v[i] : cacts.v[i - path.n])->u.i : -1;
     }
-    if (stutter_only) print_lasso(ls, la, n, -1, -1, n - 1);
+    if (stutter_only) print_lasso(ls, la, n, -1, sim_n ? -2 : la[n - 1], n - 1);   /* by the step into it, as TLC's search; none, as its simulator */
     else print_lasso(ls, la, n, path.n - 1, (int)cacts.v[cyc.n - 1]->u.i, path.n - 1);
 }
 
@@ -14746,7 +14745,7 @@ static int sim_search(int *roots, int nroots) {
             la[n] = edge_act(cyc.v[i - 1], cyc.v[i]), ls[n++] = pnodes[cyc.v[i]].state;
     free(parent);
     free(queue);
-    if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n, -1, -1, entry);
+    if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n, -1, -2, entry);   /* by no action, as TLC's simulator */
     else print_lasso(ls, la, n, entry, edge_act(cyc.v[cyc.n - 1], sim_hit), entry);
     return 1;
 }

@@ -1,0 +1,65 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Live was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 7, col 9 to line 7, col 24 of module counter_example_stuttering_simulate>
+/\ x = 0
+/\ y = "a"
+
+State 2: <Inc line 8, col 8 to line 8, col 41 of module counter_example_stuttering_simulate>
+/\ x = 1
+/\ y = "a"
+
+State 3: <Inc line 8, col 8 to line 8, col 41 of module counter_example_stuttering_simulate>
+/\ x = 2
+/\ y = "a"
+
+State 4: <Inc line 8, col 8 to line 8, col 41 of module counter_example_stuttering_simulate>
+/\ x = 3
+/\ y = "a"
+
+State 5: Stuttering
+[ state |->
+      { <<1, [x |-> 0, y |-> "a"]>>,
+        <<2, [x |-> 1, y |-> "a"]>>,
+        <<3, [x |-> 2, y |-> "a"]>>,
+        <<4, [x |-> 3, y |-> "a"]>> },
+  action |->
+      { << <<1, [x |-> 0, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 8,
+                   beginColumn |-> 8,
+                   endLine |-> 8,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering_simulate" ] ],
+           <<2, [x |-> 1, y |-> "a"]>> >>,
+        << <<2, [x |-> 1, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 8,
+                   beginColumn |-> 8,
+                   endLine |-> 8,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering_simulate" ] ],
+           <<3, [x |-> 2, y |-> "a"]>> >>,
+        << <<3, [x |-> 2, y |-> "a"]>>,
+           [ name |-> "Inc",
+             location |->
+                 [ beginLine |-> 8,
+                   beginColumn |-> 8,
+                   endLine |-> 8,
+                   endColumn |-> 41,
+                   module |-> "counter_example_stuttering_simulate" ] ],
+           <<4, [x |-> 3, y |-> "a"]>> >>,
+        << <<4, [x |-> 3, y |-> "a"]>>,
+           [ name |-> "UnnamedAction",
+             location |->
+                 [ beginLine |-> 0,
+                   beginColumn |-> 0,
+                   endLine |-> 0,
+                   endColumn |-> 0,
+                   module |-> "--TLA+ BUILTINS--" ] ],
+           <<4, [x |-> 3, y |-> "a"]>> >> } ]
+exit 13

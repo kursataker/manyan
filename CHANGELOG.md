@@ -48,6 +48,9 @@ unreleased:
   than 24 elements and `[D -> R]` more than 100 million: Examples' SpanTreeTest5Nodes, a filter
   of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
   Manyan 168 s); it failed with an overflow
+- a simulated counterexample that stutters at its end steps by no
+  action in `CounterExample`, TLC's `UnnamedAction`, as TLC's simulator
+  makes it
 - a simulation checks the initial states' invariants as the search
   does, in the scratch arena: a record made there is written by `ToJson`
   in the order it was written, as TLC writes it
