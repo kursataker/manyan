@@ -11578,9 +11578,9 @@ static int search(void) {
             return MANYAN_VIOLATION_DEADLOCK;
         }
         if (succ_count == 0 && check_deadlock) rebuild_for_posts(expanding, NULL, 0);
+        replay_error(from);
         if (keep_going && nfp) print_trace(expanding, NULL, 0);
         else if (keep_going) print_next_failure(expanding, NULL, 0, status);
-        replay_error(from);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
         if (status == MANYAN_FAILURE_EVAL && error_module == 1) status = MANYAN_ERROR;
