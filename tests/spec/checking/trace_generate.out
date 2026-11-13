@@ -1,0 +1,12 @@
+Finished computing initial states: 1 distinct state generated.
+"[{\"_action\":{\"name\":\"Init\",\"location\":{\"beginLine\":7,\"beginColumn\":9,\"endLine\":7,\"endColumn\":23,\"module\":\"trace_generate\"}},\"zz\":0,\"b\":1},{\"_action\":{\"name\":\"Next\",\"location\":{\"beginLine\":8,\"beginColumn\":9,\"endLine\":8,\"endColumn\":40,\"module\":\"trace_generate\"}},\"zz\":1,\"b\":1}]"
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 9 to line 7, col 23 of module trace_generate>
+/\ zz = 0
+/\ b = 1
+
+State 2: <Next line 8, col 9 to line 8, col 40 of module trace_generate>
+/\ zz = 1
+/\ b = 1
+exit 12

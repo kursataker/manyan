@@ -7051,11 +7051,13 @@ const char *manyan_class(Value *v) { return java_class(v); }
 
 /* A record's field i as TLC keeps it before it normalizes the record, as
    its Java sees it: as written; a state's of Trace in the order of its
-   variables. Stored in a state, it is normalized: in order. */
+   variables, after _action if it has one. Stored in a state, it is
+   normalized: in order. */
 size_t manyan_kept(Value *v, size_t i) {
     if (v->kind != V_FCN || v->made != MADE_RECORD) return i;
     Expr *e = v->u.fcn.source;
-    int name = v->range ? (i < (size_t)nvars ? vars[i]->name : intern("_action")) : e && e->kind == X_RECORD && e->n == v->n ? e->segs[i].name : -1;
+    size_t a = v->range && v->n > nvars;   /* _action first, as TLC */
+    int name = v->range ? (i < a ? intern("_action") : vars[i - a]->name) : e && e->kind == X_RECORD && e->n == v->n ? e->segs[i].name : -1;
     if (name < 0) return i;
     for (int k = 0; k < v->n; k++) if (v->u.fcn.keys[k]->u.i == name) return (size_t)k;
     return i;

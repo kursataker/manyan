@@ -321,7 +321,9 @@ def sim(engine, tlc, runs, seed):
     failed = 0
     for _ in range(runs):
         path = rng.choice(models)
-        options = [rng.choice(["-simulate", "-generate"]), f"num={rng.randint(1, 5)}", "-depth", str(rng.randint(1, 30)),
+        # TLC's worker runs on past an error until stopped: what it then prints races.
+        num = 1 if "Print" in path.read_text() else rng.randint(1, 5)
+        options = [rng.choice(["-simulate", "-generate"]), f"num={num}", "-depth", str(rng.randint(1, 30)),
                    "-seed", str(rng.randint(0, 999))]
         ours = spec_runner.run(engine + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)

@@ -48,6 +48,11 @@ unreleased:
   than 24 elements and `[D -> R]` more than 100 million: Examples' SpanTreeTest5Nodes, a filter
   of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
   Manyan 168 s); it failed with an overflow
+- a generated behavior's `Trace` writes each state's `_action` first in
+  `ToJson`, as TLC's record of a state and its action holds it
+- `tests/fuzz.py sim` runs a model that prints one behavior only: TLC's
+  worker goes on past an error until it is stopped, and what it prints
+  then races
 - a counterexample's cycle ends with the step into its first state, as
   TLC's does; a move between that state's tableau nodes printed it twice,
   the last labelled `<Initial predicate>`
