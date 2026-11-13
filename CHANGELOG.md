@@ -48,6 +48,9 @@ unreleased:
   than 24 elements and `[D -> R]` more than 100 million: Examples' SpanTreeTest5Nodes, a filter
   of the 2^32 sets of edges of five nodes, gives TLC's result (TLC 590 s,
   Manyan 168 s); it failed with an overflow
+- a simulation checks the initial states' invariants as the search
+  does, in the scratch arena: a record made there is written by `ToJson`
+  in the order it was written, as TLC writes it
 - an arena's memory is aligned for a 128-bit integer: `-generate`'s
   random order of a set's elements was stored misaligned (found by
   `make fuzz`)

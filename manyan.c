@@ -11944,7 +11944,11 @@ static int simulate(const ManyanOptions *o) {
                 return MANYAN_ERROR;
             }
         sim_checked = st, cur_action = -1;   /* reached by Init */
+        arena = &scratch_arena;   /* what checking makes, as the search's: records keep their order as written */
+        Region *r = region_open();
         int violated = check_initial(st);
+        region_close(r);
+        arena = &init_arena;
         if (violated && check_posts(1)) {   /* TLC's error, as one in an invariant */
             printf("While working on the initial state:\n");
             print_state(st);
