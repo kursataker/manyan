@@ -1,0 +1,44 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to apply function:
+(0 :> 0 @@ 1 :> 1 @@ 2 :> 2)
+to argument 3, which is not in the domain of the function.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 1
+
+State 3: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 2
+
+State 4: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 3
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to apply function:
+(0 :> 0 @@ 1 :> 1 @@ 2 :> 2)
+to argument 3, which is not in the domain of the function.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 1
+
+State 3: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 2
+
+State 4: <Next line 9, col 9 to line 9, col 18 of module constraint_error_continue>
+x = 3
+
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 75

@@ -174,6 +174,8 @@ unreleased:
   are left out, as TLC leaves them out, but an error evaluating it
 - With `-continue`, an alias failing to print the behavior to a violated
   invariant or action property fails the check and the step, as in TLC
+- With `-continue`, a constraint failing on a successor, or a successor
+  TLC cannot fingerprint, is reported again as TLC replays the step
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 

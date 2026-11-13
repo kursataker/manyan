@@ -11517,12 +11517,15 @@ static int search(void) {
                successor. A successor TLC cannot fingerprint it seeks again
                among the state's, by equality: it fails again on one it finds,
                and on one it cannot compare finds none, to its NullPointerException. */
-            print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": ");
-            print_error_text();
+            for (int k = 0; k <= keep_going; k++) {   /* with -continue, again as TLC replays the step */
+                print_exception("java.lang.RuntimeException", error_module == 1 ? ": tlc2.tool.EvalException: " : ": ");
+                print_error_text();
+                if (outside) print_trace(expanding, NULL, 0);
+                else print_trace(expanding, error_state, cur_action);
+            }
             if (outside) {
                 int again = 1;   /* found again by equality, it fails again */
                 for (int i = 0; i < nvars && again && !unfingerprintable; i++) again = comparable(succ[i]);
-                print_trace(expanding, NULL, 0);
                 replay_error(decode_state(expanding));
                 if (again) {
                     print_exception("java.lang.RuntimeException", ": ");
@@ -11531,8 +11534,6 @@ static int search(void) {
                     print_exception("java.lang.NullPointerException", ": ");
                     printf("Cannot read field \"state\" because \"currentStateInfo\" is null\n");
                 }
-            } else {
-                print_trace(expanding, error_state, cur_action);
             }
             if (!over) print_unfingerprinted(fps, nfp);
             print_counts(outside ? nstates - expanded : 0);
