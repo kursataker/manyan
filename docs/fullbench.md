@@ -60,8 +60,8 @@ A model leaves this list when it gets a row in the results.
   EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC. Run once by
   hand: SpanTreeTest5Nodes prints what TLC prints (TLC 590 s, Manyan
   168 s); CarTalkPuzzle Model_3 filters 121^5 functions, past 15 minutes
-  for TLC; TestMCReachability, c1cs, BPConProof and TLCSailfish2 run
-  past 15 minutes for TLC as well (Manyan past 5); SmokeEWD998_SC runs
+  for TLC; TestMCReachability, c1cs, BPConProof, TLCSailfish2 and
+  MC_HDiskSynod run past 15 minutes for TLC as well (Manyan past 5); SmokeEWD998_SC runs
   TLC itself through IOExec; the others run past 3 minutes or 2 GB in
   Manyan.
 - TLC over 15 minutes: ElevatorSafetyLarge (Manyan 774 s), aba_asyn_byz
