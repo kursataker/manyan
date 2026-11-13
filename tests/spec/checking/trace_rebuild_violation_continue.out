@@ -1,0 +1,47 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+Error: Evaluating invariant Inv failed.
+The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 1>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 1>>
+Error: The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 1>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 1>>
+Error: The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 2>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a tlc2.tool.EvalException
+: The first argument of Assert evaluated to FALSE; the second argument was:
+<<"rebuilt", 1>>
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 14

@@ -186,6 +186,8 @@ unreleased:
   resolve, or by a finite counterexample, is reported as TLC reports it,
   then again as TLC replays the step; an error in Next is reported again
   as first found
+- With `-continue`, a check whose behavior fails to rebuild is an error of
+  the step, which TLC replays and which may fail again, as TLC reports it
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 

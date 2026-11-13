@@ -9872,22 +9872,26 @@ static int replay(Value **from, Value **to, int64_t level) {
 
 /* After an evaluation error TLC evaluates Init, or the next-state action
    of the state it failed in, again to locate the error: from == NULL
-   replays Init with its checks. The error happens again and ends it. */
-static void replay_error(Value **from) {
+   replays Init with its checks. The error happens again and ends it.
+   Returns whether an error did. */
+static int replay_error(Value **from) {
     sigjmp_buf here, *saved = handler;
     handler = &here;
     tracking = 1;
     for (int i = 0; i <= K_WHILE; i++) eval_tracking[i] = eval_tracked;
     eval_fns = eval_tracking;
     nframes = 0;
+    volatile int failed = 1;
     if (!sigsetjmp(here, 0)) {
         replay_checks = !from;
         replay(from, NULL, cur_level);
+        failed = 0;
     }
     tracking = 0;
     eval_fns = eval_kind;
     replay_checks = 0;
     handler = saved;
+    return failed;
 }
 
 static int diff_trace;   /* -difftrace */
@@ -10563,11 +10567,18 @@ static int continued_trace(const char *check, int name, Value **st) {
     const char *java = trace_failure_java;
     printf("Error: Evaluating %s %s failed.\n%s", check, S(name), why);
     print_trace(expanding, st, cur_action);
-    print_exception(java, ": ");
+    if (strcmp(java, "tlc2.tool.EvalException")) print_exception(java, ": ");
+    else printf("Error: ");   /* an EvalException of TLC's own, plainly */
     fputs(why, stdout);
     print_trace(expanding, st, cur_action);
     free(why);
     violation = MANYAN_ERROR;
+    /* TLC replays the step, which may now fail: an error of the step. */
+    if (replay_error(expanding_state)) {
+        violation = eval_failure_status();
+        print_next_failure(expanding, NULL, 0, violation);
+        printf("\n");
+    }
     return failed;
 }
 
@@ -11578,8 +11589,11 @@ static int search(void) {
             printf("Error: Evaluating invariant %s failed.\n", S(error_check->name));
             print_error_text();
             int failed = print_trace(expanding, error_state, cur_action);
+            if (keep_going) {   /* as an error of the step, which TLC replays and may fail */
+                print_next_failure(expanding, error_state, cur_action, status);
+                if (replay_error(expanding_state)) print_next_failure(expanding, NULL, 0, failed = eval_failure_status());
+            }
             if (failed) printf("\n");   /* after the call stack TLC prints for it */
-            else if (keep_going) print_next_failure(expanding, error_state, cur_action, status);   /* as an error of the step */
             print_counts(nstates - expanded - 1);
             return failed ? failed : keep_going ? MANYAN_ERROR : MANYAN_FAILURE_SAFETY_EVAL;
         }
