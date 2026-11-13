@@ -1,0 +1,23 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 9 to line 7, col 13 of module trace_alias_simulate>
+/\ x = 0
+/\ n = 1
+/\ json = "{\"_action\":{\"name\":\"Init\",\"location\":{\"beginLine\":7,\"beginColumn\":9,\"endLine\":7,\"endColumn\":13,\"module\":\"trace_alias_simulate\"}},\"x\":0}"
+
+State 2: <Next line 8, col 9 to line 8, col 18 of module trace_alias_simulate>
+/\ x = 1
+/\ n = 2
+/\ json = "{\"_action\":{\"name\":\"Next\",\"location\":{\"beginLine\":8,\"beginColumn\":9,\"endLine\":8,\"endColumn\":18,\"module\":\"trace_alias_simulate\"}},\"x\":1}"
+
+State 3: <Next line 8, col 9 to line 8, col 18 of module trace_alias_simulate>
+/\ x = 2
+/\ n = 3
+/\ json = "{\"_action\":{\"name\":\"Next\",\"location\":{\"beginLine\":8,\"beginColumn\":9,\"endLine\":8,\"endColumn\":18,\"module\":\"trace_alias_simulate\"}},\"x\":2}"
+
+State 4: <Next line 8, col 9 to line 8, col 18 of module trace_alias_simulate>
+/\ x = 3
+/\ n = 4
+/\ json = "{\"_action\":{\"name\":\"Next\",\"location\":{\"beginLine\":8,\"beginColumn\":9,\"endLine\":8,\"endColumn\":18,\"module\":\"trace_alias_simulate\"}},\"x\":3}"
+exit 12

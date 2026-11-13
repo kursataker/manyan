@@ -188,6 +188,12 @@ unreleased:
   as first found
 - With `-continue`, a check whose behavior fails to rebuild is an error of
   the step, which TLC replays and which may fail again, as TLC reports it
+- In a simulation, `Trace` in an `ALIAS` is the behavior to the state
+  printed, as in TLC
+- `RandomElement` of a set TLC cannot enumerate, or of functions from or
+  to one, fails as TLC fails; `-generate` counts the set it draws a
+  successor from first, as TLC does
+- `make fuzz-sim` also simulates with `-continue`
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
 

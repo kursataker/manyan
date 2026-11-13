@@ -357,8 +357,8 @@ report. A model that fails is kept as `.obj/crash-SEED-RUN.tla`.
 PrintT(e)` and checks that Manyan prints what TLC prints, narrowing a
 difference to one expression. `make fuzz-sim` simulates random tests'
 models with random seeds and depths, with Manyan and with TLC, one
-behavior of a model that prints or asks: TLC's worker goes on past an
-error until it is stopped. `make fuzz-check` checks random tests' models
+behavior of a model that prints, asks or counts `_POSSIBLE` predicates:
+TLC's worker goes on past an error until it is stopped. `make fuzz-check` checks random tests' models
 with random options (`-deadlock`, `-continue`, `-difftrace`,
 `-nowarning`, `-view`), Manyan with one or four workers. `make
 fuzz-live` checks a random temporal property of a random state graph

@@ -12,7 +12,7 @@ build) on each, half of them as random simulations (-simulate or
 sanitizer report.
 
 sim: runs models of tests/spec as random simulations (-simulate or
--generate), with random seeds and depths, with the engine and with TLC; they must print the same.
+-generate, sometimes with -continue), with random seeds and depths, with the engine and with TLC; they must print the same.
 
 check: checks models of tests/spec with random options (-deadlock,
 -continue, -difftrace, -nowarning, -view), the engine with one or four workers,
@@ -337,10 +337,10 @@ def sim(engine, tlc, runs, seed):
     failed = 0
     for _ in range(runs):
         path = rng.choice(models)
-        # TLC's worker runs on past an error until stopped: what it then prints races.
-        num = 1 if re.search(r"Print|PickSuccessor", path.read_text()) else rng.randint(1, 5)
+        # TLC's worker runs on past an error until stopped: what it then prints, or counts, races.
+        num = 1 if re.search(r"Print|PickSuccessor|_POSSIBLE", path.read_text()) else rng.randint(1, 5)
         options = [rng.choice(["-simulate", "-generate"]), f"num={num}", "-depth", str(rng.randint(1, 30)),
-                   "-seed", str(rng.randint(0, 999))]
+                   "-seed", str(rng.randint(0, 999))] + ["-continue"] * (rng.random() < 0.3)
         ours = spec_runner.run(engine + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
         if ours != theirs:

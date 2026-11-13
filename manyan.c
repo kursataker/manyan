@@ -7768,6 +7768,9 @@ static Value *element_at(Value *s, int64_t i) { return s->kind == V_INTERVAL ? m
 
 static Value *random_element(Value *s) {
     if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
+    /* a set TLC cannot enumerate, as Nat, or functions from one */
+    if (user_set(s) || (s->kind == V_LAZY && s->lazy == L_FCNSET && user_set(s->u.l.a)))
+        fail_module("Applying RandomElement to the following value,\nwhich is not a finite set:\n%s", pretty(s));
     if (is_product(s) && !(s->lazy == L_FCNSET && set_is_infinite(s->u.l.a))) {
         int n;
         Value **sets = product_parts(s, &n), **vals = NEWN(Value *, n);
@@ -7838,6 +7841,7 @@ typedef struct {
 
 static void order_begin(Order *o, Value *s) {
     if (s->kind == V_SET && s->u.set.product) s = s->u.set.product;
+    if (set_is_infinite(s)) count_infinite(s);   /* TLC counts the set first */
     *o = (Order){.s = s, .size = 1};
     if (is_product(s)) {
         Value **sets = product_parts(s, &o->n);
@@ -11943,8 +11947,12 @@ static int sim_printing;
 static void sim_print(States *trace) {
     sim_printing = 1;
     printf("Error: The behavior up to this point is:\n");
-    for (int i = 0; i < trace->n; i++)
+    trace_path = trace->a;   /* Trace in the ALIAS: the behavior to the state printed */
+    for (int i = 0; i < trace->n; i++) {
+        ntrace_path = i + 1;
         print_numbered(i + 1, trace->act[i], trace->a[i], i ? trace->a[i - 1] : NULL, trace->a[i + (i + 1 < trace->n)]);
+    }
+    trace_path = NULL;
     sim_printing = 0;
 }
 

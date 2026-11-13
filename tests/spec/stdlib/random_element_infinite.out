@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 42 of module random_element_infinite failed.
+Applying RandomElement to the following value,
+which is not a finite set:
+Nat
+exit 10
